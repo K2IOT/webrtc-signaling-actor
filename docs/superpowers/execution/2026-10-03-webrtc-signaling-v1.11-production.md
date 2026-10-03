@@ -1,0 +1,47 @@
+# Native inline execution status
+
+Plan: `docs/superpowers/plans/2026-10-03-webrtc-signaling-v1.11-production-implementation.md`.
+Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and read in full. The 665-line plan was read in full. Implementation runs inline on `work` in the dedicated managed cloud checkout.
+
+| Task | Status | Evidence |
+| --- | --- | --- |
+| 1 | Complete | `98d1bb3`; config tests RED→GREEN; startup rejection/defaults/fingerprint; reactor package succeeds |
+| 2 | Complete | `5bf8797`; protocol, config-adapter and internal-envelope RED→GREEN; protobuf/gRPC generation; N/N−1 schema tests |
+| 3 | Blocked | Actual identity-platform contract is absent; plan Step 2 explicitly forbids invented values |
+| 4–24 | Not started | Runtime correctness and qualification prerequisites remain unfulfilled |
+
+`./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
+
+## Required identity input
+
+Before Task 3 can satisfy its contract fixture, supply:
+
+- Concrete trusted issuer and signaling audience.
+- Maximum accepted JWT lifetime and enforceable issuance-time policy.
+- Preserved-jti refresh behavior (the spec baseline) or an approved replacement transition contract.
+- `revocationPropagationSLO` and `hardSafetyBound`.
+- Durable ordered revocation event source and authoritative high-water/cursor interface.
+- Explicit calling policy and its authoritative source: open authenticated users or tenant/contact/block rules.
+
+The full spec still says the concrete revocation bound is obtained from the identity platform. Its restoration did not supply that external contract. Private signing keys are not required by signaling.
+
+## Decisions recorded during execution
+
+1. Retain the native dedicated cloud checkout on `work` instead of creating a nested worktree, matching the user's native execution request. Cost if wrong: weaker git-worktree isolation.
+2. Cloud skill packages did not expose their referenced task-start/test-guidance/reviewer-template assets. Native brief extraction, test logs and ledger updates preserve task text and test/commit gates. Cost if wrong: helper bookkeeping differs.
+3. Protocol exposes a narrow `ProtocolLimits` contract mapped by app config. Direct protocol→app consumption would create a cycle once app launches protocol consumers. Cost if wrong: one adapter/interface adjustment.
+4. Pin a candidate BOM and exact image versions without qualification claims. Public Lease integration, dependency security, image digests and infrastructure still require their planned gates. Cost if wrong: replace dependencies and rerun affected gates.
+
+Native ledger, exact task briefs and test logs are preserved in the ignored `.superpowers/sdd/2026-10-03-webrtc-signaling-v1.11-production-implementation/` directory because execution is blocked, not finished. Resume at Task 3; do not redo completed tasks.
+
+## Fresh-context review and fix
+
+One fresh-context whole-implemented-branch review inspected `a3301a8..5bf8797` using Superpowers requesting-code-review. No Critical findings. One Important finding: the Jackson byte decoder admitted UTF-16 and invalid UTF-8 inside strings. Eight regression cases failed first; strict UTF-8 decoding with REPORT and Unicode scalar validation then made them pass. Final reactor verification passes 51 tests.
+
+One Minor finding remains deferred as the inline skill prescribes: config issuer/audience validation accepts lone UTF-16 surrogates, whose UTF-8 replacement can collide with `?` in the fingerprint. Reject these invalid operator inputs before production. The planned production compatibility and security gates remain blocked; this is not a production-ready release.
+
+5. Later cumulative ICE/order, current authorization/ownership, unknown-COMMIT reconciliation, stale-actor fencing, AZ capacity and revocation freshness were not counted as defects or passed gates in Tasks 1–2. They remain Tasks 3–24. Cost if wrong: overstating foundation readiness; no runtime or production claim is permitted.
+
+## Qualification
+
+Release status: **NOT_QUALIFIED**. There is no deployed candidate image, runtime call path, PostgreSQL HA, browser/native interop, distributed load, AZ-loss, security/DR drill or 24-hour evidence. Tasks 23–24 additionally need the specified infrastructure and measured staged execution; architecture or unit tests cannot substitute for those gates.
