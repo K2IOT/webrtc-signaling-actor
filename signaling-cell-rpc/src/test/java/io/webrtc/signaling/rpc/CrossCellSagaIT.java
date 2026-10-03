@@ -86,4 +86,21 @@ class CrossCellSagaIT {
         }
     }
 
+    @Test void separatePhysicalBackendReceiptKeepsRpcCapacityAfterLogicalUnknown()throws Exception {
+        var physical=new CompletableFuture<Void>();var admission=new RpcAdmission(1,262144,4,262144);CellRpcServer.Backend backend=new CellRpcServer.Backend(){
+            public CompletionStage<InternalReply> execute(CellRpcServer.Operation op,InternalCommand command,CellRpcServer.Peer peer,Duration budget){throw new AssertionError("Production ingress must use tracked lifecycle");}
+            public RpcOperation<InternalReply> executeTracked(CellRpcServer.Operation op,InternalCommand command,CellRpcServer.Peer peer,Duration budget){return new RpcOperation<>(CompletableFuture.completedFuture(InternalReply.newBuilder().setOperationId(command.getOperationId()).setCallId(command.getCallId()).setErrorCode("OUTCOME_UNKNOWN").build()),physical);}
+        };
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),admission,backend,event->CompletableFuture.failedFuture(new AssertionError())).start();var client=client(server.port(),"actor")){
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("OVERLOADED");physical.complete(null);org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1)).until(()->admission.inFlight(RpcAdmission.Lane.CONTROL)==0);
+        }
+    }
+    @Test void controlDeliveryRejectsForgedCoordinatorAndMalformedDestinationBeforeForwarding()throws Exception {
+        var seen=new AtomicInteger();var route=SessionIdentity.newBuilder().setUserId("delivery-user").setIssuer("TEST_ONLY").setJti("jti").setIncarnation(ByteString.copyFrom(new byte[16])).setConnectionId(ByteString.copyFrom(new byte[16])).setConnectionGeneration(1);var event=ControlEvent.newBuilder().setEventId(UUID.randomUUID().toString()).setCallId(CALL).setCallVersion(1).setAuthorityBucketId(1).setType("CALL_READY").setMetadata(ByteString.copyFromUtf8("{}" )).setDestination(route).build();
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),new RpcAdmission(4,262144,4,262144),(op,c,p,b)->CompletableFuture.failedFuture(new AssertionError()),c->{seen.incrementAndGet();return CompletableFuture.completedFuture(InternalReply.newBuilder().setOperationId(c.getEventId()).setCallId(c.getCallId()).setStatus("WRITE_COMPLETED").build());}).start();var client=client(server.port(),"actor")){
+            assertThat(client.deliver("c002",event.toBuilder().setCallId(CALL.replace("c001","c003")).build(),Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");
+            assertThat(client.deliver("c002",event.toBuilder().setDestination(route.setConnectionGeneration(0)).build(),Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("INVALID_MESSAGE");assertThat(seen).hasValue(0);
+            assertThat(client.deliver("c002",event,Duration.ofSeconds(1)).toCompletableFuture().join().getStatus()).isEqualTo("WRITE_COMPLETED");assertThat(seen).hasValue(1);
+        }
+    }
 }

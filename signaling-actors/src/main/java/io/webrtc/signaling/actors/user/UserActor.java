@@ -27,21 +27,21 @@ public final class UserActor extends AbstractBehavior<UserMessage> {
     private void activity(){idleRequested=false;timers.startSingleTimer(Idle.INSTANCE,IDLE_TIMEOUT);}
     private Behavior<UserMessage> observe(UserCommand.GetState request){if(ready||unknown)request.replyTo().tell(state);else if(observers.size()<16)observers.add(request.replyTo());else request.replyTo().tell(state);return this;}
     private Behavior<UserMessage> mutate(UserCommand.Mutate request){
-        if(unknown||draining||passivating){reply(request,UserCommand.Code.UNAVAILABLE);return this;}
-        if(!user.equals(request.operation().user())||request.operation().directoryEpoch()!=directoryEpoch){reply(request,UserCommand.Code.INVALID);return this;}
-        if(!request.deadline().isAfter(clock.instant())){reply(request,UserCommand.Code.EXPIRED);return this;}
-        if(queued.size()+(pending==null?0:1)>=64||retainedBytes+request.encodedBytes()>256*1024){reply(request,UserCommand.Code.OVERLOADED);return this;}
+        if(unknown||draining||passivating){reject(request,UserCommand.Code.UNAVAILABLE);return this;}
+        if(!user.equals(request.operation().user())||request.operation().directoryEpoch()!=directoryEpoch){reject(request,UserCommand.Code.INVALID);return this;}
+        if(!request.deadline().isAfter(clock.instant())){reject(request,UserCommand.Code.EXPIRED);return this;}
+        if(queued.size()+(pending==null?0:1)>=64||retainedBytes+request.encodedBytes()>256*1024){reject(request,UserCommand.Code.OVERLOADED);return this;}
         activity();queued.add(request);retainedBytes+=request.encodedBytes();startNext();return this;
     }
     private void startNext(){
-        while(ready&&pending==null&&!queued.isEmpty()&&!unknown&&!draining){var request=queued.remove();if(!request.deadline().isAfter(clock.instant())){retainedBytes-=request.encodedBytes();reply(request,UserCommand.Code.EXPIRED);continue;}
+        while(ready&&pending==null&&!queued.isEmpty()&&!unknown&&!draining){var request=queued.remove();if(!request.deadline().isAfter(clock.instant())){retainedBytes-=request.encodedBytes();reject(request,UserCommand.Code.EXPIRED);continue;}
             var route=switch(request.operation()){case UserCommand.Refresh r->r.route();case UserCommand.Close r->r.route();case UserCommand.Accept r->r.route();default->null;};
-            if(route!=null&&!state.current(route)){retainedBytes-=request.encodedBytes();reply(request,UserCommand.Code.STALE_BINDING);continue;}
+            if(route!=null&&!state.current(route)){retainedBytes-=request.encodedBytes();reject(request,UserCommand.Code.STALE_BINDING);continue;}
             pending=new Pending(request);Duration remaining=Duration.between(clock.instant(),request.deadline());Duration budget=remaining.compareTo(Duration.ofSeconds(2))>0?Duration.ofSeconds(2):remaining;
-            try{track(pending,backend.execute(request.operation(),budget));}catch(RuntimeException error){getContext().getSelf().tell(new Completed(incarnation,pending.id,null,error));getContext().getSelf().tell(new Cleaned(incarnation,pending.id));}
+            try{track(pending,backend.execute(request.operation(),budget));}catch(RuntimeException error){if(pending.request.receipt()!=null)pending.request.receipt().signal();getContext().getSelf().tell(new Completed(incarnation,pending.id,null,error));getContext().getSelf().tell(new Cleaned(incarnation,pending.id));}
         }
     }
-    private <T> void track(Pending operation,DbOperation<T> handle){UUID id=operation.id;getContext().pipeToSelf(handle.logical(),(value,error)->new Completed(incarnation,id,value,error));getContext().pipeToSelf(handle.physicalCompletion(),(value,error)->new Cleaned(incarnation,id));}
+    private <T> void track(Pending operation,DbOperation<T> handle){UUID id=operation.id;var receipt=operation.request==null?null:operation.request.receipt();if(receipt!=null)handle.physicalCompletion().whenComplete((done,error)->receipt.signal());getContext().pipeToSelf(handle.logical(),(value,error)->new Completed(incarnation,id,value,error));getContext().pipeToSelf(handle.physicalCompletion(),(value,error)->new Cleaned(incarnation,id));}
     private Behavior<UserMessage> completed(Completed event){
         if(!incarnation.equals(event.actor())||pending==null||!pending.id.equals(event.operation())||pending.logical)return this;pending.logical=true;
         if(event.error()!=null){var code=classify(event.error());unknown=code==UserCommand.Code.UNKNOWN;if(pending.request!=null)reply(pending.request,code);else unknown=true;}
@@ -54,11 +54,12 @@ public final class UserActor extends AbstractBehavior<UserMessage> {
     private Behavior<UserMessage> cleaned(Cleaned event){if(incarnation.equals(event.actor())&&pending!=null&&pending.id.equals(event.operation())){pending.physical=true;finish();}return nextBehavior();}
     private void finish(){if(pending==null||!pending.logical||!pending.physical)return;if(pending.request!=null)retainedBytes-=pending.request.encodedBytes();pending=null;
         if(unknown||draining){failQueued();passivate();}else {startNext();if(pending==null&&queued.isEmpty()&&idleRequested)passivate();}}
-    private void failQueued(){while(!queued.isEmpty()){var request=queued.remove();retainedBytes-=request.encodedBytes();reply(request,UserCommand.Code.UNAVAILABLE);}}
+    private void failQueued(){while(!queued.isEmpty()){var request=queued.remove();retainedBytes-=request.encodedBytes();reject(request,UserCommand.Code.UNAVAILABLE);}}
     private Behavior<UserMessage> idle(Idle ignored){idleRequested=true;if(pending==null&&queued.isEmpty())passivate();return this;}
     private void passivate(){if(!passivating){passivating=true;shard.tell(new ClusterSharding.Passivate<>(getContext().getSelf()));}}
     private Behavior<UserMessage> nextBehavior(){return stopRequested&&pending==null?Behaviors.stopped():this;}
     private Behavior<UserMessage> stop(UserCommand.Stop ignored){stopRequested=true;draining=true;failQueued();return pending==null?Behaviors.stopped():this;}
+    private static void reject(UserCommand.Mutate request,UserCommand.Code code){if(request.receipt()!=null)request.receipt().signal();reply(request,code);}
     private static void reply(UserCommand.Mutate request,UserCommand.Code code){request.replyTo().tell(UserCommand.Result.error(code));}
     private static UserCommand.Code classify(Throwable error){while(error instanceof CompletionException&&error.getCause()!=null)error=error.getCause();if(error instanceof DbOverloadedException||error instanceof AuthoritySql.RetryableConflict)return UserCommand.Code.OVERLOADED;if(error instanceof AuthoritySql.FencedException)return UserCommand.Code.STALE_BINDING;if(error instanceof SessionRepository.BindingRejected)return UserCommand.Code.BINDING_REJECTED;if(error instanceof SessionRepository.SessionLimit)return UserCommand.Code.OVERLOADED;if(error instanceof UserReservationService.UserBusy)return UserCommand.Code.USER_BUSY;if(error instanceof HomeParticipationService.IntentConflict)return UserCommand.Code.INTENT_CONFLICT;if(error instanceof IllegalArgumentException)return UserCommand.Code.INVALID;return UserCommand.Code.UNKNOWN;}
 }
