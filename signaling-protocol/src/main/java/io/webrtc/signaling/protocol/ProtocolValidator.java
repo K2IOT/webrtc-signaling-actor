@@ -35,7 +35,11 @@ public final class ProtocolValidator {
     public SignalEnvelope decodePublic(byte[] frame) {
         if (frame == null || frame.length == 0 || frame.length > limits.frameBytes()) throw invalid();
         try {
-            JsonNode root = json.readTree(frame);
+            String utf8 = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(frame)).toString();
+            JsonNode root = json.readTree(utf8);
             fields(root, TOP);
             if (!root.path("v").isIntegralNumber() || !root.path("v").canConvertToInt() || root.path("v").intValue()!=1)
                 throw new ProtocolException(ErrorCode.UNSUPPORTED_PROTOCOL);
@@ -156,7 +160,8 @@ public final class ProtocolValidator {
     private String string(JsonNode node, String field, int max) {
         var value = node.path(field);
         if (!value.isTextual() || value.textValue().isBlank()
-            || value.textValue().getBytes(StandardCharsets.UTF_8).length>max) throw invalid();
+            || value.textValue().getBytes(StandardCharsets.UTF_8).length>max
+            || value.textValue().codePoints().anyMatch(c -> c >= 0xd800 && c <= 0xdfff)) throw invalid();
         return value.textValue();
     }
     private long counter(JsonNode node,String field) {

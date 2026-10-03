@@ -92,4 +92,32 @@ class ProtocolContractTest {
         assertThat(c.payloadJson()).isEqualTo("{\"targetUserId\":\"bob\"}");
         assertThat(c).isNotInstanceOf(java.io.Serializable.class);
     }
+    @ParameterizedTest @org.junit.jupiter.params.provider.MethodSource("invalidUtf8Frames")
+    void rejectsEveryNonUtf8WireEncoding(byte[] wire) {
+        assertThatThrownBy(() -> validator.decodePublic(wire)).isInstanceOf(ProtocolException.class)
+            .hasMessage("INVALID_FRAME");
+    }
+    static java.util.stream.Stream<byte[]> invalidUtf8Frames() {
+        String valid = "{\"v\":1,\"type\":\"AUTH\",\"payload\":{\"token\":\"abc\"}}";
+        byte[] prefix = "{\"v\":1,\"type\":\"AUTH\",\"payload\":{\"token\":\"".getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "\"}}".getBytes(StandardCharsets.UTF_8);
+        var invalid = java.util.stream.Stream.of(new byte[]{(byte)0xc0,(byte)0xaf},
+            new byte[]{(byte)0xed,(byte)0xa0,(byte)0x80},
+            new byte[]{(byte)0xf4,(byte)0x90,(byte)0x80,(byte)0x80})
+            .map(body -> {
+                var wire = new byte[prefix.length + body.length + suffix.length];
+                System.arraycopy(prefix,0,wire,0,prefix.length);
+                System.arraycopy(body,0,wire,prefix.length,body.length);
+                System.arraycopy(suffix,0,wire,prefix.length+body.length,suffix.length);
+                return wire;
+            });
+        return java.util.stream.Stream.concat(java.util.stream.Stream.of(valid.getBytes(StandardCharsets.UTF_16),
+            valid.getBytes(StandardCharsets.UTF_16LE),valid.getBytes(StandardCharsets.UTF_16BE)),invalid);
+    }
+    @ParameterizedTest @ValueSource(strings={"\\ud800", "\\udfff"})
+    void rejectsEscapedLoneSurrogatesInPayloadStrings(String escaped) {
+        assertThatThrownBy(() -> decode("{\"v\":1,\"type\":\"AUTH\",\"payload\":{\"token\":\"" + escaped + "\"}}"))
+            .isInstanceOf(ProtocolException.class).hasMessage("INVALID_FRAME");
+    }
+
 }
