@@ -7,14 +7,18 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | --- | --- | --- |
 | 1 | Complete | `98d1bb3`; config tests RED→GREEN; startup rejection/defaults/fingerprint; reactor package succeeds |
 | 2 | Complete | `5bf8797`; protocol, config-adapter and internal-envelope RED→GREEN; protobuf/gRPC generation; N/N−1 schema tests |
-| 3 | Blocked | Actual identity-platform contract is absent; plan Step 2 explicitly forbids invented values |
-| 4–24 | Not started | Runtime correctness and qualification prerequisites remain unfulfilled |
+| 3 | Implemented contract | `44872bf`; strict RS256, bounded verification, policy and revocation interfaces; production identity settings required and unconfigured |
+| 4 | Implemented contract | `a3a8990`; bootstrap, bucket hashing, durable-directory interfaces and freeze/install/publication protocol; JDBC adapter follows storage |
+| 5 | Complete | `884e19c`; real PostgreSQL 17.6 migrations and safety constraints; two fixed pools, admitted VTs, native authority barriers and JPA-bound transaction tests |
+| 6 | Complete | `62df892`; generation/incarnation fences, five-session admission, refresh, old-close protection, irreversible gateway boots and bounded pulse batches |
+| 7 | In progress | Real PostgreSQL participation, reservation and winner race verification |
+| 8–24 | Pending | Runtime correctness and qualification prerequisites remain unfulfilled |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
 ## Required identity input
 
-Before Task 3 can satisfy its contract fixture, supply:
+Before production deployment and qualification, supply:
 
 - Concrete trusted issuer and signaling audience.
 - Maximum accepted JWT lifetime and enforceable issuance-time policy.
@@ -32,7 +36,13 @@ The full spec still says the concrete revocation bound is obtained from the iden
 3. Protocol exposes a narrow `ProtocolLimits` contract mapped by app config. Direct protocol→app consumption would create a cycle once app launches protocol consumers. Cost if wrong: one adapter/interface adjustment.
 4. Pin a candidate BOM and exact image versions without qualification claims. Public Lease integration, dependency security, image digests and infrastructure still require their planned gates. Cost if wrong: replace dependencies and rerun affected gates.
 
-Native ledger, exact task briefs and test logs are preserved in the ignored `.superpowers/sdd/2026-10-03-webrtc-signaling-v1.11-production-implementation/` directory because execution is blocked, not finished. Resume at Task 3; do not redo completed tasks.
+Native ledger, exact task briefs and test logs are preserved in the ignored `.superpowers/sdd/2026-10-03-webrtc-signaling-v1.11-production-implementation/` directory while execution continues. Resume from the ledger; do not redo completed tasks.
+
+6. Continue implementation using required unconfigured identity settings and explicit test-only fixtures, as authorized by the user; never fabricate production policy. Cost if wrong: deployment remains fail-closed until the real settings are supplied.
+7. Isolate directory migrations in `db/directory/migration` to avoid duplicate V001 versions on a shared launcher classpath. Cost if wrong: adjust the configured Flyway location.
+8. Select named integration tests through Failsafe `-Dit.test`, because the plan’s `-Dtest` would select Surefire rather than execute the named IT. Cost if wrong: runner invocation differs.
+
+Current verified reactor result after Task 6: **87 tests, zero failures/errors/skips**. PostgreSQL tests use real single-node containers and do not certify cross-AZ WAL durability.
 
 ## Fresh-context review and fix
 
