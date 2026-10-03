@@ -35,7 +35,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
             var checked=services.verify(token,clock.instant()).thenCompose(principal->{
                 if(services.cachedSecurity(principal,clock.instant())!=AuthorizationStatus.ALLOWED||!services.currentBoot())return CompletableFuture.failedFuture(new AuthException());
                 if(refresh&&(!principal.userId().equals(expected.user())||!principal.key().equals(expected.key())))return CompletableFuture.failedFuture(new AuthException());
-                var original=refresh?services.refresh(expected,principal,remaining(frame)):services.register(principal,connection,remaining(frame));
+                var original=refresh?services.refresh(expected,principal,token,remaining(frame)):services.register(principal,token,connection,remaining(frame));
                 // Keep the original completion independent of the logical deadline. A late COMMIT still needs cleanup.
                 original.whenComplete((nativeRoute,error)->{if(nativeRoute!=null&&(failed.get()||!ctx.channel().isActive()||System.nanoTime()-frame.submittedNanos()>=TimeUnit.SECONDS.toNanos(2)))closeOnce.accept(nativeRoute);});
                 return original.thenApply(committed->new AbstractMap.SimpleImmutableEntry<>(principal,committed));

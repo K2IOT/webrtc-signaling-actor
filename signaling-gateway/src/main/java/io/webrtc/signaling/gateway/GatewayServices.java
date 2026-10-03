@@ -12,6 +12,8 @@ public interface GatewayServices {
     AuthorizationStatus cachedSecurity(AuthPrincipal principal,Instant now);
     CompletionStage<SessionRepository.Route> register(AuthPrincipal principal,UUID connection,Duration budget);
     CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal principal,Duration budget);
+    default CompletionStage<SessionRepository.Route> register(AuthPrincipal principal,String originalVerifiedToken,UUID connection,Duration budget){return register(principal,connection,budget);}
+    default CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal principal,String originalVerifiedToken,Duration budget){return refresh(route,principal,budget);}
     CompletionStage<Void> close(SessionRepository.Route route);
     CompletionStage<String> command(CallCommand command,Duration budget);
 }

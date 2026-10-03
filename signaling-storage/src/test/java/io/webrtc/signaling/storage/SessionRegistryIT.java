@@ -67,4 +67,11 @@ class SessionRegistryIT {
         assertThat(sessions.renewGatewayBootBatch(cycles).toCompletableFuture().join()).isEqualTo(result);
         assertThat(SessionRegistryService.GATEWAY_PULSE_INTERVAL).isEqualTo(Duration.ofSeconds(5));
     }
+    @Test void nativeSecurityPolicyRejectsRegistrationAndTrackedBootReportsPrimaryRemainingTime(){
+        var secured=new SessionRegistryService(new SqlTransactions(boundary,pools),"c001",1,(connection,principal)->false);
+        var operation=secured.startGatewayBootTracked("native-secure",UUID.randomUUID(),"test",UUID.randomUUID(),Duration.ofSeconds(2));
+        var grant=operation.logical().toCompletableFuture().join();operation.physicalCompletion().toCompletableFuture().join();
+        assertThat(grant.remainingMillis()).isBetween(13000L,15000L);
+        assertThatThrownBy(()->secured.registerSession(token("native-denied",UUID.randomUUID().toString()),grant.boot(),UUID.randomUUID(),1).toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+    }
 }

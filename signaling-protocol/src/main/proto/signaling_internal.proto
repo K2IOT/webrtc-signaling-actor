@@ -78,3 +78,13 @@ service CellIngress {
   rpc RelayNegotiation(InternalCommand) returns (InternalReply);
   rpc SyncCall(InternalCommand) returns (InternalReply);
 }
+
+// Session/boot operations have no call identity and cannot be confused with call-scoped authority.
+message SessionCommand {
+ int32 schema_major=1; int32 schema_minor=2; string operation_id=3;
+ string destination_cell=4; string type=5; bytes payload=6; int64 remaining_budget_ms=7;
+}
+message SessionReply {
+ string operation_id=1; bool ack_committed=2; string status=3; string error_code=4; bytes result=5;
+}
+service SessionIngress { rpc MutateSession(SessionCommand) returns (SessionReply); }

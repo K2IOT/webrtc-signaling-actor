@@ -64,4 +64,8 @@ class GatewayProtocolIT {
         channel.writeInbound(new TextWebSocketFrame(false,0,Unpooled.wrappedBuffer(new byte[1024])));assertThat(budget.bytes()).isEqualTo(1024);channel.advanceTimeBy(10,TimeUnit.SECONDS);channel.runScheduledPendingTasks();assertThat(channel.isActive()).isFalse();assertThat(budget.bytes()).isZero();channel.finishAndReleaseAll();
     }
 
+    @Test void anEmptyFinalContinuationIsValidAndReleasesTheFragmentBudget(){
+        var budget=new GatewayIngressBudget(10,262144);var channel=new EmbeddedChannel(new FragmentAdmissionHandler(budget),new WebSocketFrameAggregator(81920),new FrameAdmissionHandler(new ProtocolValidator(ProtocolLimits.v1()),Runnable::run,budget),new AuthHandler(registry,services,clock,Runnable::run));
+        try{channel.writeInbound(new TextWebSocketFrame(false,0,AUTH));channel.writeInbound(new ContinuationWebSocketFrame(true,0,Unpooled.EMPTY_BUFFER));registration.complete(route(channel,1));channel.runPendingTasks();assertThat(channel.isActive()).isTrue();var reply=(TextWebSocketFrame)channel.readOutbound();assertThat(reply.text()).contains("AUTH_OK");reply.release();assertThat(budget.count()).isZero();assertThat(budget.bytes()).isZero();}finally{channel.finishAndReleaseAll();}
+    }
 }
