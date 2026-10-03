@@ -27,6 +27,11 @@ public final class CallCommandService {
         localHome=new HomeParticipationService(sql,cell,epoch,r->false);reservations=new UserReservationService(localHome);
     }
     public CompletionStage<Outcome> executeCallCommand(CallCommand command){return executeCallCommand(command,Duration.ofSeconds(2));}
+    /** Caller has already resolved its local shard's exact authority. Preserve the physical handle. */
+    public DbOperation<Outcome> executeUnderAuthorityTracked(CallCommand command,Authority context,Duration budget){
+        DbClass clazz=command.type()==SignalEnvelope.Type.CANCEL||command.type()==SignalEnvelope.Type.HANGUP?DbClass.TERMINATION:DbClass.CRITICAL;
+        return sql.submitTracked(clazz,budget,c->execute(c,command,context));
+    }
     public CompletionStage<Outcome> executeCallCommand(CallCommand command,Duration budget){
         if(budget.isNegative()||budget.isZero())return CompletableFuture.<Outcome>failedFuture(new DbOverloadedException()).minimalCompletionStage();
         long start=System.nanoTime();return authority.apply(command).thenCompose(context->{Duration remaining=budget.minusNanos(Math.max(0,System.nanoTime()-start));DbClass clazz=command.type()==SignalEnvelope.Type.CANCEL||command.type()==SignalEnvelope.Type.HANGUP?DbClass.TERMINATION:DbClass.CRITICAL;return sql.submit(clazz,remaining,c->execute(c,command,context));});

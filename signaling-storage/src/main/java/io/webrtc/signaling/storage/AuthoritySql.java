@@ -31,7 +31,7 @@ public final class AuthoritySql {
         }
     }
     public static void validateGroup(Connection c,GroupToken token)throws SQLException {
-        try(var s=c.prepareStatement("SELECT storage_epoch,group_epoch,owner_node,owner_incarnation,status,lease_until>clock_timestamp() FROM group_owner WHERE cell_id=? AND ownership_hash_version=? AND group_id=?")){
+        try(var s=c.prepareStatement("SELECT storage_epoch,group_epoch,owner_node,owner_incarnation,status,lease_until>clock_timestamp()+interval '5 seconds' FROM group_owner WHERE cell_id=? AND ownership_hash_version=? AND group_id=?")){
             s.setString(1,token.cell());s.setLong(2,token.hashVersion());s.setInt(3,token.group());try(var r=s.executeQuery()){
                 if(!r.next()||r.getLong(1)!=token.storageEpoch()||r.getLong(2)!=token.epoch()||!token.node().equals(r.getString(3))||!token.incarnation().equals(r.getObject(4,UUID.class))||!"OWNED".equals(r.getString(5))||!r.getBoolean(6))throw new FencedException();
             }
