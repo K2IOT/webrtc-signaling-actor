@@ -1,0 +1,68 @@
+syntax = "proto3";
+package signaling.internal.v1;
+option java_package = "io.webrtc.signaling.protocol.internal";
+option java_multiple_files = true;
+
+// Fields are append-only within the adjacent-release compatibility window.
+message SessionIdentity {
+  string issuer = 1;
+  string jti = 2;
+  string user_id = 3;
+  bytes incarnation = 4; // exactly 16 UUID bytes
+  int64 connection_generation = 5;
+  bytes connection_id = 6;
+}
+message GroupAuthority {
+  string cell_id = 1;
+  int64 storage_epoch = 2;
+  int32 ownership_hash_version = 3;
+  int32 group_id = 4;
+  int64 group_epoch = 5;
+  bytes owner_incarnation = 6;
+  int64 lease_sequence = 7;
+}
+message InternalCommand {
+  int32 schema_major = 1;
+  int32 schema_minor = 2;
+  string operation_id = 3;
+  string type = 4;
+  SessionIdentity sender = 5;
+  string call_id = 6;
+  string command_scope = 7;
+  bytes payload_hash = 8;
+  string destination_cell = 9;
+  int64 remaining_budget_ms = 10; // transit consumes original budget; never remote nanoTime
+  GroupAuthority authority = 11;
+  bytes payload = 12; // immutable application payload, <=96KiB entire envelope
+  int64 expected_call_version = 13;
+  int64 negotiation_id = 14;
+  int64 ice_generation = 15;
+  string trace_id = 20;
+}
+message InternalReply {
+  string operation_id = 1;
+  bool ack_committed = 2; // only post-authoritative-COMMIT; not enqueue/peer receipt
+  string status = 3;
+  string error_code = 4;
+  string call_id = 5;
+  int64 call_version = 6;
+  bytes result = 7;
+}
+message ControlEvent {
+  string event_id = 1;
+  string call_id = 2;
+  int64 call_version = 3;
+  SessionIdentity destination = 4;
+  int32 authority_bucket_id = 5;
+  string type = 6;
+  bytes metadata = 7; // no durable SDP, ICE or JWT
+}
+service CellIngress {
+  rpc ReserveUser(InternalCommand) returns (InternalReply);
+  rpc ClaimAccept(InternalCommand) returns (InternalReply);
+  rpc ReleaseIfCallVersion(InternalCommand) returns (InternalReply);
+  rpc ExecuteCallCommand(InternalCommand) returns (InternalReply);
+  rpc DeliverControlEvent(ControlEvent) returns (InternalReply);
+  rpc RelayNegotiation(InternalCommand) returns (InternalReply);
+  rpc SyncCall(InternalCommand) returns (InternalReply);
+}

@@ -80,6 +80,10 @@ public record SignalingProperties(Identity identity, Lease lease, Cluster cluste
                 && frameBytes < envelopeBytes && iceCandidateBytes <= iceBatchBytes
                 && iceBatchCount <= iceRoundCount && iceBatchBytes <= iceRoundBytes, "inconsistent wire budgets");
         }
+        public io.webrtc.signaling.protocol.ProtocolLimits limits() {
+            return new io.webrtc.signaling.protocol.ProtocolLimits(frameBytes, jwtBytes, sdpBytes,
+                iceCandidateBytes, iceBatchCount, iceBatchBytes, iceRoundCount, iceRoundBytes, envelopeBytes);
+        }
     }
     public record Transport(Duration authTimeout, Duration heartbeat, Duration pongDeadline,
             Duration edgeIdleTimeout, Duration controlDeadline, Duration relayDeadline, int maxRetries) {

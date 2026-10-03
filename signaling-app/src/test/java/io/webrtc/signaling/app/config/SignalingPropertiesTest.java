@@ -61,6 +61,10 @@ class SignalingPropertiesTest {
                 assertThat(a.getBean(SignalingProperties.class).fingerprint())
                     .isNotEqualTo(b.getBean(SignalingProperties.class).fingerprint())));
     }
+    @Test void mapsEffectiveConfigurationIntoProtocolLimits() throws IOException {
+        context().run(ctx -> assertThat(ctx.getBean(SignalingProperties.class).protocol().limits())
+            .isEqualTo(io.webrtc.signaling.protocol.ProtocolLimits.v1()));
+    }
     private ApplicationContextRunner contextUnchecked(String... values) {
         try { return context(values); } catch (IOException e) { throw new IllegalStateException(e); }
     }

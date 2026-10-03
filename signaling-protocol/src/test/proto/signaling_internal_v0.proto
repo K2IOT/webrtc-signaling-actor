@@ -1,0 +1,41 @@
+syntax = "proto3";
+package signaling.compat;
+option java_package = "io.webrtc.signaling.protocol.compat";
+option java_multiple_files = true;
+
+// Fields are append-only within the adjacent-release compatibility window.
+message SessionIdentity {
+  string issuer = 1;
+  string jti = 2;
+  string user_id = 3;
+  bytes incarnation = 4; // exactly 16 UUID bytes
+  int64 connection_generation = 5;
+  bytes connection_id = 6;
+}
+message GroupAuthority {
+  string cell_id = 1;
+  int64 storage_epoch = 2;
+  int32 ownership_hash_version = 3;
+  int32 group_id = 4;
+  int64 group_epoch = 5;
+  bytes owner_incarnation = 6;
+  int64 lease_sequence = 7;
+}
+message PreviousCommand {
+  int32 schema_major = 1;
+  int32 schema_minor = 2;
+  string operation_id = 3;
+  string type = 4;
+  SessionIdentity sender = 5;
+  string call_id = 6;
+  string command_scope = 7;
+  bytes payload_hash = 8;
+  string destination_cell = 9;
+  int64 remaining_budget_ms = 10; // transit consumes original budget; never remote nanoTime
+  GroupAuthority authority = 11;
+  bytes payload = 12; // immutable application payload, <=96KiB entire envelope
+  int64 expected_call_version = 13;
+  int64 negotiation_id = 14;
+  int64 ice_generation = 15;
+
+}
