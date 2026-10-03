@@ -1,0 +1,11 @@
+# Deployment template. UNSET values are rejected; this is not an identity-platform attestation.
+status: REQUIRED_UNCONFIGURED
+issuer: ${SIGNALING_IDENTITY_ISSUER}
+audience: ${SIGNALING_IDENTITY_AUDIENCE}
+maximumJwtLifetime: ${SIGNALING_MAXIMUM_JWT_LIFETIME}
+jwtClockSkew: 30s
+preserveJtiOnRefresh: ${SIGNALING_PRESERVE_JTI_ON_REFRESH}
+revocationPropagationSLO: ${SIGNALING_REVOCATION_PROPAGATION_SLO}
+hardSafetyBound: ${SIGNALING_REVOCATION_HARD_SAFETY_BOUND}
+highWaterSource: ${SIGNALING_REVOCATION_HIGH_WATER_SOURCE}
+callingPolicy: ${SIGNALING_CALLING_POLICY}
