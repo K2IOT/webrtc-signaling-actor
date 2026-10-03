@@ -1,6 +1,6 @@
 # WebRTC signaling actor
 
-Implementation of the v1.11 production-standard target specification. This branch currently contains **Tasks 1–10 of 24**: Java 21 configuration and protocol contracts, RS256 authentication, asynchronous directory/bootstrap contracts, real PostgreSQL authority migrations, bounded virtual-thread JPA/JDBC transactions, and fenced gateway/session registration. Reservation/winner arbitration, durable command results/outbox, PostgreSQL shard leases and multi-node Pekko sharding are verified. User/CallActor business behaviors and WSS integration follow later tasks.
+Implementation of the v1.11 production-standard target specification. This branch currently contains **Tasks 1–11 of 24**: Java 21 configuration and protocol contracts, RS256 authentication, asynchronous directory/bootstrap contracts, real PostgreSQL authority migrations, bounded virtual-thread JPA/JDBC transactions, and fenced gateway/session registration. Reservation/winner arbitration, durable command results/outbox, PostgreSQL shard leases and multi-node Pekko sharding are verified. UserActor hydration, serialization and idle passivation are verified. CallActor business transitions and WSS integration follow later tasks.
 
 ## Build
 

@@ -7,7 +7,8 @@ public final class AcceptWinnerService {
     public record Claim(String outcome,Winner winner,UUID reservation,long version,java.time.Instant validUntil) {}
     private final HomeParticipationService home;private final SessionRepository sessions=new SessionRepository();
     public AcceptWinnerService(HomeParticipationService home){this.home=home;}
-    public CompletionStage<Claim> claimAccept(Request r,UUID reservation,SessionRepository.Route route){return home.submit(r,DbClass.CRITICAL,c->{
+    public CompletionStage<Claim> claimAccept(Request r,UUID reservation,SessionRepository.Route route){return claimAcceptTracked(r,reservation,route,java.time.Duration.ofSeconds(2)).logical();}
+    public DbOperation<Claim> claimAcceptTracked(Request r,UUID reservation,SessionRepository.Route route,java.time.Duration budget){return home.submitTracked(r,DbClass.CRITICAL,budget,c->{
         if(!r.user().equals(route.user()))throw new SessionRepository.BindingRejected();sessions.requireCurrent(c,route);
         Participation current=home.find(c,r);if(current==null||current.terminal())return new Claim("TERMINAL",current==null?null:current.winner(),reservation,0,null);
         if(!reservation.equals(current.reservationId())||current.leaseUntil()==null||r.grant().groupEpoch()<current.highestGroupEpoch())throw new AuthoritySql.FencedException();

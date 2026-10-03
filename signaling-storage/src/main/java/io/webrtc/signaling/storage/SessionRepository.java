@@ -52,19 +52,19 @@ public final class SessionRepository {
     }
     public List<Route> liveRoutes(Connection c,UserId user)throws SQLException {
         var result=new ArrayList<Route>();
-        try(var s=c.prepareStatement("SELECT s.issuer,s.jti,s.user_id,s.session_incarnation,s.connection_generation,s.gateway_id,s.boot_id,s.connection_id,s.token_exp,s.signing_key_id,s.security_epoch FROM session_registry s JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id WHERE s.user_id=? AND s.closed_at IS NULL AND s.token_exp>clock_timestamp() AND g.lease_until>clock_timestamp() AND g.expired_at IS NULL ORDER BY s.issuer,s.jti LIMIT 6")){
+        try(var s=c.prepareStatement("SELECT s.issuer,s.jti,s.user_id,s.session_incarnation,s.connection_generation,s.gateway_id,s.boot_id,s.connection_id,s.token_exp,s.signing_key_id,s.security_epoch FROM session_registry s JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id JOIN cell_authority a ON a.singleton_id=1 AND a.cell_id=g.cell AND a.storage_epoch=g.storage_epoch AND a.status='ACTIVE' WHERE s.user_id=? AND s.closed_at IS NULL AND s.token_exp>clock_timestamp() AND g.lease_until>clock_timestamp() AND g.expired_at IS NULL ORDER BY s.issuer,s.jti LIMIT 6")){
             s.setString(1,user.value());try(var r=s.executeQuery()){while(r.next())result.add(new Route(user,new SessionKey(r.getString(1),r.getString(2)),new SessionIncarnation(r.getObject(4,UUID.class)),r.getLong(5),r.getString(6),r.getObject(7,UUID.class),r.getObject(8,UUID.class),r.getTimestamp(9).toInstant(),r.getString(10),r.getLong(11)));}
         }
         if(result.size()>5)throw new SessionLimit();return List.copyOf(result);
     }
     private boolean isLive(Connection c,SessionKey key)throws SQLException {
-        try(var s=c.prepareStatement("SELECT s.token_exp>clock_timestamp() AND s.closed_at IS NULL AND g.lease_until>clock_timestamp() AND g.expired_at IS NULL FROM session_registry s JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id WHERE s.issuer=? AND s.jti=?")){
+        try(var s=c.prepareStatement("SELECT s.token_exp>clock_timestamp() AND s.closed_at IS NULL AND g.lease_until>clock_timestamp() AND g.expired_at IS NULL FROM session_registry s JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id JOIN cell_authority a ON a.singleton_id=1 AND a.cell_id=g.cell AND a.storage_epoch=g.storage_epoch AND a.status='ACTIVE' WHERE s.issuer=? AND s.jti=?")){
             s.setString(1,key.issuer());s.setString(2,key.jti());try(var r=s.executeQuery()){return r.next()&&r.getBoolean(1);}
         }
     }
     private void expireStale(Connection c,UserId user)throws SQLException {
         var stale=new ArrayList<SessionKey>();
-        try(var s=c.prepareStatement("SELECT s.issuer,s.jti FROM session_registry s LEFT JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id WHERE s.user_id=? AND s.closed_at IS NULL AND (s.token_exp<=clock_timestamp() OR g.boot_id IS NULL OR g.lease_until<=clock_timestamp() OR g.expired_at IS NOT NULL) ORDER BY s.issuer,s.jti LIMIT 6")){
+        try(var s=c.prepareStatement("SELECT s.issuer,s.jti FROM session_registry s LEFT JOIN gateway_lease g ON g.gateway_id=s.gateway_id AND g.boot_id=s.boot_id WHERE s.user_id=? AND s.closed_at IS NULL AND (s.token_exp<=clock_timestamp() OR g.boot_id IS NULL OR g.lease_until<=clock_timestamp() OR g.expired_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM cell_authority a WHERE a.singleton_id=1 AND a.cell_id=g.cell AND a.storage_epoch=g.storage_epoch AND a.status='ACTIVE')) ORDER BY s.issuer,s.jti LIMIT 6")){
             s.setString(1,user.value());try(var r=s.executeQuery()){while(r.next())stale.add(new SessionKey(r.getString(1),r.getString(2)));}
         }
         if(stale.size()>5)throw new SessionLimit();

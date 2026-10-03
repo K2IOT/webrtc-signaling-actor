@@ -15,7 +15,8 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 8 | Implemented transaction layer | `c4b474b`; scoped result/call/outbox COMMIT, primary replay and fenced outbox completion; workflow transitions follow actors/RPC |
 | 9 | Implemented lease adapter | `5fa4179`; public LeaseProvider, physical cleanup/reconciliation, sequence replay and stale callback gates |
 | 10 | Complete local runtime tests | PostgreSQL acquire-before-child, warm/cold routes, exact placement release, coordinator restart, shard relocation, full actor restart, incompatible fingerprint rejection |
-| 11–24 | Pending | Business actors, RPC/WSS, deployment and qualification remain unfulfilled |
+| 11 | Complete | Seven actor tests plus real-primary session/reservation/winner hydration; physical cleanup gates; 60s passivation; restored-storage boot fence regression |
+| 12–24 | Pending | CallActor, RPC/WSS, deployment and qualification remain unfulfilled |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
@@ -63,3 +64,5 @@ Task 10 verification: `./mvnw -B -pl signaling-actors -am clean verify` passes *
 
 9. Avoid Pekko 1.1.3 Java `stateStoreModeDdata()`, which returns persistence; read the mode from config and assert its runtime name plus coordinator conversion. Cost if wrong: rerun compatibility gates after any BOM update.
 10. Match the public `Address.hostPort()` owner format and observe the real shard parent via public Adapter/DeathWatch to gate and release exact placement tenures; the pinned Shard lifecycle does not itself call release on termination. This shares the existing controller and introduces no competing ownership loop. Cost if wrong: rollout remains blocked by lease lifecycle qualification.
+
+Task 11 full-reactor verification: `./mvnw -B verify` passes **126 tests, zero failures/errors/skips**. UserActor keeps bounded queues, a fresh incarnation and one physical mutation lifecycle, and refuses uncertain replacement work. Snapshot hydration uses native primary projections; mutation APIs preserve physical completion and remaining deadline. A PostgreSQL restore-epoch regression failed first, then passed after gateway/session presence and registration were fenced against current cell authority.

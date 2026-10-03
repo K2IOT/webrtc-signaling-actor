@@ -7,7 +7,8 @@ import io.webrtc.signaling.storage.HomeParticipationService.*;
 public final class UserReservationService {
     private final HomeParticipationService home;
     public UserReservationService(HomeParticipationService home){this.home=home;}
-    public CompletionStage<Participation> reserveUser(Request r){return home.submit(r,DbClass.CRITICAL,c->reserve(c,r));}
+    public CompletionStage<Participation> reserveUser(Request r){return reserveUserTracked(r,java.time.Duration.ofSeconds(2)).logical();}
+    public DbOperation<Participation> reserveUserTracked(Request r,java.time.Duration budget){return home.submitTracked(r,DbClass.CRITICAL,budget,c->reserve(c,r));}
     public CompletionStage<List<Participation>> reservePair(Request a,Request b){return home.pair(a,b,c->List.of(reserve(c,a),reserve(c,b)));}
     Participation reserve(Connection c,Request r)throws SQLException {
         expireCurrent(c,r.user().value());Participation previous=home.find(c,r);
@@ -23,7 +24,8 @@ public final class UserReservationService {
     private void expireCurrent(Connection c,String user)throws SQLException {
         try(var s=c.prepareStatement("SELECT call_id,reservation_id,lease_until<=clock_timestamp() FROM user_reservation WHERE user_id=?")){s.setString(1,user);try(var r=s.executeQuery()){if(r.next()&&r.getBoolean(3)){String call=r.getString(1);UUID id=r.getObject(2,UUID.class);home.terminalize(c,call,user,"EXPIRED");try(var d=c.prepareStatement("DELETE FROM user_reservation WHERE user_id=? AND call_id=? AND reservation_id=?")){d.setString(1,user);d.setString(2,call);d.setObject(3,id);d.executeUpdate();}}}}
     }
-    public CompletionStage<Participation> renewReservation(Request r,UUID reservation,long version){return home.submit(r,DbClass.RENEWAL,c->{
+    public CompletionStage<Participation> renewReservation(Request r,UUID reservation,long version){return renewReservationTracked(r,reservation,version,java.time.Duration.ofSeconds(2)).logical();}
+    public DbOperation<Participation> renewReservationTracked(Request r,UUID reservation,long version,java.time.Duration budget){return home.submitTracked(r,DbClass.RENEWAL,budget,c->{
         expireCurrent(c,r.user().value());var current=home.find(c,r);if(current==null||current.terminal()||!reservation.equals(current.reservationId())||current.leaseUntil()==null)throw new AuthoritySql.FencedException();
         long epoch,sequence;UUID operation;
         try(var s=c.prepareStatement("SELECT highest_group_epoch,highest_lease_sequence,last_renew_operation FROM user_reservation WHERE user_id=? AND call_id=? AND reservation_id=?")){s.setString(1,r.user().value());s.setString(2,r.call().value());s.setObject(3,reservation);try(var result=s.executeQuery()){if(!result.next())throw new AuthoritySql.FencedException();epoch=result.getLong(1);sequence=result.getLong(2);operation=result.getObject(3,UUID.class);}}
@@ -35,7 +37,8 @@ public final class UserReservationService {
         }
         try(var s=c.prepareStatement("UPDATE home_participation SET highest_group_epoch=? WHERE call_id=? AND user_id=?")){s.setLong(1,r.grant().groupEpoch());s.setString(2,r.call().value());s.setString(3,r.user().value());s.executeUpdate();}return home.find(c,r);
     });}
-    public CompletionStage<Participation> releaseIfCallVersion(Request r,UUID reservation,long version){return home.submit(r,DbClass.TERMINATION,c->{
+    public CompletionStage<Participation> releaseIfCallVersion(Request r,UUID reservation,long version){return releaseIfCallVersionTracked(r,reservation,version,java.time.Duration.ofSeconds(2)).logical();}
+    public DbOperation<Participation> releaseIfCallVersionTracked(Request r,UUID reservation,long version,java.time.Duration budget){return home.submitTracked(r,DbClass.TERMINATION,budget,c->{
         Participation current=home.find(c,r);if(current==null){home.insert(c,r,"RELEASED",null);return home.find(c,r);}if(current.terminal())return current;
         if(r.grant().groupEpoch()<current.highestGroupEpoch()||reservation!=null&&!reservation.equals(current.reservationId())||version>0&&version!=current.version())throw new AuthoritySql.FencedException();
         home.terminalize(c,r.call().value(),r.user().value(),"RELEASED");

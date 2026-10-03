@@ -20,7 +20,8 @@ public final class HomeParticipationService {
     public record Participation(CallId call,UserId user,UUID acquireOperation,String payloadHash,String phase,UUID reservationId,long version,Instant leaseUntil,Winner winner,long highestGroupEpoch) {public boolean terminal(){return phase.equals("RELEASED")||phase.equals("EXPIRED");}}
     private final SqlTransactions sql;private final String cell;private final long epoch;private final GrantVerifier verifier;
     public HomeParticipationService(SqlTransactions sql,String cell,long epoch,GrantVerifier verifier){this.sql=Objects.requireNonNull(sql);this.cell=cell;this.epoch=epoch;this.verifier=Objects.requireNonNull(verifier);}
-    <T> CompletionStage<T> submit(Request r,DbClass clazz,SqlTransactions.Work<T> work){return sql.submit(clazz,Duration.ofSeconds(2),c->{guard(c,List.of(r));return work.apply(c);});}
+    <T> CompletionStage<T> submit(Request r,DbClass clazz,SqlTransactions.Work<T> work){return submitTracked(r,clazz,Duration.ofSeconds(2),work).logical();}
+    <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,SqlTransactions.Work<T> work){return sql.submitTracked(clazz,budget,c->{guard(c,List.of(r));return work.apply(c);});}
     <T> CompletionStage<T> pair(Request a,Request b,SqlTransactions.Work<T> work){return sql.submit(DbClass.CRITICAL,Duration.ofSeconds(2),c->{if(!a.call().equals(b.call())||a.user().equals(b.user()))throw new IllegalArgumentException("Invalid local participant pair");guard(c,List.of(a,b));return work.apply(c);});}
     private void guard(Connection c,List<Request> requests)throws SQLException {
         var buckets=new TreeMap<Integer,Long>();for(Request r:requests){int bucket=SessionRegistryService.bucket(r.user());Long previous=buckets.put(bucket,r.directoryEpoch());if(previous!=null&&previous!=r.directoryEpoch())throw new AuthoritySql.FencedException();}

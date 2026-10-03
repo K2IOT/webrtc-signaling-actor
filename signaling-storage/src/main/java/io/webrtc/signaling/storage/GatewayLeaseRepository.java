@@ -21,7 +21,7 @@ public final class GatewayLeaseRepository {
         return live(c,current.gatewayId(),current.bootId(),current.cell(),current.storageEpoch());
     }
     public Boot live(Connection c,String gateway,UUID boot,String cell,long storageEpoch)throws SQLException {
-        try(var s=c.prepareStatement("SELECT storage_epoch,region,cell,renewal_sequence,lease_until,last_operation_id,lease_until>clock_timestamp() AND expired_at IS NULL FROM gateway_lease WHERE gateway_id=? AND boot_id=?")){
+        try(var s=c.prepareStatement("SELECT g.storage_epoch,g.region,g.cell,g.renewal_sequence,g.lease_until,g.last_operation_id,g.lease_until>clock_timestamp() AND g.expired_at IS NULL FROM gateway_lease g JOIN cell_authority a ON a.singleton_id=1 AND a.cell_id=g.cell AND a.storage_epoch=g.storage_epoch AND a.status='ACTIVE' WHERE g.gateway_id=? AND g.boot_id=?")){
             s.setString(1,gateway);s.setObject(2,boot);try(var r=s.executeQuery()){
                 if(!r.next()||r.getLong(1)!=storageEpoch||!cell.equals(r.getString(3))||!r.getBoolean(7))throw new AuthoritySql.FencedException();
                 return new Boot(gateway,boot,r.getLong(1),r.getString(2),r.getString(3),r.getLong(4),r.getTimestamp(5).toInstant(),r.getObject(6,UUID.class));
