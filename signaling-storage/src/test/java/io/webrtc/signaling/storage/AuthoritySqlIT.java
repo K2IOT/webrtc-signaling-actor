@@ -30,9 +30,10 @@ class AuthoritySqlIT {
         try(var boundary=new DbBoundary(admission);var pools=new DbPools(PgFixture.PG.getJdbcUrl(),PgFixture.PG.getUsername(),PgFixture.PG.getPassword(),admission,1,1)) {
             var sql=new SqlTransactions(boundary,pools);
             record Receipt(boolean virtual,boolean same,int backend) {}
-            var receipt=sql.submit(DbClass.CRITICAL,Duration.ofSeconds(2),c->{
+            var committed=sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),c->{
                 try(var s=c.createStatement()) {s.execute("INSERT INTO user_guard(user_id) VALUES('tx-committed') ON CONFLICT DO NOTHING");var r=s.executeQuery("SELECT pg_backend_pid()");r.next();return new Receipt(Thread.currentThread().isVirtual(),c==pools.currentConnection(DbClass.CRITICAL),r.getInt(1));}
-            }).toCompletableFuture().join();
+            });
+            var receipt=committed.logical().toCompletableFuture().join();committed.physicalCompletion().toCompletableFuture().join();
             assertThat(receipt.virtual()).isTrue();assertThat(receipt.same()).isTrue();
             assertThatThrownBy(()->sql.submit(DbClass.CRITICAL,Duration.ofSeconds(2),c->{c.createStatement().execute("INSERT INTO user_guard(user_id) VALUES('tx-rolledback')");throw new IllegalStateException("abort");}).toCompletableFuture().join()).hasCauseInstanceOf(IllegalStateException.class);
             try(var c=PgFixture.connection();var s=c.createStatement();var r=s.executeQuery("SELECT user_id FROM user_guard WHERE user_id IN ('tx-committed','tx-rolledback')")){r.next();assertThat(r.getString(1)).isEqualTo("tx-committed");assertThat(r.next()).isFalse();}

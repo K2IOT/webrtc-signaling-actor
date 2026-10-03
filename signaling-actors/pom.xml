@@ -1,1 +1,13 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>io.webrtc.signaling</groupId><artifactId>signaling-parent</artifactId><version>0.1.0-SNAPSHOT</version></parent><artifactId>signaling-actors</artifactId></project>
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>io.webrtc.signaling</groupId><artifactId>signaling-parent</artifactId><version>0.1.0-SNAPSHOT</version></parent><artifactId>signaling-actors</artifactId>
+<dependencies>
+<dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-storage</artifactId><version>${project.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-actor-typed_2.13</artifactId><version>${pekko.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-cluster-sharding-typed_2.13</artifactId><version>${pekko.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-coordination_2.13</artifactId><version>${pekko.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-serialization-jackson_2.13</artifactId><version>${pekko.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-actor-testkit-typed_2.13</artifactId><version>${pekko.version}</version><scope>test</scope></dependency>
+<dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-storage</artifactId><version>${project.version}</version><type>test-jar</type><scope>test</scope></dependency>
+<dependency><groupId>org.testcontainers</groupId><artifactId>postgresql</artifactId><scope>test</scope></dependency>
+</dependencies>
+<build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions><configuration><failIfNoSpecifiedTests>false</failIfNoSpecifiedTests></configuration></plugin></plugins></build>
+</project>

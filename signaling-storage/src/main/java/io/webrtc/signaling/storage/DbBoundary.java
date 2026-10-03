@@ -9,15 +9,20 @@ public final class DbBoundary implements AutoCloseable {
     private final ScheduledThreadPoolExecutor deadlines=new ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("db-deadlines").factory());
     public DbBoundary(DbAdmission admission) {this.admission=admission;deadlines.setRemoveOnCancelPolicy(true);}
     public <T> CompletionStage<T> submit(DbClass clazz,Duration budget,Callable<T> tx) {
-        if(budget==null||budget.isNegative()||budget.isZero()||!admission.acquire(clazz))return CompletableFuture.<T>failedFuture(new DbOverloadedException()).minimalCompletionStage();
+        return submitTracked(clazz,budget,tx).logical();
+    }
+    public <T> DbOperation<T> submitTracked(DbClass clazz,Duration budget,Callable<T> tx) {
+        if(budget==null||budget.isNegative()||budget.isZero()||!admission.acquire(clazz))return rejected();
         var result=new CompletableFuture<T>();
+        var physical=new CompletableFuture<DbOperation.PhysicalCompletion>();
         ScheduledFuture<?> expiry;
         try{expiry=deadlines.schedule(()->result.completeExceptionally(new DbOutcomeUnknownException()),budget.toNanos(),TimeUnit.NANOSECONDS);}
-        catch(RuntimeException e){admission.release(clazz);return CompletableFuture.<T>failedFuture(new DbOverloadedException()).minimalCompletionStage();}
-        try{tasks.execute(()->{try{if(!result.isDone()){T value=tx.call();validate(value,0);result.complete(value);}}catch(Throwable e){result.completeExceptionally(e);}finally{expiry.cancel(false);admission.release(clazz);}});}
-        catch(RejectedExecutionException e){expiry.cancel(false);admission.release(clazz);result.completeExceptionally(new DbOverloadedException());}
-        return result.minimalCompletionStage();
+        catch(RuntimeException e){admission.release(clazz);return rejected();}
+        try{tasks.execute(()->{try{if(!result.isDone()){T value=tx.call();validate(value,0);result.complete(value);}}catch(Throwable e){result.completeExceptionally(e);}finally{expiry.cancel(false);admission.release(clazz);physical.complete(DbOperation.PhysicalCompletion.FINISHED);}});}
+        catch(RejectedExecutionException e){expiry.cancel(false);admission.release(clazz);result.completeExceptionally(new DbOverloadedException());physical.complete(DbOperation.PhysicalCompletion.NOT_STARTED);}
+        return new DbOperation<>(result.minimalCompletionStage(),physical.minimalCompletionStage());
     }
+    private static <T> DbOperation<T> rejected(){return new DbOperation<>(CompletableFuture.<T>failedFuture(new DbOverloadedException()).minimalCompletionStage(),CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.NOT_STARTED).minimalCompletionStage());}
     static void validate(Object value,int depth) throws ReflectiveOperationException {
         if(value==null)return;
         if(depth>16)throw new IllegalArgumentException("DTO nesting exceeds bound");

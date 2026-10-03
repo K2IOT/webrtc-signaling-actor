@@ -6,6 +6,15 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 class DbBoundaryTest {
+    @Test void trackedPhysicalCompletionSurvivesTimeoutAndClientCancellation()throws Exception {
+        var admission=new DbAdmission(Map.of(DbClass.RECOVERY,1));var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var db=new DbBoundary(admission)){
+            var operation=db.submitTracked(DbClass.RECOVERY,Duration.ofMillis(50),()->{entered.countDown();release.await();return "done";});
+            assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();operation.logical().toCompletableFuture().cancel(true);
+            assertThat(operation.physicalCompletion().toCompletableFuture().isDone()).isFalse();assertThat(admission.running(DbClass.RECOVERY)).isEqualTo(1);
+            release.countDown();operation.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);assertThat(admission.running(DbClass.RECOVERY)).isZero();
+        }finally{release.countDown();}
+    }
     @Test void admissionPrecedesVirtualThreadAndOverloadCannotConsumeRenewalFloor() throws Exception {
         var admission=new DbAdmission(Map.of(DbClass.CRITICAL,1,DbClass.RENEWAL,1));var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var count=new AtomicInteger();
         try(var db=new DbBoundary(admission)) {

@@ -10,7 +10,10 @@ public final class SqlTransactions {
     private final DbBoundary boundary;private final DbPools pools;
     public SqlTransactions(DbBoundary boundary,DbPools pools){this.boundary=boundary;this.pools=pools;}
     public <T> CompletionStage<T> submit(DbClass clazz,Duration budget,Work<T> work) {
-        long start=System.nanoTime();return boundary.submit(clazz,budget,()->{
+        return submitTracked(clazz,budget,work).logical();
+    }
+    public <T> DbOperation<T> submitTracked(DbClass clazz,Duration budget,Work<T> work) {
+        long start=System.nanoTime();return boundary.submitTracked(clazz,budget,()->{
             var template=new TransactionTemplate(pools.manager(clazz));template.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
             template.setTimeout((int)Math.max(1,Math.min(2,budget.toSeconds())));
             return template.execute(status->{
