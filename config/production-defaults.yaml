@@ -1,0 +1,44 @@
+# Proposed v1.11 limits. Deployment identity values have no guessed defaults.
+signaling:
+  identity:
+    issuer: "${SIGNALING_IDENTITY_ISSUER:}"
+    audience: "${SIGNALING_IDENTITY_AUDIENCE:}"
+    clock-skew: 30s
+  lease:
+    ttl: 15s
+    renewal: 5s
+  cluster:
+    sbr-stable-after: 10s
+    down-removal-margin: 10s
+    termination-grace: 90s
+    shutdown-phase-budget: 65s
+    actor-pods: 6
+    actor-surge: 1
+    user-passivation: 60s
+  protocol:
+    version: 1
+    frame-bytes: 81920
+    jwt-bytes: 8192
+    sdp-bytes: 65536
+    ice-candidate-bytes: 2048
+    ice-batch-count: 20
+    ice-batch-bytes: 8192
+    ice-round-count: 256
+    ice-round-bytes: 262144
+    envelope-bytes: 98304
+  transport:
+    auth-timeout: 5s
+    heartbeat: 30s
+    pong-deadline: 10s
+    edge-idle-timeout: 90s
+    control-deadline: 2s
+    relay-deadline: 1s
+    max-retries: 2
+  queues:
+    entity-messages: 64
+    entity-bytes: 262144
+    mailbox-messages: 128
+    ingress-messages: 4096
+    ingress-bytes: 33554432
+    outbound-channel-bytes: 262144
+    outbound-aggregate-bytes: 268435456

@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Signaling configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "signaling"
+  ],
+  "properties": {
+    "signaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "lease",
+        "cluster",
+        "protocol",
+        "transport",
+        "queues"
+      ],
+      "properties": {
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "issuer",
+            "audience",
+            "clock-skew"
+          ],
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "audience": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clock-skew": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            }
+          }
+        },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ttl",
+            "renewal"
+          ],
+          "properties": {
+            "ttl": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "renewal": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            }
+          }
+        },
+        "cluster": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sbr-stable-after",
+            "down-removal-margin",
+            "termination-grace",
+            "shutdown-phase-budget",
+            "actor-pods",
+            "actor-surge",
+            "user-passivation"
+          ],
+          "properties": {
+            "sbr-stable-after": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "down-removal-margin": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "termination-grace": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "shutdown-phase-budget": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "actor-pods": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "actor-surge": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "user-passivation": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            }
+          }
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "frame-bytes",
+            "jwt-bytes",
+            "sdp-bytes",
+            "ice-candidate-bytes",
+            "ice-batch-count",
+            "ice-batch-bytes",
+            "ice-round-count",
+            "ice-round-bytes",
+            "envelope-bytes"
+          ],
+          "properties": {
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "frame-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "jwt-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sdp-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ice-candidate-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ice-batch-count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ice-batch-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ice-round-count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ice-round-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "envelope-bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "auth-timeout",
+            "heartbeat",
+            "pong-deadline",
+            "edge-idle-timeout",
+            "control-deadline",
+            "relay-deadline",
+            "max-retries"
+          ],
+          "properties": {
+            "auth-timeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "heartbeat": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "pong-deadline": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "edge-idle-timeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "control-deadline": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "relay-deadline": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "max-retries": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "queues": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entity-messages",
+            "entity-bytes",
+            "mailbox-messages",
+            "ingress-messages",
+            "ingress-bytes",
+            "outbound-channel-bytes",
+            "outbound-aggregate-bytes"
+          ],
+          "properties": {
+            "entity-messages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "entity-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "mailbox-messages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ingress-messages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ingress-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "outbound-channel-bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "outbound-aggregate-bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

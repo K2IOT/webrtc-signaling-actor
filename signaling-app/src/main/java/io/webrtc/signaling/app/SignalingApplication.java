@@ -1,0 +1,26 @@
+package io.webrtc.signaling.app;
+
+import io.webrtc.signaling.app.config.SignalingProperties;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
+
+@SpringBootApplication
+@EnableConfigurationProperties(SignalingProperties.class)
+public class SignalingApplication {
+    public enum Plane { GATEWAY, ACTOR, CONTROL }
+
+    public static void main(String[] args) { SpringApplication.run(SignalingApplication.class, args); }
+
+    @Bean Plane deploymentPlane(Environment environment) {
+        List<String> planes = Arrays.stream(environment.getActiveProfiles())
+            .filter(p -> List.of("gateway", "actor", "control").contains(p)).toList();
+        if (planes.size() != 1) throw new IllegalArgumentException("Select exactly one deployment plane: gateway, actor or control");
+        return Plane.valueOf(planes.getFirst().toUpperCase(Locale.ROOT));
+    }
+}
