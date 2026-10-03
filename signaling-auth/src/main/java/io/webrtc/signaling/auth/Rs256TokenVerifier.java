@@ -38,6 +38,6 @@ public final class Rs256TokenVerifier implements TokenVerifier {
     }
     private byte[] decode(String s){var bytes=Base64.getUrlDecoder().decode(s);if(!Base64.getUrlEncoder().withoutPadding().encodeToString(bytes).equals(s))throw new AuthException();return bytes;}
     private String utf8(byte[] b)throws CharacterCodingException{return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(b)).toString();}
-    private String bounded(JsonNode n,String field,int max){var v=n.path(field);if(!v.isTextual())throw new AuthException();String s=v.textValue();new SessionKey("claim",s);if(s.getBytes(StandardCharsets.UTF_8).length>max)throw new AuthException();return s;}
+    private String bounded(JsonNode n,String field,int max){var v=n.path(field);if(!v.isTextual())throw new AuthException();String s=v.textValue();new SessionKey(s,"claim");if(s.getBytes(StandardCharsets.UTF_8).length>max)throw new AuthException();return s;}
     private long number(JsonNode n,String field){var v=n.path(field);if(!v.isIntegralNumber()||!v.canConvertToLong())throw new AuthException();return v.longValue();}
 }

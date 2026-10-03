@@ -1,0 +1,75 @@
+package io.webrtc.signaling.rpc;
+import static org.assertj.core.api.Assertions.*;
+import io.webrtc.signaling.protocol.internal.*;
+import io.webrtc.signaling.protocol.Identity.*;
+import io.webrtc.signaling.storage.*;
+import com.google.protobuf.ByteString;
+import io.grpc.Status;
+import io.grpc.netty.GrpcSslContexts;
+import io.netty.handler.ssl.ClientAuth;
+import java.io.File;
+import java.security.*;
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import org.junit.jupiter.api.Test;
+class CrossCellSagaIT {
+    static final String CALL="c001.e1.00000000-0000-0000-0000-000000000001";
+    static File cert(String name){return new File(Objects.requireNonNull(CrossCellSagaIT.class.getResource("/test-only-pki/"+name)).getFile());}
+    static io.netty.handler.ssl.SslContext serverTls()throws Exception{return GrpcSslContexts.forServer(cert("server.crt"),cert("server.key")).trustManager(cert("ca.crt")).clientAuth(ClientAuth.REQUIRE).protocols("TLSv1.3").build();}
+    static io.netty.handler.ssl.SslContext clientTls(String role)throws Exception{return GrpcSslContexts.forClient().trustManager(cert("ca.crt")).keyManager(cert(role+".crt"),cert(role+".key")).protocols("TLSv1.3").build();}
+    static InternalCommand command(String destination){return InternalCommand.newBuilder().setSchemaMajor(1).setSchemaMinor(0).setOperationId(UUID.randomUUID().toString()).setType("ReserveUser").setDestinationCell(destination).setCallId(CALL).setCommandScope("CALL:"+CALL).setPayloadHash(ByteString.copyFrom(new byte[32])).setRemainingBudgetMs(2000).setPayload(ByteString.copyFromUtf8("{}" )).build();}
+    static InternalReply committed(InternalCommand c){return InternalReply.newBuilder().setOperationId(c.getOperationId()).setAckCommitted(true).setStatus("COMMITTED").setCallId(c.getCallId()).setCallVersion(1).build();}
+    static CellRpcClient client(int port,String role)throws Exception{return new CellRpcClient(Map.of("c002",new CellRpcClient.Endpoint("localhost",port,"localhost")),clientTls(role),new RpcAdmission(64,1024*1024,64,1024*1024));}
+    @Test void controlAndRelayCreditsAndRetainedBytesArePhysicallyIsolated(){
+        var admission=new RpcAdmission(1,1024,2,2048);var control=admission.acquire(RpcAdmission.Lane.CONTROL,1024);assertThatThrownBy(()->admission.acquire(RpcAdmission.Lane.CONTROL,1)).isInstanceOf(RpcAdmission.Overloaded.class);
+        try(var relay=admission.acquire(RpcAdmission.Lane.RELAY,1024)){assertThat(admission.inFlight(RpcAdmission.Lane.RELAY)).isEqualTo(1);assertThatThrownBy(()->admission.acquire(RpcAdmission.Lane.RELAY,1025)).isInstanceOf(RpcAdmission.Overloaded.class);}
+        control.close();assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+    }
+    @Test void signedHomeProofIsRequestAndAuthorityBoundDuplicateSafeAndExpiresWithoutRenewal()throws Exception {
+        var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proof=new HomeAuthorizationProof("c001","test-key",keys.getPrivate(),Map.of("c001/test-key",keys.getPublic()));Instant now=Instant.now();
+        var expected=new HomeAuthorizationProof.Claims(1,"COORDINATOR_GRANT","c001","c002",UUID.randomUUID(),new CallId(CALL),new UserId("bob"),new SessionKey("TEST_ONLY","jti"),new SessionIncarnation(UUID.randomUUID()),1,1,1,1,685,2,1,UUID.randomUUID(),UUID.randomUUID(),1,null,1,0,"a".repeat(64),now,now.plusSeconds(5),1,now.plusSeconds(30));
+        String signed=proof.issue(expected);assertThat(proof.verify(signed,expected,"c001",now.plusMillis(1))).isTrue();assertThat(proof.verify(signed,expected,"c001",now.plusMillis(2))).isTrue();assertThat(proof.verify(signed,expected,"c002",now)).isFalse();assertThat(proof.verify(signed,expected,"c001",now.plusSeconds(5))).isFalse();assertThat(proof.verify(signed.substring(0,signed.length()-4)+"AAAA",expected,"c001",now)).isFalse();
+        var other=new HomeAuthorizationProof.Claims(1,expected.purpose(),expected.sourceCell(),"c003",expected.operation(),expected.call(),expected.user(),expected.session(),expected.incarnation(),expected.generation(),expected.directoryEpoch(),expected.storageEpoch(),expected.hashVersion(),expected.group(),expected.groupEpoch(),expected.leaseSequence(),expected.ownerIncarnation(),expected.reservationId(),expected.reservationVersion(),expected.activationId(),expected.callVersion(),expected.negotiationId(),expected.intentHash(),expected.issuedAt(),expected.expiresAt(),expected.sourceStorageEpoch(),expected.participantUntil());assertThat(proof.verify(signed,other,"c001",now)).isFalse();
+    }
+    @Test void actualMutualTlsExtractsPeerIdentityAndRejectsWrongDestinationAndUnauthorizedOperation()throws Exception {
+        var seen=new AtomicInteger();CellRpcServer.Backend backend=(operation,c,peer,budget)->{assertThat(peer.cell()).isEqualTo("c001");assertThat(peer.role()).isEqualTo("actor");assertThat(budget).isLessThanOrEqualTo(Duration.ofSeconds(2));seen.incrementAndGet();return CompletableFuture.completedFuture(committed(c));};
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),new RpcAdmission(4,256*1024,4,256*1024),backend,event->CompletableFuture.failedFuture(new UnsupportedOperationException())).start();var client=client(server.port(),"actor")){
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(2)).toCompletableFuture().join().getAckCommitted()).isTrue();
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c001"),Duration.ofSeconds(2)).toCompletableFuture().join().getErrorCode()).isEqualTo("WRONG_CELL");
+            try(var gateway=client(server.port(),"gateway")){assertThat(gateway.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(2)).toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");}
+            try(var outsider=client(server.port(),"outsider")){assertThat(outsider.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(2)).toCompletableFuture().join().getAckCommitted()).isFalse();}
+            assertThat(seen).hasValue(1);assertThat(client.channelCount()).isEqualTo(1);
+        }
+    }
+    @Test void oneRetryLayerPreservesOriginalRequestAndBudgetWithSeparateRelayChannels()throws Exception {
+        var attempts=new AtomicInteger();var budgets=new CopyOnWriteArrayList<Duration>();var operationIds=new CopyOnWriteArrayList<String>();
+        CellRpcServer.Backend backend=(op,c,peer,budget)->{budgets.add(budget);operationIds.add(c.getOperationId());if(op==CellRpcServer.Operation.RESERVE&&attempts.incrementAndGet()<3)return CompletableFuture.failedFuture(Status.UNAVAILABLE.asRuntimeException());return CompletableFuture.completedFuture(committed(c));};
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),new RpcAdmission(4,256*1024,4,256*1024),backend,event->CompletableFuture.failedFuture(new UnsupportedOperationException())).start();var client=client(server.port(),"actor")){
+            var c=command("c002");assertThat(client.call(CellRpcServer.Operation.RESERVE,c,Duration.ofSeconds(2)).toCompletableFuture().join().getAckCommitted()).isTrue();assertThat(attempts).hasValue(3);assertThat(operationIds.stream().distinct().toList()).containsExactly(c.getOperationId());assertThat(budgets.get(2)).isLessThan(budgets.getFirst());
+            assertThat(client.call(CellRpcServer.Operation.RELAY,c.toBuilder().setType("RelayNegotiation").build(),Duration.ofSeconds(1)).toCompletableFuture().join().getAckCommitted()).isTrue();assertThat(budgets.getLast()).isLessThanOrEqualTo(Duration.ofSeconds(1));assertThat(client.channelCount()).isEqualTo(2);
+        }
+    }
+    @Test void coordinatorTimeoutAfterCommittedHomeWinnerKeepsAcquisitionIdentityForReconciliation(){
+        var calls=new AtomicInteger();UUID operation=UUID.randomUUID();var saga=new CrossCellSaga((phase,id,budget)->{calls.incrementAndGet();if(phase==CrossCellSaga.Phase.CLAIM_HOME)return CompletableFuture.completedFuture("CLAIMED");return CompletableFuture.failedFuture(new DbOutcomeUnknownException());});
+        var outcome=saga.accept(operation,Duration.ofSeconds(2)).toCompletableFuture().join();assertThat(outcome.operation()).isEqualTo(operation);assertThat(outcome.code()).isEqualTo("OUTCOME_UNKNOWN");assertThat(outcome.reconcileHomeWinner()).isTrue();assertThat(calls).hasValue(2);
+    }
+    @Test void trustedCaCertificateForAnotherCellCannotAuthenticateTheDestination()throws Exception {
+        try(var server=new CellRpcServer("c003","test",0,serverTls(),new RpcAdmission(4,256*1024,4,256*1024),(op,c,p,b)->CompletableFuture.completedFuture(committed(c)),event->CompletableFuture.failedFuture(new UnsupportedOperationException())).start();var client=new CellRpcClient(Map.of("c003",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),clientTls("actor"),new RpcAdmission(4,256*1024,4,256*1024))){assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c003"),Duration.ofSeconds(2)).toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");}
+    }
+    @Test void logicalClientTimeoutDoesNotReleaseServerCapacityBeforePhysicalBackendCompletion()throws Exception {
+        var pending=new CompletableFuture<InternalReply>();var admission=new RpcAdmission(1,256*1024,4,256*1024);var entered=new CountDownLatch(1);
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),admission,(op,c,p,b)->{entered.countDown();return pending;},event->CompletableFuture.failedFuture(new UnsupportedOperationException())).start();var client=client(server.port(),"actor")){
+            var first=command("c002");var stage=client.call(CellRpcServer.Operation.RESERVE,first,Duration.ofMillis(500));assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();assertThat(stage.toCompletableFuture().join().getAckCommitted()).isFalse();assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("OVERLOADED");pending.complete(committed(first));org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1)).until(()->admission.inFlight(RpcAdmission.Lane.CONTROL)==0);
+        }
+    }
+    @Test void releaseBeforeReserveAndDuplicatedReserveCannotReopenRetainedHomeParticipation()throws Exception {
+        try(var runtime=new DbTestRuntime()){
+            var home=new HomeParticipationService(runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"));var reservations=new UserReservationService(home);Instant now=Instant.now();UUID operation=UUID.randomUUID();
+            var grant=new HomeParticipationService.Grant("c001",1,1,685,2,1,operation,now,now.plusSeconds(5),"TEST_ONLY_VERIFIED");var request=new HomeParticipationService.Request(new UserId("test-rpc-user"),new CallId(CALL),operation,"a".repeat(64),1,HomeParticipationService.Phase.RINGING,grant);
+            assertThat(reservations.releaseIfCallVersion(request,null,0).toCompletableFuture().join().terminal()).isTrue();assertThat(reservations.reserveUser(request).toCompletableFuture().join().terminal()).isTrue();assertThat(reservations.reserveUser(request).toCompletableFuture().join().reservationId()).isNull();
+        }
+    }
+}

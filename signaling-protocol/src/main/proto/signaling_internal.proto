@@ -20,7 +20,19 @@ message GroupAuthority {
   int64 group_epoch = 5;
   bytes owner_incarnation = 6;
   int64 lease_sequence = 7;
+  string owner_node = 8;
 }
+// Stable kind catalog; scalars preserve decimal counters without floating-point conversion.
+message ActorEnvelope { uint32 schema_major=1; uint32 schema_minor=2; string kind=3; ActorValue payload=4; }
+message ActorValue {
+  oneof value {
+    string text=1; string decimal=2; bool boolean=3; bool null_value=4;
+    ActorObject object=5; ActorArray array=6;
+  }
+}
+message ActorField { string name=1; ActorValue value=2; }
+message ActorObject { repeated ActorField fields=1; }
+message ActorArray { repeated ActorValue values=1; }
 message InternalCommand {
   int32 schema_major = 1;
   int32 schema_minor = 2;

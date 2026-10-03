@@ -26,6 +26,10 @@ class Rs256TokenVerifierTest {
     static String header() {return "{\"alg\":\"RS256\",\"kid\":\"key-a\"}";}
     Rs256TokenVerifier verifier() {return new Rs256TokenVerifier(CONTRACT,new TrustedRsaKeys(Map.of("key-a",(RSAPublicKey)pair.getPublic()),null,Duration.ofSeconds(1)),8192);}
     @Test void validatesRealRs256WithoutNetwork() throws Exception {var p=verifier().validate(token(pair,header(),claims()),NOW);assertThat(p.userId().value()).isEqualTo("alice");assertThat(p.key().jti()).isEqualTo("j-a");}
+    @Test void issuerUsesItsOwn512ByteBoundRatherThanJti256ByteBound()throws Exception {
+        String issuer="https://"+"a".repeat(504);var contract=new IdentitySecurityContract(issuer,CONTRACT.audience(),CONTRACT.maximumJwtLifetime(),CONTRACT.clockSkew(),CONTRACT.revocationPropagationSLO(),CONTRACT.hardSafetyBound(),true,CONTRACT.highWaterSource());
+        var verifier=new Rs256TokenVerifier(contract,new TrustedRsaKeys(Map.of("key-a",(RSAPublicKey)pair.getPublic()),null,Duration.ofSeconds(1)),8192);assertThat(verifier.validate(token(pair,header(),claims().replace(CONTRACT.issuer(),issuer)),NOW).key().issuer()).isEqualTo(issuer);
+    }
     @Test void rejectsWrongKeyAndAlteredPayloadOrSignature() throws Exception {
         var jwt=token(pair,header(),claims());
         assertThatThrownBy(()->verifier().validate(token(other,header(),claims()),NOW)).isInstanceOf(AuthException.class);

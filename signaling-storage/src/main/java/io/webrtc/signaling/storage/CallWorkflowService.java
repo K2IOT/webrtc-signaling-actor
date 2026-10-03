@@ -13,7 +13,7 @@ public final class CallWorkflowService {
     public record Transition(CallId call,AuthoritySql.GroupToken group,long directoryEpoch,long expectedVersion,UUID operation,Step step,Participant winner,List<Participant> offered,UUID activationId,Instant proofExpiresAt,Instant participantUntil,String proof,String reason){
         public Transition{Objects.requireNonNull(call);Objects.requireNonNull(group);Objects.requireNonNull(operation);Objects.requireNonNull(step);Objects.requireNonNull(proofExpiresAt);offered=List.copyOf(offered);if(directoryEpoch<1||expectedVersion<1||offered.size()>5||offered.stream().map(Participant::key).distinct().count()!=offered.size()||proof==null||proof.getBytes(StandardCharsets.UTF_8).length>8192||reason!=null&&!reason.matches("[A-Z_]{1,64}"))throw new IllegalArgumentException("Invalid bounded workflow transition");}
     }
-    public record Outcome(String code,Snapshot snapshot,List<UUID> eventIds){public Outcome{Objects.requireNonNull(code);eventIds=List.copyOf(eventIds);}}
+    public record Outcome(String code,Snapshot snapshot,List<UUID> eventIds) implements io.webrtc.signaling.protocol.ApplicationSerializable {public Outcome{Objects.requireNonNull(code);eventIds=List.copyOf(eventIds);}}
     private record Stored(String code,long version,String state,List<UUID> eventIds) {}
     @FunctionalInterface public interface ProofVerifier {boolean verify(Transition transition,Snapshot snapshot);}
     private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();

@@ -4,7 +4,7 @@ import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.storage.*;
 import java.util.*;
 /** Rehydratable cache; repositories always recheck primary authority before mutation. */
-public record UserState(UserId user,List<SessionRepository.Route> routes,HomeParticipationService.Participation participation) implements CborSerializable {
+public record UserState(UserId user,List<SessionRepository.Route> routes,HomeParticipationService.Participation participation) implements io.webrtc.signaling.protocol.ApplicationSerializable {
     public UserState {new UserSnapshotService.Snapshot(user,routes,participation);routes=List.copyOf(routes);}
     static UserState empty(UserId user){return new UserState(user,List.of(),null);}
     static UserState from(UserSnapshotService.Snapshot snapshot){return new UserState(snapshot.user(),snapshot.routes(),snapshot.participation());}

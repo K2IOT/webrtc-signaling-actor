@@ -30,6 +30,11 @@ class MultiNodeShardingIT {
         signaling.cluster-fingerprint="%s"
         pekko.loglevel=WARNING
         pekko.cluster.jmx.multi-mbeans-in-same-jvm=on
+        pekko.actor.serialization-bindings {
+          "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT$PingUser"=jackson-cbor
+          "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT$PingCall"=jackson-cbor
+          "io.webrtc.signaling.actors.cluster.CborSerializable"=jackson-cbor
+        }
         """.formatted(zone,fingerprint)).withFallback(ShardingConfigurationTest.config()).resolve();}
     static ActorSystem<Void> start(String zone,String fingerprint){var system=ActorSystem.<Void>create(Behaviors.empty(),SYSTEM,config(zone,fingerprint));PostgresShardLeaseProvider.install(Adapter.toClassic(system),repository,"c001",1,UUID.randomUUID(),()->true);return system;}
     @BeforeEach void setup()throws Exception {

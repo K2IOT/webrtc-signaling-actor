@@ -9,12 +9,14 @@ import java.util.concurrent.*;
 import java.util.function.Function;
 import com.fasterxml.jackson.databind.ObjectMapper;
 public final class CallCommandService {
-    public record Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof,long expectedCallVersion) {
+    public record TargetHome(String cell,long directoryEpoch){public TargetHome{Objects.requireNonNull(cell);if(directoryEpoch<1)throw new IllegalArgumentException("Invalid target home hint");}}
+    public record Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof,long expectedCallVersion,TargetHome targetHome) {
+        public Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof,long expectedCallVersion){this(callId,group,directoryEpoch,proof,expectedCallVersion,null);}
         public Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof){this(callId,group,directoryEpoch,proof,0);}
         public Authority {if(expectedCallVersion<0)throw new IllegalArgumentException("Invalid expected call version");}
     }
     @FunctionalInterface public interface ProofVerifier {boolean verify(CallCommand command,Snapshot snapshot,String proof);}
-    public record Outcome(String status,String code,CallId callId,long version,String state,List<UUID> eventIds) {public Outcome{eventIds=List.copyOf(eventIds);}}
+    public record Outcome(String status,String code,CallId callId,long version,String state,List<UUID> eventIds) implements io.webrtc.signaling.protocol.ApplicationSerializable {public Outcome{eventIds=List.copyOf(eventIds);}}
     private static final ObjectMapper JSON=new ObjectMapper();
     private final SqlTransactions sql;private final String cell;private final long epoch;
     private final Function<CallCommand,CompletionStage<Authority>> authority;private final ProofVerifier proofs;
@@ -38,11 +40,13 @@ public final class CallCommandService {
     }
     private Outcome execute(Connection c,CallCommand command,Authority context)throws Exception {
         boolean invite=command.type()==SignalEnvelope.Type.INVITE;
-        if(!command.scope().equals(invite?CommandScope.invite():CommandScope.call(command.callId()))||!context.callId().coordinatorCell().equals(cell)||!context.group().cell().equals(cell)||context.group().storageEpoch()!=epoch||context.group().group()!=HomeParticipationService.group(context.callId())||!invite&&!context.callId().equals(command.callId()))throw new AuthorizationRejected();
+        if(!command.scope().equals(invite?CommandScope.invite():CommandScope.call(command.callId()))||!context.callId().coordinatorCell().equals(cell)||context.callId().routingEpoch()!=epoch||!context.group().cell().equals(cell)||context.group().storageEpoch()!=epoch||context.group().group()!=HomeParticipationService.group(context.callId())||!invite&&!context.callId().equals(command.callId()))throw new AuthorizationRejected();
         int bucket;
         if(invite)bucket=SessionRegistryService.bucket(command.sender().userId());
         else {Snapshot hint=calls.find(c,context.callId());if(hint==null)throw new AuthorizationRejected();bucket=hint.bucket();}
-        AuthoritySql.coordinator(c,context.group(),Map.of(bucket,context.directoryEpoch()),invite?List.of(command.sender().userId().value()):List.of(),List.of(context.callId().value()));
+        var buckets=new TreeMap<Integer,Long>();buckets.put(bucket,context.directoryEpoch());var users=new ArrayList<String>();if(invite)users.add(command.sender().userId().value());
+        boolean localPair=invite&&context.targetHome()!=null&&cell.equals(context.targetHome().cell());if(localPair){if(command.target()==null||command.target().equals(command.sender().userId()))throw new AuthorizationRejected();int targetBucket=SessionRegistryService.bucket(command.target());Long existing=buckets.put(targetBucket,context.targetHome().directoryEpoch());if(existing!=null&&existing!=context.targetHome().directoryEpoch())throw new AuthoritySql.FencedException();users.add(command.target().value());}
+        AuthoritySql.coordinator(c,context.group(),buckets,users,List.of(context.callId().value()));
         Snapshot snapshot=invite?null:calls.find(c,context.callId());
         if(!proofs.verify(command,snapshot,context.proof()))throw new AuthorizationRejected();
         if(invite)requireLocalCurrent(c,command.sender());else requirePrincipal(command.sender(),snapshot);
@@ -64,14 +68,18 @@ public final class CallCommandService {
     }
     private Outcome create(Connection c,CallCommand command,Authority context,int bucket)throws Exception {
         if(command.target()==null||command.target().equals(command.sender().userId()))throw new AuthorizationRejected();
+        boolean local=context.targetHome()!=null&&cell.equals(context.targetHome().cell());var routes=local?sessions.liveRoutes(c,command.target()):List.<SessionRepository.Route>of();if(local&&routes.isEmpty())return finish(c,command,new Outcome("FINAL","UNREACHABLE",null,0,"NONE",List.of()));
         Instant now;long sequence;
         try(var s=c.prepareStatement("SELECT clock_timestamp(),lease_sequence FROM group_owner WHERE cell_id=? AND ownership_hash_version=? AND group_id=?")){s.setString(1,cell);s.setLong(2,context.group().hashVersion());s.setInt(3,context.group().group());try(var r=s.executeQuery()){if(!r.next())throw new AuthoritySql.FencedException();now=r.getTimestamp(1).toInstant();sequence=r.getLong(2);}}
         var grant=new HomeParticipationService.Grant(cell,epoch,context.group().hashVersion(),context.group().group(),context.group().epoch(),sequence,command.requestId().value(),now,now.plusSeconds(5),"LOCAL_PRIMARY_TRANSACTION");
-        var request=new HomeParticipationService.Request(command.sender().userId(),context.callId(),command.requestId().value(),command.intentHash(),context.directoryEpoch(),HomeParticipationService.Phase.PREPARING,grant);
-        try{reservations.reserve(c,request);}catch(UserReservationService.UserBusy busy){return finish(c,command,new Outcome("FINAL","USER_BUSY",null,0,"NONE",List.of()));}
-        try(var s=c.prepareStatement("INSERT INTO call_state(call_id,authority_bucket_id,ownership_hash_version,ownership_group_id,caller_user,caller_issuer,caller_jti,caller_incarnation,caller_generation,callee_user,state,version,negotiation_id,saga_phase,deadlines,last_mutation_group_epoch,invite_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,'PREPARING',1,0,'RESERVE_REMOTE',jsonb_build_object('prepareUntil',clock_timestamp()+interval '15 seconds'),?,?)")){
-            s.setString(1,context.callId().value());s.setInt(2,bucket);s.setLong(3,context.group().hashVersion());s.setInt(4,context.group().group());s.setString(5,command.sender().userId().value());s.setString(6,command.sender().key().issuer());s.setString(7,command.sender().key().jti());s.setObject(8,command.sender().incarnation().value());s.setLong(9,command.sender().connectionGeneration());s.setString(10,command.target().value());s.setLong(11,context.group().epoch());s.setObject(12,command.requestId().value());s.executeUpdate();
-        }return pending(context.callId());
+        var request=new HomeParticipationService.Request(command.sender().userId(),context.callId(),command.requestId().value(),command.intentHash(),context.directoryEpoch(),local?HomeParticipationService.Phase.RINGING:HomeParticipationService.Phase.PREPARING,grant);
+        Savepoint reservationPair=c.setSavepoint();try{reservations.reserve(c,request);if(local)reservations.reserve(c,new HomeParticipationService.Request(command.target(),context.callId(),command.requestId().value(),command.intentHash(),context.targetHome().directoryEpoch(),HomeParticipationService.Phase.RINGING,grant));}catch(UserReservationService.UserBusy busy){c.rollback(reservationPair);return finish(c,command,new Outcome("FINAL","USER_BUSY",null,0,"NONE",List.of()));}finally{c.releaseSavepoint(reservationPair);}
+        var offered=routes.stream().map(r->new Participant(r.user(),r.key(),r.incarnation(),r.connectionGeneration())).toList();String state=local?"RINGING":"PREPARING";
+        try(var s=c.prepareStatement("INSERT INTO call_state(call_id,authority_bucket_id,ownership_hash_version,ownership_group_id,caller_user,caller_issuer,caller_jti,caller_incarnation,caller_generation,callee_user,state,version,negotiation_id,saga_phase,deadlines,offered_sessions,last_mutation_group_epoch,invite_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,0,?,jsonb_build_object(?,clock_timestamp()+(? * interval '1 second')),?::jsonb,?,?)")){
+            s.setString(1,context.callId().value());s.setInt(2,bucket);s.setLong(3,context.group().hashVersion());s.setInt(4,context.group().group());s.setString(5,command.sender().userId().value());s.setString(6,command.sender().key().issuer());s.setString(7,command.sender().key().jti());s.setObject(8,command.sender().incarnation().value());s.setLong(9,command.sender().connectionGeneration());s.setString(10,command.target().value());s.setString(11,state);s.setString(12,local?"WAIT_ACCEPT":"RESERVE_REMOTE");s.setString(13,local?"ringUntil":"prepareUntil");s.setInt(14,local?30:15);s.setString(15,JSON.writeValueAsString(offered));s.setLong(16,context.group().epoch());s.setObject(17,command.requestId().value());s.executeUpdate();
+        }
+        if(!local)return pending(context.callId());var recipients=new ArrayList<Participant>();recipients.add(new Participant(command.sender().userId(),command.sender().key(),command.sender().incarnation(),command.sender().connectionGeneration()));recipients.addAll(offered);var events=new ArrayList<UUID>();for(var recipient:recipients){String destination=JSON.writeValueAsString(Map.of("userId",recipient.user().value(),"issuer",recipient.key().issuer(),"jti",recipient.key().jti()));String payload=JSON.writeValueAsString(Map.of("type","RINGING","callId",context.callId().value(),"callVersion","1","callerUserId",command.sender().userId().value(),"calleeUserId",command.target().value()));events.add(outbox.insert(c,bucket,context.callId(),1,destination,payload));}
+        return finish(c,command,new Outcome("FINAL","RINGING",context.callId(),1,"RINGING",List.copyOf(events)));
     }
     private Outcome terminal(Connection c,CallCommand command,Authority context,Snapshot previous)throws Exception {
         long version=Math.addExact(previous.version(),1);String reason=command.type().name();

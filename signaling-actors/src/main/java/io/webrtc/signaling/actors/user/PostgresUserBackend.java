@@ -7,8 +7,9 @@ import java.util.Objects;
 import java.util.function.Function;
 /** All mutation services share the original physical cleanup handle and remaining deadline. */
 public final class PostgresUserBackend implements UserActor.Backend {
-    private final UserSnapshotService snapshots;private final SessionRegistryService sessions;private final UserReservationService reservations;private final AcceptWinnerService winners;
-    public PostgresUserBackend(UserSnapshotService snapshots,SessionRegistryService sessions,UserReservationService reservations,AcceptWinnerService winners){this.snapshots=Objects.requireNonNull(snapshots);this.sessions=Objects.requireNonNull(sessions);this.reservations=Objects.requireNonNull(reservations);this.winners=Objects.requireNonNull(winners);}
+    private final UserSnapshotService snapshots;private final SessionRegistryService sessions;private final UserReservationService reservations;private final AcceptWinnerService winners;private final HomeActivationService activations;
+    public PostgresUserBackend(UserSnapshotService snapshots,SessionRegistryService sessions,UserReservationService reservations,AcceptWinnerService winners){this(snapshots,sessions,reservations,winners,null);}
+    public PostgresUserBackend(UserSnapshotService snapshots,SessionRegistryService sessions,UserReservationService reservations,AcceptWinnerService winners,HomeActivationService activations){this.snapshots=Objects.requireNonNull(snapshots);this.sessions=Objects.requireNonNull(sessions);this.reservations=Objects.requireNonNull(reservations);this.winners=Objects.requireNonNull(winners);this.activations=activations;}
     public DbOperation<UserSnapshotService.Snapshot> load(UserId user,long epoch,Duration budget){return snapshots.load(user,epoch,budget);}
     public DbOperation<UserCommand.Result> execute(UserCommand.Operation operation,Duration budget){return switch(operation){
         case UserCommand.Register r->map(sessions.registerSessionTracked(r.principal(),r.boot(),r.connection(),r.directoryEpoch(),budget),route->new UserCommand.Result(UserCommand.Code.REGISTERED,route,null,null));
@@ -18,6 +19,7 @@ public final class PostgresUserBackend implements UserActor.Backend {
         case UserCommand.Renew r->map(reservations.renewReservationTracked(r.request(),r.reservation(),r.version(),budget),p->new UserCommand.Result(UserCommand.Code.RENEWED,null,p,null));
         case UserCommand.Release r->map(reservations.releaseIfCallVersionTracked(r.request(),r.reservation(),r.version(),budget),p->new UserCommand.Result(UserCommand.Code.RELEASED,null,p,null));
         case UserCommand.Accept r->map(winners.claimAcceptTracked(r.request(),r.reservation(),r.route(),budget),claim->{var request=r.request();var code=UserCommand.Code.valueOf(claim.outcome());var p=claim.validUntil()==null?null:new Participation(request.call(),request.user(),request.acquireOperation(),request.payloadHash(),"CLAIMED",claim.reservation(),claim.version(),claim.validUntil(),claim.winner(),request.grant().groupEpoch());return new UserCommand.Result(code,null,p,claim);});
+        case UserCommand.Activate r->{if(activations==null)throw new IllegalStateException("Home activation service is required");yield map(activations.confirmTracked(r.request(),r.reservation(),r.version(),r.activation(),r.callVersion(),r.winner(),r.operation(),budget),confirmation->new UserCommand.Result(UserCommand.Code.CONFIRMED,null,null,null,confirmation));}
     };}
     private static <T> DbOperation<UserCommand.Result> map(DbOperation<T> operation,Function<T,UserCommand.Result> mapper){return new DbOperation<>(operation.logical().thenApply(mapper),operation.physicalCompletion());}
 }

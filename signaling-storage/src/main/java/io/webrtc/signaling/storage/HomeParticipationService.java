@@ -8,6 +8,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
 public final class HomeParticipationService {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
     public enum Phase { PREPARING,RINGING }
     public record Grant(String cell,long storageEpoch,long hashVersion,int group,long groupEpoch,long sequence,UUID operation,Instant issuedAt,Instant expiresAt,String proof) {
         public Grant {if(cell==null||storageEpoch<1||hashVersion<1||group<0||group>1023||groupEpoch<1||sequence<1||proof==null||proof.length()>4096)throw new IllegalArgumentException("Invalid home grant");Objects.requireNonNull(operation);Objects.requireNonNull(issuedAt);Objects.requireNonNull(expiresAt);}
@@ -15,21 +16,24 @@ public final class HomeParticipationService {
     public record Request(UserId user,CallId call,UUID acquireOperation,String payloadHash,long directoryEpoch,Phase phase,Grant grant) {
         public Request {Objects.requireNonNull(user);Objects.requireNonNull(call);Objects.requireNonNull(acquireOperation);Objects.requireNonNull(phase);Objects.requireNonNull(grant);if(directoryEpoch<1||payloadHash==null||!payloadHash.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("Invalid home intent");}
     }
-    @FunctionalInterface public interface GrantVerifier { boolean verify(Request request); }
+    public record AuthorizationIntent(String action,UUID reservation,long version,UUID activation,long callVersion,Winner winner,SessionRepository.Route route){public AuthorizationIntent{if(!Set.of("RESERVE","RENEW","RELEASE","CLAIM","CONFIRM","QUERY").contains(action)||version<0||callVersion<0)throw new IllegalArgumentException("Invalid home action");}public static AuthorizationIntent reserve(){return new AuthorizationIntent("RESERVE",null,0,null,0,null,null);}}
+    public static String authorizationHash(Request request,AuthorizationIntent action){try{var body=new TreeMap<String,Object>();body.put("acquisition",request.acquireOperation());body.put("user",request.user());body.put("call",request.call());body.put("hash",request.payloadHash());body.put("phase",request.phase());body.put("directoryEpoch",request.directoryEpoch());body.put("action",action);byte[] encoded=JSON.writeValueAsBytes(body);return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(encoded));}catch(Exception invalid){throw new IllegalArgumentException("Invalid home authorization intent",invalid);}}
+    @FunctionalInterface public interface GrantVerifier { boolean verify(Request request);default boolean verify(Request request,AuthorizationIntent action){return verify(request);} }
     public record Winner(SessionKey key,SessionIncarnation incarnation,long generation) {}
     public record Participation(CallId call,UserId user,UUID acquireOperation,String payloadHash,String phase,UUID reservationId,long version,Instant leaseUntil,Winner winner,long highestGroupEpoch) {public boolean terminal(){return phase.equals("RELEASED")||phase.equals("EXPIRED");}}
     private final SqlTransactions sql;private final String cell;private final long epoch;private final GrantVerifier verifier;
     public HomeParticipationService(SqlTransactions sql,String cell,long epoch,GrantVerifier verifier){this.sql=Objects.requireNonNull(sql);this.cell=cell;this.epoch=epoch;this.verifier=Objects.requireNonNull(verifier);}
     <T> CompletionStage<T> submit(Request r,DbClass clazz,SqlTransactions.Work<T> work){return submitTracked(r,clazz,Duration.ofSeconds(2),work).logical();}
-    <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,SqlTransactions.Work<T> work){return sql.submitTracked(clazz,budget,c->{guard(c,List.of(r));return work.apply(c);});}
-    <T> CompletionStage<T> pair(Request a,Request b,SqlTransactions.Work<T> work){return sql.submit(DbClass.CRITICAL,Duration.ofSeconds(2),c->{if(!a.call().equals(b.call())||a.user().equals(b.user()))throw new IllegalArgumentException("Invalid local participant pair");guard(c,List.of(a,b));return work.apply(c);});}
-    private void guard(Connection c,List<Request> requests)throws SQLException {
+    <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,SqlTransactions.Work<T> work){return submitTracked(r,clazz,budget,new AuthorizationIntent("QUERY",null,0,null,0,null,null),work);}
+    <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,AuthorizationIntent action,SqlTransactions.Work<T> work){return sql.submitTracked(clazz,budget,c->{guard(c,List.of(r),action);return work.apply(c);});}
+    <T> CompletionStage<T> pair(Request a,Request b,SqlTransactions.Work<T> work){return sql.submit(DbClass.CRITICAL,Duration.ofSeconds(2),c->{if(!a.call().equals(b.call())||a.user().equals(b.user()))throw new IllegalArgumentException("Invalid local participant pair");guard(c,List.of(a,b),AuthorizationIntent.reserve());return work.apply(c);});}
+    private void guard(Connection c,List<Request> requests,AuthorizationIntent action)throws SQLException {
         var buckets=new TreeMap<Integer,Long>();for(Request r:requests){int bucket=SessionRegistryService.bucket(r.user());Long previous=buckets.put(bucket,r.directoryEpoch());if(previous!=null&&previous!=r.directoryEpoch())throw new AuthoritySql.FencedException();}
         AuthoritySql.home(c,cell,epoch,buckets,requests.stream().map(r->r.user().value()).toList());
-        for(Request r:requests)validateGrant(c,r);
+        for(Request r:requests)validateGrant(c,r,action);
     }
-    private void validateGrant(Connection c,Request r)throws SQLException {
-        var g=r.grant();if(!verifier.verify(r)||!r.call().coordinatorCell().equals(g.cell())||g.hashVersion()!=1||g.group()!=group(r.call()))throw new AuthoritySql.FencedException();
+    private void validateGrant(Connection c,Request r,AuthorizationIntent action)throws SQLException {
+        var g=r.grant();if(!verifier.verify(r,action)||!r.call().coordinatorCell().equals(g.cell())||r.call().routingEpoch()!=g.storageEpoch()||g.hashVersion()!=1||g.group()!=group(r.call()))throw new AuthoritySql.FencedException();
         try(var s=c.prepareStatement("SELECT clock_timestamp()" );var result=s.executeQuery()){result.next();Instant now=result.getTimestamp(1).toInstant();
             if(!g.expiresAt().isAfter(now)||g.issuedAt().isAfter(now.plusSeconds(1))||g.issuedAt().isAfter(g.expiresAt())||Duration.between(g.issuedAt(),g.expiresAt()).compareTo(Duration.ofSeconds(5))>0)throw new AuthoritySql.FencedException();}
     }
