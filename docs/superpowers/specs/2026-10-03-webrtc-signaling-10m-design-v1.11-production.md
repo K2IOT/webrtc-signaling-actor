@@ -997,3 +997,766 @@ All hops inherit one logical operation deadline. Two seconds remains a maximum f
 Use adaptive admission based on queue age, pool pending work, oldest outbox, renewal slack, event-loop lag, and p99, with hysteresis and stable per-cell limits. Admit below the measured latency knee; do not hard-code CPU utilization as a universal safe percentage or chase 100% utilization. Little's Law is an inflight relation, not a p99 queueing guarantee. Closed-loop tests, averages, and unlimited reactive buffering are insufficient tail-latency evidence.
 
 ### 42.3 Fast Outbox Dispatch Without Losing Durability
+
+State/result/outbox commit comes first. Commit completion submits a bounded eventId hint to an asynchronous dispatcher; the dispatcher atomically claims the persisted row and sends the exact committed event. Periodic due-row scanning repairs missed hints/crashes, with indexed bounded pages. A hint queue overflow loses only the hint, not the durable event. Do not add a competing untracked direct-send path that bypasses outbox claims/receiver deduplication.
+
+Start with a measured fallback scan interval≤20ms while pending work exists, and back off when idle; calibrate query/WAL cost across cells. A hint is not acknowledged peer delivery. Receiver/gateway failure triggers outbox retry/SYNC under the same eventId, while client deduplication and callVersion rules stay unchanged. Measure commit-to-first-dispatch and oldest due-event age. Do not require one database poll per event, or one watcher per user/call.
+
+### 42.4 Relay Progress, TCP Isolation, and Batching
+
+An actor awaiting a control transaction may process bounded relay under its last committed call/round/participant snapshot, provided cached authorization and local ownership deadlines are live. New-round frames, rebinds, unconfirmed winners, and terminal-state changes cannot proceed on pending state. After terminal commit, seal relay immediately; delivered stale frames remain subject to the explicitly bounded authorization window and client negotiation checks. Critical mutations still serialize, completion only mutates state on the mailbox, and database failure never authorizes new control.
+
+Give control completions/terminal commands priority without starving valid relay or lease progress. Measure mailbox service time and admitted scheduling delay; a bounded mailbox with the wrong traffic mix can still create head-of-line delay. If pending transition semantics require a gate, bound the gate's age and return RESYNC_REQUIRED/overload rather than stashing ICE indefinitely.
+
+Stream stripes on one HTTP/2 TCP connection share TCP loss and connection-level flow control. Use distinct physical pools for control and relay, with initially two lazy reusable connections per active destination/traffic class as a benchmark candidate, bounded globally. Verify the gRPC transport actually creates distinct sockets; multiple stubs/channels may reuse underlying transport. Four stream stripes per class are a separate application scheduling policy. Warm hot destinations, cap idle pool growth, and benchmark connection count/NIC/TLS cost and destination loss; do not eagerly connect every node to every other node.
+
+ICE batching is bounded by count/bytes **and time**: initially flush the first nonempty batch after at most 5ms, or earlier at 20 candidates/8KiB. End-of-candidates flushes pending candidates. Never wait indefinitely for a full batch. Critical control and standalone SDP are not held behind ICE batching. TCP_NODELAY/flush coalescing/provider behavior must be profiled with representative payloads; tune finite flush batching against latency rather than enabling compression or increasing buffers by default.
+
+Keep route/auth snapshots, protobuf schemas, public keys, DNS/service discovery, pooled connections, and candidate validation machinery warm and bounded. Inspect redundant DTO serialization, copying, logging, trace export, garbage production, and ByteBuf retention. Zero-copy claims require ownership evidence; do not trade a memory-safety bug for a smaller microbenchmark. Avoid speculative retries/hedged mutations, which can amplify lock contention and duplicate side-effect work. Read hedging is not selected without an explicit resource budget and read-consistency analysis.
+
+Optimization priority is: remove unnecessary work/hops → bound queueing/fanout → warm resource reuse → tune CPU/allocation/SQL → add measured capacity or cells. Critical acknowledgments still require the configured durable commit; replicas/caches cannot replace authoritative safety checks merely to improve a latency chart.
+
+## 43. Lease, Renewal, and Failover Corrections
+
+### 43.1 Durable State Is Not an Unexpired Lease
+
+A commit may be durable locally while the application waits for synchronous replica confirmation or loses its response. Timeout/cancellation/connection close is an unknown outcome until authoritative recovery/query resolves it. Database timeout configuration is not a distributed proof that the business mutation never committed, nor an absolute promise of completed cleanup exactly at the deadline. Test the pinned PostgreSQL/driver behavior during stalled WAL flush/replica acknowledgment and reserve capacity for cancellation/ambiguous-result recovery.
+
+Group-owner takeover remains serialized through the exclusive group barrier; migration never begins based only on a timeout or belief that an old owner stopped. If an open/commit-phase transaction cannot be proven finished or the old primary/store cannot be fenced, the operation stays unavailable. No unsafe transfer is permitted to satisfy a latency objective.
+
+After an eligible database promotion, HA/readiness persists a new cell storage epoch under its authority barrier before runtime mutation admission. All transactions validate it. Previous callbacks/proofs enter reconciliation; committed results remain queryable. Reacquire affected group ownership under the new storage epoch/groupEpoch before call mutation/grant issuance; a restored group row does not restore authority duration. Rehydrate calls without creating renewable per-call owners. Expired participant reservations are never resurrected: terminalize the old call and conditionally release its peer. Unexpired ones accept fresh current grouped authority and retain their reservation IDs/winner. A durable call decision still cannot guarantee survival through a 60s DB outage with 30s participant TTL.
+
+Gateway/session routes require current boot/incarnation/generation checks after recovery; stale worker caches and old authority proofs cannot revive prior routes. Time jumps/skew outside the validated bound trigger restricted admission and lease reconciliation, not extra validity. Clock_timestamp prevents stale transaction-start checks but does not itself solve arbitrary clock drift. An eight-hour maximum call duration remains a bound even if every renewal succeeds.
+
+### 43.2 Ordered, Idempotent Renewal
+
+Each fresh coordinator renewal grant binds (callId, coordinatorStorageEpoch, ownershipHashVersion, groupId, groupEpoch, leaseSequence, operationId, participantReservationId, validityDeadline). leaseSequence comes from the committed group_owner pulse; it is not an in-memory per-CallActor counter. The home current reservation stores the highest accepted source-domain/epoch/sequence, normalized intent and original expiry atomically. A lower tuple is rejected; an equal cycle returns the original expiry without extension; a newer one validates the matching live reservation and fresh authorization before extension. For the same live reservation expiry never moves backward. The immutable group assignment cannot change under a live call. See Section 45 for epoch adoption, sequence reset and grant/result normalization.
+
+Keep renewal high-water/replay data in the current reservation row, not one retained result row per heartbeat. An actor restart within the same group epoch reuses the durable pulse sequence; it cannot reset it. Sequence reset requires a newly committed groupEpoch. Epoch adoption preserves an unexpired reservation/winner and never revives a released/expired home participation. Recreating a reservation for another call allocates a fresh identity. CallVersion alone is not a renewal-cycle identity; old grant deadlines are never restarted on receipt/retry.
+
+Bound batch rows/deadline and yield between pages. Current grouped authority and call-state checks still consume primary reads, CPU and RPC despite the 610.24k/s established row-update illustration. Meter those separately, including retry/recovery and transient phases. No hidden per-call pulse/checkpoint update may replace the removed owner heartbeat; any such implementation invalidates the new capacity formula.
+
+### 43.3 Lock/WAL Performance Does Not Weaken Fencing
+
+Row locks used by frequent read-only authorization/owner validation may write tuple lock metadata and generate WAL; changing lease indexes alone does not prove HOT-friendly low-WAL operation. Profile actual WAL bytes/operation, tuple-lock activity, vacuum, HOT ratio, and synchronous replica latency under the complete mix.
+
+v1.7 selects transaction-scoped shared group barriers for call mutations/pulses and exclusive group barriers for takeover/release, plus shared call barriers for grants and exclusive call barriers for business mutation. Primary group/call reads occur after the appropriate barriers; all paths share fixed namespaces and lock order on the transaction connection. Actual updates retain row constraints/CAS. This avoids serializing unrelated calls on group-owner tuple locks, but still requires property/failure tests and lock/WAL measurements. A fallback to per-call authority is a different cell authority mode with its own workload and migration; never silently mix modes or weaken fencing to meet latency.
+
+### 43.4 Clock Uncertainty and Portable Proof Expiry
+
+Never transmit a System.nanoTime value as a deadline to be compared on another JVM. Local operation/queue/lease scheduling uses local monotonic elapsed time; authority rows use fresh database wall time. Short cross-cell acquire/accept/renewal grants carry authenticated issuer identity/epochs, issue time and absolute validUntil from a declared clock domain, plus maximum validity. The verifier must have a measured upper bound on relative clock error, including issuer application/database error and monitor freshness. Its conservative check is `receiverNow + pairUncertainty < issuerValidUntil`; future-dated issue times outside the bound are rejected. Recheck validity when applying the guarded home/coordinator mutation; duplicates return recorded outcomes and never gain a fresh interval.
+
+Proposed qualification limits are pairwise time uncertainty ≤250ms and relative elapsed-clock rate error ≤1,000ppm over the lease window, covering both database and serving hosts. These values are acceptance assumptions to validate on the selected infrastructure, not properties guaranteed by NTP or Java. Subtract applicable uncertainty/drift from reported remaining duration/local deadlines; the existing 5s safety margin must cover them and measured scheduling/renewal delay. JWT's separate 30s skew tolerance is never used for five-second grants. Sender timestamps alone do not establish freshness.
+
+If trustworthy bounds cannot be established, stop issuing/accepting new short-lived grants on affected paths, shed new calls, and reconcile/expire leases conservatively. Persisted-state fencing remains authoritative; an uncertain clock never permits owner transfer or resurrecting expired reservations. Clock steps, host suspension, stale time-monitor data, or restart invalidate cached local deadlines/proofs and trigger guarded reconciliation. A paused process checks fresh elapsed time before using a cached authority snapshot. Test clock-domain error, delayed issuance/commit responses, and host pauses, including gateways with surviving TCP channels. This specifies behavior under bounded timing assumptions and explicitly fails closed when they are lost.
+
+Additional required test schedules: home claim winner followed by coordinator delay; reciprocal INVITEs with caller-first reservation; immediate dispatcher hint lost after commit; a pending control write with valid and stale relay; packet loss on a shared versus isolated gRPC socket; renewal grants delivered in reverse order or duplicated; a same-epoch sequence reset; replica acknowledgment lost after local commit; promotion after participant TTL expiry; an old owner transaction resumed during exclusive takeover; timestamp skew exceeding lease margin. Confirm all previous safety properties plus bounded latency/admission behavior.
+
+Official grounding:
+
+- [PostgreSQL synchronous standby replication](https://www.postgresql.org/docs/current/warm-standby.html): synchronous acknowledgment/failover policy; correctness and latency depend on actual HA settings.
+- [PostgreSQL explicit locks](https://www.postgresql.org/docs/current/explicit-locking.html): row/advisory locks, contention, and application responsibility for advisory-lock use.
+- [PostgreSQL runtime timeout controls](https://www.postgresql.org/docs/current/runtime-config-client.html): timeout scope must be tested with the chosen driver and failure schedule.
+- [PostgreSQL date/time functions](https://www.postgresql.org/docs/current/functions-datetime.html): transaction-start time and actual-current-time checks have different semantics.
+- [RFC 9113](https://www.rfc-editor.org/rfc/rfc9113.html#section-1): HTTP/2 stream multiplexing does not eliminate TCP head-of-line blocking.
+
+Revision 1.5 review status: this pass records resolutions for L01–L12. Platform/BOM, issuer contract, concrete HA/proof/transaction implementations, and P2 benchmark results remain explicit evidence gates; further implementation review may reveal additional issues. The document is a design specification, not proof of correctness of code that does not yet exist. Keep targets at 10M authenticated CCU and P2, and optimize observed latency under those constraints.
+
+## 44. Revision 1.6 Findings and Production Readiness
+
+### 44.1 Counterexamples and Required Corrections
+
+The findings describe missing or ambiguous v1.5 contracts, not observed implementation defects. BLOCKER requires a lifecycle/identity rule before implementing the affected authority. HIGH requires a concrete contract and qualification before a scale/availability claim. The preceding sections incorporate these corrections; this table is the review index.
+
+| ID | Severity | Counterexample or gap | Normative correction |
+|---|---|---|---|
+| P01 | BLOCKER | Gateway G pauses past boot lease expiry; a new session takes the freed slot; G renews the old boot and makes five old sessions live again | Expiry irreversible per boot; no renewal upsert; fresh boot plus guarded socket registration; local lease gate (§6, §12) |
+| P02 | BLOCKER | Release reaches a remote home before a delayed Reserve, or an old Reserve is replayed after the current reservation was replaced; no retained home history prevents reacquisition | Atomic home_participation history; Release-before-Reserve tombstone; absorbing release/expiry; bounded fresh acquire grants (§25) |
+| P03 | HIGH | Session/requestId uniqueness is claimed across independent coordinators; GET_COMMAND_RESULT has no store/scope rule for callee commands | Server-derived INVITE versus CALL scope; scoped PK/hash; authoritative lookup and finite retention (§4, §10, §12, §23, §38) |
+| P04 | HIGH | Silent ESTABLISHED calls have no message to restart their actor with remember-entities off; generic sweeps/RTO do not budget 20k recoveries/cell after AZ loss | Explicit WakeCall discovery, fenced takeover, stable active-work scans, recovery-rate and lease-slack qualification (§7, §30) |
+| P05 | HIGH | Five-second cross-cell grants lack a concrete clock-domain/error contract; transmitting a monotonic deadline cannot establish remote freshness | Authenticated clock-domain expiry; measured uncertainty/drift; conservative checks; fail closed when bounds are unavailable (§43.4) |
+| P06 | HIGH | Command-result storage is treated as total retention; retained home history/call rows and their retirement/vacuum load are absent from numeric P2 totals | Separate row/byte models and steady retirement rates; include new history work and backlog recovery in P2 (§38) |
+| P07 | HIGH | Entity admission is bounded while ShardRegion/remoting buffers grow or completion signals are dropped under ICE pressure | Explicit internal-buffer budgets, reserved finite completion capacity, deadline/credit accounting and unknown-outcome recovery (§40.4) |
+
+### 44.2 Criteria Coverage Versus Qualification
+
+| Criterion | What this spec now defines | Evidence still required |
+|---|---|---|
+| 10M CCU and throughput | Independent cells; P0/P1/P2; P2 10k starts/s, 500k setup frames/s, 3M established calls; N-1 capacity | Actual measured cell/edge/DB sizing and full-region P2, with failures and 24h soak |
+| Non-blocking Netty/actors; bounded DB blocking | Netty/WebFlux/async RPC; admitted JPA/JDBC VT transactions; bounded CPU/internal queues and post-COMMIT completions (§40, §46 supersede the v1.6 driver choice) | Context/API audit, protected-thread blocking detection and JFR/carrier profiling under delayed SQL/WAL and saturated pools |
+| Low latency | Command 150ms/500ms and relay 50ms/150ms p95/p99 targets; measured queue ages and one operation deadline | Full-path histograms including cache misses, contention, renewal, retention cleanup, and replication |
+| Safety/consistency | Storage fencing; immutable winner; scoped idempotency; saga/history barriers; irreversible boot expiry | Executable model/property/race tests of all authority paths, including cancellation and stale completions |
+| Durability/HA | Synchronous critical WAL, safe candidate promotion, old-primary fencing and epoch reconciliation | Chosen HA topology/controller/configuration; loss of any AZ/standby, stalled replication, and promotion drills |
+| Recovery/liveness | Proactive CallActor wakeups; durable timers; sweeps; bounded replay/compensation; safe call termination on expired leases | Measured discovery/takeover/rehydration/sweep rate and oldest backlog; tests without client traffic |
+| Security and identity | RS256 allowlist, session binding, JWT/key contract, operation-level RPC authorization and clock limits | Existing issuer TTL/jti/claims confirmation, allow-call policy, proof encoding/validation, rotation and threat tests |
+| Deployment/operations/cost | Compatibility, canaries, rollback, static stability, readiness roles and required runbooks | Pinned compatible BOM/IaC, actual runbooks/on-call ownership, rollback/restore drills and measured unit costs |
+
+Coverage does not imply qualification. No production code or measured capacity evidence was supplied for this review. Implementation prerequisites include finalized issuer/calling-policy contracts, proof encoding and clock monitoring, concrete SQL/lock/pool paths, chosen HA/directory implementations, pinned compatible BOM, and a reproducible load/fault harness. Finalize these as testable implementation decisions; do not substitute vague defaults or declare all production criteria passed.
+
+Before release, run the existing suite plus: gateway pause/expiry followed by a new session and late renewals; Release-before-Reserve and replay after lease replacement; same requestId across different coordinators/scopes and payload conflicts within a scope; actor/AZ/full-cluster recovery without client frames; bounded clock error and monitor loss; saturated shard/remoting buffers with delayed SQL completions; migration of retained home participation/results; and P2 retention retirement while synchronous replication is degraded. Acceptance requires no invariant violation, bounded resource/backlog growth, correct unknown-outcome behavior, and measured performance/error/recovery gates. Hardware counts and timings remain proposed until those runs pass.
+
+Official grounding for this review:
+
+- [Pekko remembering entities](https://pekko.apache.org/docs/pekko/current/typed/cluster-sharding.html#remembering-entities): without remembered entities, restart follows message arrival; proactive business recovery must be supplied by this design.
+- [Pekko sharding configuration](https://pekko.apache.org/docs/pekko/current/typed/cluster-sharding.html#configuration): internal region buffering/start/handoff settings are distinct from entity admission.
+- [PostgreSQL partitioning limitations](https://www.postgresql.org/docs/current/ddl-partitioning.html#DDL-PARTITIONING-DECLARATIVE-LIMITATIONS): partitioned-table uniqueness includes partition-key columns; it does not span independent databases.
+- [AWS Builders' Library: making retries safe](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/): late requests, deleted resources, and request-identity intent require explicit retained replay semantics.
+- Supplied DDIA material on local monotonic clocks/process pauses, and Microservices Patterns on atomic idempotent-message records/saga compensation, support the lifecycle review. The counterexamples, selected schemas, timing assumptions, and capacity arithmetic above are this design's reasoning, not guarantees supplied by those books.
+
+**Revision 1.6 verdict (historical):** the spec covers the main system-design categories and resolves P01–P07 at the design-contract level. It remains **architecturally specified; implementation safety, 10M/P2 performance, and production readiness unverified**. Review the v1.6 contracts before moving to a codebase-specific implementation plan.
+
+
+## 45. Revision 1.7 — Selected Database-Performance Architecture
+
+This revision selects **shard-aligned grouped CallActor ownership, individual participant reservation leases, compact authoritative replay records, and asynchronous optional detail export**. PostgreSQL remains the authority for control, ownership, reservations, winner claims, scoped idempotency and required replay. Redis, Kafka and ScyllaDB do not acquire control authority through this change. Netty/actor paths remain non-blocking with isolated, bounded JPA/JDBC virtual-thread I/O under Section 40, and acknowledged control decisions retain synchronous cross-AZ durability under Section 43.1. The following contracts supersede per-call owner-renewal arithmetic in earlier review history.
+
+### 45.1 Ownership Domain and Stable Shard Mapping
+
+Use 1,024 ownership groups per cell in the illustrative 50-cell baseline. Derive `groupId = stableHash(canonicalCallId) mod 1024` with a pinned `ownershipHashVersion` and published canonicalization/hash test vectors. The CallActor shard extractor must use exactly this group mapping: one ownership group equals one CallActor shard, and its entities execute on that shard's hosting process. User home buckets, UserActor sharding and call ownership groups are separate namespaces. Group identity is coordinator-local; there is no regional actor cluster or cross-cell ownership group. Provision the fixed group keys as idle authority records before opening the grouped mode; creation does not upsert a fresh root with a reset epoch per call.
+
+Persist the immutable `(coordinatorCellId, ownershipHashVersion, groupId)` assignment with call creation. Never accept a client-supplied group as authority. Changing the hash/modulus while calls remain active requires an explicit drain/fence/namespace migration, not an online configuration flip. Pekko placement and SBR supply location/membership decisions; the application group controller and PostgreSQL supply the lease/fencing contract. The selected §47 public Lease adapter implements this exact PostgreSQL protocol for CallActor shards; configuring a generic Pekko/Kubernetes lease alone would not implement it.
+
+Initial creation and later mutations execute on the verified CallActor shard host under its controller token. A caller-home UserActor/router cannot borrow another process's group token to perform a call mutation; it dispatches to that host. Retries retain the original scoped request identity, and authoritative idempotency still selects one call despite duplicate dispatch/allocation. The authority token is `(coordinatorCellId, storageEpoch, ownershipHashVersion, groupId, groupEpoch, ownerIncarnation)`. Epochs are durable monotonically increasing fencing values within their declared domains, not process counters or wall-clock timestamps. The current group root stores `leaseSequence`, lease expiry and the last pulse identity. `call_state.last_mutation_group_epoch` records provenance; it is not another renewable lease and need not equal the newly acquired root epoch before hydration. CallVersion, reservation identities and winner claims persist across takeover. Actor incarnation separately fences local callbacks.
+
+### 45.2 Group Controller, Barriers and Cold Acquisition
+
+A bounded process-local controller, integrated with the public Pekko Lease adapter (§47), manages only groups acquired for shards actually hosted by that process. It renews leased shards, including temporarily empty warm shards, every 5s with 15s TTL, one pulse in flight per group, bounded batch sizes, jitter, class-specific pool credits and original deadlines. Losing placement, authoritative ownership, trusted clock bounds or conservative local lease validity stops new grants/mutations and notifies the framework of lease loss. A local controller cache is a scheduling aid; every critical transaction still checks the primary authority. No owner heartbeat is added per call, idle user or socket. The adapter and controller share one acquisition/renewal state machine; they do not run independent heartbeat loops.
+
+Ordinary call transactions, read-only grant issuance and pulses hold the transaction-scoped **shared group barrier**. Takeover, matched release and idle retirement hold the conflicting **exclusive group barrier**, validate cell/storage authority, and mutate the root through guarded SQL. Takeover requires an expired root or an authenticated matched release; a membership event or a timeout estimate cannot steal an unexpired root. An expired root cannot be renewed under its old epoch. Acquisition commits a strictly newer groupEpoch and a new owner incarnation; sequence reset is allowed only under that new epoch. Group keys/epoch tombstones remain retained even when idle.
+
+Apply the complete lock order from Section 24.2. Ordinary business mutation holds the exclusive call barrier; read-only grant minting holds its shared call barrier. A plain primary group SELECT under the shared barrier replaces per-call `FOR UPDATE` on the common group row. Actual root pulses and business updates still acquire their required SQL row locks. Different calls in one group can progress concurrently; they do not share a critical actor queue or an exclusive root lock for ordinary authorization. Advisory locks consume finite server resources and can contend, so bounded pools, transaction watchdogs, cancellation and lock-load measurements remain mandatory. No transaction waits for RPC or external export while holding barriers.
+
+Release/takeover transactions only settle group authority; enumerate/hydrate calls after that transaction commits. The v1.9 baseline keeps acquired empty shards warm and does not autonomously retire their roots while the framework still considers the lease held. Any explicit idle-retirement operation must first gate the local tenure and coordinate framework lease loss/release; under the exclusive group barrier it verifies via indexed LIMIT 1 that no nonterminal call remains. New call creation takes the conflicting shared barrier, preventing an idle-check/create race. Never retire based only on local actor count. Group pulses are cell-scoped: they may continue serving other caller buckets while one bucket is FROZEN, but actual call mutation/grant issuance must still validate that call's original caller bucket.
+
+The one-COMMIT same-cell and three-COMMIT cross-cell INVITE models apply to an already owned, valid warm group. Section 47 selects acquisition through the public Pekko Lease API before entity creation, requiring a separate root COMMIT on a cold path: two same-cell/four cross-cell. The earlier combined acquisition/create option is superseded. Count cold acquisition, lease-expiry wait and actual retries in latency/capacity. Never upgrade a shared group lock after acquiring business locks. Unexpired ownership on another host requires bounded routing/retry, not an unsafe second owner. Unknown commit outcomes use the existing scoped query/retry contract and adapter orphan reconciliation.
+
+### 45.3 Durable Pulse Sequence and Individual Reservation Renewal
+
+Each successful root pulse advances a durable leaseSequence through exact-token/current-sequence CAS, with a stable pulse operationId. A duplicate of the latest pulse returns its recorded expiry without extending it; lower/stale cycles are rejected. Lost commit acknowledgment requires a primary query/reconciliation before the controller claims success or starts the next pulse. Do not start a new operation to hide an unknown previous outcome. Counter exhaustion fails closed and requires a new fenced epoch. An actor restart within the same live group reuses the committed sequence; no actor-local sequence resets.
+
+A reservation renewal grant binds the full coordinator authority domain, callId, participant reservationId, groupEpoch, **committed group leaseSequence**, renewal operationId and portable validity deadline. Derive the operationId deterministically for that call/reservation/epoch/sequence. Mint the grant through fresh primary reads under cell/caller-bucket/group/call barriers, verifying a live compatible call phase and exact durable participant bindings. Read the root token, lease and sequence together from one statement snapshot; check fresh database time rather than a transaction-start timestamp. It expires within 5s and no later than the group lease. Advancing the root pulse alone does not prove that every call is live or grant renewal to an arbitrary participant. Grant minting adds no per-call sequence checkpoint write, but its reads, barriers, CPU and RPC must be measured.
+
+The home guards the exact live reservation and stores the accepted source domain, highest epoch/sequence, normalized business intent, last operationId and original granted expiry in the reservation row. Compare epochs/sequences only within validated authority domains: hash version/group assignment is immutable; adoption of a newer storage epoch requires the authoritative promotion/migration contract, not string/lexicographic ordering of arbitrary tokens. Lower accepted cycles are stale; an equal cycle returns its original outcome/expiry; a strictly newer valid cycle can extend the still-live reservation. Refreshed signature/clock envelope fields are authorization metadata, not a different business intent. A retry cannot extend a lease merely by reminting a fresh envelope for the same cycle. Retaining every historical heartbeat result is unnecessary; the latest high-water record and absorbing participation history provide the defined replay behavior.
+
+Established reservations normally renew every 10s, approximately every second 5s group pulse; PREPARING reservations renew every 5s. These schedules are deadlines with margin, not permission to wait for a late pulse. Phase transitions use their own durable idempotent business operations; they cannot masquerade as duplicate heartbeat cycles. TTLs remain 15s for PREPARING and 30s for RINGING/established phases, with the existing 5s safety margin. A new owner may adopt an **unexpired** reservation under a newer validated group epoch, retaining reservationId and winner. Released/expired home_participation is absorbing and cannot be revived. A winner proof after takeover may be reissued for the same committed immutable claim/operation; takeover cannot choose another winning device.
+
+### 45.4 Handoff, Failure Scope and Recovery Work
+
+For graceful shard handoff, gate old-host entity mutations/grants, settle admitted work with bounded entity stop messages, and let the public Lease adapter release exact root authority as part of the framework lifecycle (§47). A group continues required pulses until its own handoff/release gate is entered; do not stop every process lease at the beginning of a rollout. Matched release stops that group's pulses and commits under the exclusive group barrier before the new verified shard host acquires a newer epoch. Stale old-host transactions fail fresh authority checks after takeover. An already admitted transaction holding the shared barrier is ordered before takeover, as specified in Section 24.2; database-enforced transaction bounds prevent an indefinitely paused holder. Cached relay validity remains capped by Section 36 even if invalidation is lost. Measure exclusive-barrier admission/lock contention during a busy handoff.
+
+After a crash, read one existing nonterminal callId per affected group as a bounded nonauthorizing routing hint and send WakeCall. The resulting shard must acquire expired/released authority through its Lease adapter before any entity starts. On that host, page the indexed `(ownership_hash_version, ownership_group_id, call_id)` active-call set after acquisition and send bounded WakeCall messages to hydrate state, reestablish timers and request new participant grants. A hint read grants no mutation, relay or renewal authority. Do not create sentinel/fake calls, rewrite every call merely to install the new group epoch, or enumerate all calls in a takeover transaction. Keep bounded scan cursors/retries, prioritize approaching lease deadlines, and include hint reads, root acquisition, read/WakeCall/participant-renewal bursts in the recovery budget. With remember-entities disabled, proactive wakeup remains required.
+
+A healthy root lease does **not** prove every CallActor/timer is healthy. Supervision and a bounded periodic reconciliation scan of nonterminal calls must rediscover silent stopped actors, missing deadline scheduling and incomplete sagas even while the process controller continues pulsing. The proposed healthy-group reconciliation target is a complete nonterminal-call index sweep within 5s, with bounded pages of at most 512 rows, repair/WakeCall credits, and separate oldest-unreconciled-age monitoring. At 3M established calls this adds at least 600k active-index rows examined/s regionally, or 12k/cell/s before transient calls, retries and repairs; rows examined are not queries or COMMITs. Immediate supervision hints accelerate detection but do not replace the sweep. Measure scan/restart/grant latency against phase-specific lease slack; short PREPARING workflows may terminate safely if recovery cannot beat expiry. Page from durable state and recheck under call barriers. Avoid a hidden per-call periodic database checkpoint that reintroduces the removed owner write load. If reconciliation/renewal progress cannot meet lease slack, shed new calls and terminate/reconcile affected calls through existing safety rules.
+
+At the illustrative P2 steady state, 60k established calls/cell over 1,024 groups averages about 58.6 calls/group; this is not a group-size cap or a placement guarantee. One group lease failure affects every call in that group. An AZ hosting one-third of actor capacity still affects roughly 20k calls/cell and 1M calls regionally, with placement/skew qualified empirically. Grouping reduces root writes during recovery; it does not remove call reads, actor hydration, participant authority reads or reservation writes. Preserve existing recovery/error gates, including explicit safe termination where 15s/30s leases expire before recovery. Never claim all calls survive a 60s database failover.
+
+### 45.5 Revised Capacity and Cell Sizing
+
+Let `G_leased` be acquired/leased shard groups, including empty warm shards, `A_est` established calls, and `A_prep` PREPARING calls. The established component is `G_leased/5 + 2*A_est/10` row updates/s. Add `2*A_prep/5`, reservation renewals for other live phases at their defined intervals, setup/transition writes, registrations, outbox claims/delivery, retention cleanup and all authority reads. Group pulses already cover every active phase; do not add a second per-call owner term. This is a logical row-work model, not database transactions/s, WAL bandwidth or hardware capacity.
+
+| P2 established component, regional | Historical per-call owners | Selected grouped owners, 50 cells |
+|---|---:|---:|
+| Owner renewal row updates/s | 600,000 | At most 10,240 (50 × 1,024 ÷ 5) |
+| Individual participant renewal row updates/s | 600,000 | 600,000 |
+| Combined established renewal row updates/s | 1,200,000 | At most 610,240 |
+| Combined established renewals/cell/s | 24,000 | At most 12,204.8 |
+
+The approximately **49.15% reduction concerns only this established renewal row-update component**. It is not a 49.15% total database, WAL or latency reduction. Fewer leased shards lower the root term; previously acquired empty warm shards still count. Transient phases, unknown-outcome reconciliation, primary grant reads and critical control add work. Benchmark shared-barrier/plain-read costs and exact admitted JPA/JDBC SQL, not an arithmetic-only surrogate.
+
+Tune schema/indexes, compact result payloads, bounded batching, fillfactor, autovacuum and class-isolated VT/JDBC admission using observed WAL bytes, HOT updates, bloat, replication/flush tails and p99. Under a HOT-oriented lease design, avoid an ordinary frequently updated lease-expiry index unless measured lookup benefits justify the update cost; use bounded known-key/due scans where appropriate. Batch limits reduce round trips but do not erase per-row versions/WAL or synchronous durability. Retain unique constraints, complete scoped keys and state CAS. Virtual threads do not remove primary CPU or durable-commit latency.
+
+Scale cell count only against measured per-primary **N−1** limits for sockets, control throughput, total read/write/WAL/retention/recovery mix and latency. Extra cells redistribute participant work but also add ownership groups if each cell keeps 1,024: at 100 cells with the same 3M established calls, the illustrative bound becomes 20,480 root + 600,000 reservation updates/s = **620,480 regionally**, or **6,204.8/cell/s**. Do not halve 610,240 and claim an unchanged regional total. Additional cell count changes placement, gateway capacity, inter-cell topology and operations cost; 100 is an example, not a selected optimum. Split/migrate user buckets through the existing drain/fence protocol; live call coordinator/group identities do not move with users.
+
+### 45.6 Compact Authority and Bounded Detail Export
+
+Separate the logical active working set from retained compact authority through schema projection and selective active indexes. Retain the required scoped command results, terminal call identity/state/version/reason, immutable participant/winner bindings, home participation and fencing tombstones for their full existing replay windows. At 10k attempts/s, the 24h command/home/call populations and retirement rates from Section 38 still apply; grouping does not reduce them. Compact typed outcomes and normalized intent hashes rather than copying full call snapshots into every result. Remove volatile/optional detail when terminal without removing a field needed to reconstruct an authorized retry, absorbing terminal outcome or late compensation.
+
+Do not split active and terminal keys into independently unique tables in a way that permits a second call/result/participation for the same retained identity. The selected baseline preserves authority uniqueness in the existing logical tables/keys. Any measured vertical split must preserve transactional lookup/uniqueness and count its extra rows/writes. Expiry partitioning still cannot drop the partition-key requirements of PostgreSQL uniqueness. Terminal lookup/replay remains a primary-authority operation and does not wait for an optional archive.
+
+Export optional detailed audit/analytics asynchronously to the optional Kafka/ScyllaDB sink through bounded per-cell queues/dispatch. Exporter clients also obey Section 40: a callback API with synchronous metadata/buffer/network waits underneath does not qualify. Audit actual client admission and I/O behavior, and reject/drop optional detail on saturation. Control acknowledgment depends on PostgreSQL state/result/control outbox, not the export sink. Export records use stable eventId or `(callId, callVersion, eventType)` identity and safe replay/upsert behavior. Persisting an export outbox adds writes, retention and dispatch load and must appear in the workload model. Required client-control events stay in the durable control outbox; sink backlog cannot evict them. Optional detail has explicit count/byte/age caps, sampling/drop metrics and isolation from control credits. If lossless audit becomes a requirement, specify durable backlog capacity, retention and admission behavior separately before claiming it; an unlimited queue is prohibited.
+
+Do not export raw JWTs, SDP/ICE, or unneeded personal payloads. The existing optional history retention/privacy rules remain applicable. Successful export never permits early deletion of required primary replay records. Sink outage, export replay and retention cleanup must coexist with P2 traffic without exhausting control pools/disk; otherwise shed optional detail and new work according to priority.
+
+### 45.7 Authority Mode, Rollout and Qualification
+
+Add explicit ownership_mode and ownership_schema_version to the cell authority gate; carry the matching ownershipSchemaVersion in internal control/proof schemas. Repository writers verify the active mode together with storage epoch. Legacy per-call and new grouped ownership cannot both authorize mutations in one cell. A compatible reader may query retained old results, but all active writers use the single gated authority mode. This is a contract requirement for the future implementation, not evidence of deployed migration code.
+
+For a new system, implement grouped ownership as the initial baseline. For an existing system, expand compatible schemas/protocols, canary drained cells, preserve scoped replay/home history, fence old writers and drain/terminate live calls before changing modes. Establish durable group keys/epochs before reopening admission. Rollback to a legacy authority model also requires an explicit drain/fence/mode transition or a binary that supports the active grouped model. Never flip a feature flag back while live old/new writers can coexist. Changes to cell count/hash versions follow independent migration contracts.
+
+Required qualification adds the following schedules to all existing safety/load gates:
+
+- Use a group-A token for a group-B call; reject it even if numeric epochs match. Concurrent unrelated calls within one group must progress under shared barriers and their separate call guards.
+- Race mutation/grant minting with release/takeover/idle retirement and a new call. Fence stale owners, preserve committed ordering, and never retire a group containing a committed nonterminal call.
+- Duplicate/reorder pulses and reservation grants, lose COMMIT acknowledgment, expire a root before renewal, and restart an actor in the same epoch. Neither root nor participant lease may gain time from a duplicate or reset sequence.
+- Keep a group controller healthy while a call actor/timer silently stops; discover and reconcile it within the measured scan/lease budget. Repeat with saturated completion buffers, slow SQL, root pool contention and shard/AZ loss.
+- Freeze one caller bucket while other buckets share its ownership group; reject frozen-bucket effects while other authorized work proceeds. Test promotion/storage epoch changes, matched handoff, cold acquisition and legacy/new writer fencing.
+- Run the real 10M/P2 open-loop workload with full 24h replay populations, synchronous replication, authority-read load, cleanup and bounded export backlog. Measure actual cold/warm COMMIT counts, WAL/flush/replica latency, HOT/bloat, advisory-lock resources/contended duration, queues, CPU, p99 and fault recovery. Validate non-blocking execution with the existing BlockHound/JFR gates.
+
+The design argument is that shared group barriers order validated call work before exclusive replacement, call barriers/CAS preserve per-call transitions, and home guards plus immutable claims preserve per-user/winner safety. It is not a proof that an unspecified implementation obeys every barrier; restricted SQL writers and adversarial concurrency tests must establish that.
+
+Primary grounding: [PostgreSQL advisory locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS) define application-managed transaction-scoped shared/exclusive locking; [PostgreSQL HOT](https://www.postgresql.org/docs/current/storage-hot.html) defines the relevant index/page-space conditions; [Pekko Typed Cluster Sharding](https://pekko.apache.org/docs/pekko/current/typed/cluster-sharding.html) defines shard extraction, placement and restart behavior. The supplied DDIA fencing material motivates rejecting stale owners. Group sizing, SQL contracts and performance estimates here are design choices, not capacity guarantees from those sources.
+
+**Revision 1.7 verdict (historical):** the accepted database-risk mitigation is incorporated with explicit authority, sequence, recovery, retention and rollout contracts. The architecture still requires code-level safety verification and measured 10M/P2 qualification. No benchmark result or production-readiness certification is claimed.
+
+## 46. Revision 1.8 — Database Implementation and Performance Contract
+
+### 46.1 Approved Boundary and Required Database Features
+
+The user's priorities are easier imperative coding/debugging with JPA, 10M authenticated WSS CCU, high throughput/low latency, and no blocking Netty or actor dispatcher. The selected solution is JPA/JDBC on admitted virtual-thread database tasks, not unrestricted ORM access. R2DBC remains an alternative only through an explicit future design decision; there is one selected writer/transaction model, not two active authority implementations.
+
+Required database features remain: durable session/generation binding and five-session admission; gateway-boot authority; single live reservation per user; immutable home winner/participation history; grouped coordinator fencing and ordered pulse replay; call state/version/activation/saga recovery; scoped command outcomes; transactional control outbox; compact terminal replay; and bounded retention maintenance. PostgreSQL is not a media/ICE store, socket heartbeat sink, per-frame relay dependency, global presence counter, or optional analytics sink.
+
+Netty/actor handlers call a small asynchronous DbBoundary with immutable input, traffic class, original deadline, operation identity and expected fences. It returns an admitted completion handle or immediate OVERLOADED/RETRYABLE_CONFLICT. The imperative TransactionService owns SQL and emits an immutable post-COMMIT outcome. Critical native repositories own exact SQL/lock order; ordinary administrative CRUD may use standard Spring Data JPA outside critical paths. Neither administrative traffic nor cleanup bypasses limits.
+
+A healthy, already-authorized SDP/ICE relay performs no SQL/COMMIT and creates no DB VT. Cache misses/rebind/control transitions enter bounded primary revalidation; coalesce identical misses and fail closed on overload. No Redis/read-replica fallback for authoritative winner/session/lease decisions. Optional detail export never becomes a prerequisite for control COMMIT.
+
+### 46.2 Fresh SQL, ORM and Idempotency Correctness
+
+The repository contract is **barrier statement → fresh authority statement → guarded business statements → result/outbox → COMMIT**, all on the same physical transaction connection. Acquire cell/buckets/groups/user/call barriers in the order in §24.2; reads of each protected object follow its acquired barrier. Try-lock failure rolls back; do not continue on a partial set of locks. Advisory key namespaces/encodings are versioned with test vectors; hash collisions must at worst add contention, never merge authority domains or bypass full-key validation.
+
+READ COMMITTED gives each statement a new snapshot, not a new snapshot at an arbitrary point inside a CTE. An owner can commit a takeover between the start of a combined lock/read statement and its lock acquisition. Therefore even a successful try-lock does not justify reading that statement's older snapshot. Separate the acquisition and validation statements. Stored functions are allowed only when audited volatility/SPI statement behavior establishes fresh post-acquisition snapshots and the same lock order; do not assume any compact function/CTE is safe.
+
+JPA first-level caching can return an entity loaded before the barrier without issuing SQL. Authority reads for cell, bucket, group, session, reservation and call grants therefore use **native scalar/DTO projections with actual fresh SQL**, not findById/find, a managed entity, a lazy graph, or query/L2 cache. Disable query/L2 caching for these tables and Open-EntityManager-in-View. Critical transactions use a dedicated native projection/CAS path without pending managed-entity writes that Hibernate could auto-flush before the required locks. If an audited administrative operation mixes bulk SQL and entities, flush/clear/refresh deliberately; it must not reuse stale state for authority.
+
+Native mutation predicates include full identity, expected versions/epochs, live expiry and relevant state; verify affected-row count/RETURNING. Hibernate @Version alone does not implement the distributed fence. Zero affected rows requires classified primary reconciliation, not unconditional save/upsert. Do not use entity loading/dirty-check/save loops for every heartbeat, EAGER collection graphs, N+1 relation fetches or unbounded saveAll batches. Bounded multi-key SQL may reduce round trips only within one cell and the canonical guard order.
+
+For command_result and home_participation insertion races, ON CONFLICT DO NOTHING can encounter a winning uncommitted row that is invisible to the insertion statement's snapshot. After no insert, **read the complete authoritative key in a subsequent statement** and compare normalized intent. A single insert-CTE UNION fallback SELECT can return empty and is not selected. Empty under a race means retry/reconcile inside the original budget, not permission for a new call/request identity. Avoid no-op DO UPDATE merely to expose a result: it can add writes/locks/triggers. SQLSTATE 23505 aborts its transaction; roll back before a separate authoritative lookup. Keep all guards/fences on the write path.
+
+Invoke a plain-returning imperative transactional proxy inside the DB VT or use TransactionTemplate there. SQL, result mapping, COMMIT and resource cleanup belong to that task. Only after successful proxy/template return can its immutable DTO become ACK_COMMITTED. Never annotate an actor handler that starts another thread and assume its thread-bound transaction follows; do not return a future from the transaction to continue SQL elsewhere. No shared EntityManager, streaming ResultSet, lazy entity or connection may escape to a mailbox/callback. Native JDBC used for a measured critical optimization must participate in the **same** JpaTransactionManager-bound connection, never a second independent connection/transaction.
+
+### 46.3 Types, Constraints and Access-Pattern/Index Catalog
+
+The following are schema contracts for implementation, not a claim that executable migrations already exist. Physical migrations must encode them and pass §46.8. SQL field names use snake_case; call_state uses **ownership_group_id**, while group_owner uses **group_id**.
+
+| Field family | Required storage/constraint contract |
+|---|---|
+| Identity strings | UTF-8 text with byte bounds and deterministic C collation where ordered/compared as identifiers; proposed issuer≤512 bytes, canonical user_id/jti≤256, call_id≤96, command_scope≤128, gateway/node ID≤128. Confirm against issuer/protocol fixtures before rollout; reject oversize, never truncate/hash away canonical uniqueness |
+| request_id, operation/event/reservation/activation/session/boot incarnations | UUID where the wire contract defines UUID; call_id remains bounded routed text with an unguessable random component |
+| Epoch, sequence, generation, state version | BIGINT NOT NULL with nonnegative/positive initialization checks and guarded increment; exhaustion fails closed, never wraps/recycles |
+| Bucket/group/hash version | bucket_id INTEGER in [0,16383]; group_id/ownership_group_id INTEGER in [0,1023] for the pinned v1 namespace; positive hash/schema version |
+| Time | TIMESTAMPTZ for DB lease/expiry/deadlines; use clock_timestamp() for live checks, not transaction-start now(); monotonic local time is not persisted/compared cross-host |
+| Intent/outcome | fixed normalized hash, e.g. SHA-256 BYTEA with octet_length=32; compact typed outcome/status with bounded payload bytes; no raw JWT/SDP/ICE |
+| Safety roots | NOT NULL PK/full domain fields; preprovision bucket/group roots; one cell_authority row per cell, singleton_id=1; retain group/bucket epoch tombstones |
+| Call lifecycle | state CHECK over PREPARING/RINGING/ACCEPTED/ACTIVATING/CONNECTING/ESTABLISHED/TERMINAL/FAILED; terminal_at is non-null iff state is TERMINAL or FAILED; terminal reason/retention fields required then |
+| Command lifecycle | status PENDING or FINAL; add finalized_at. PENDING has no cleanup expiry; FINAL has finalized_at, immutable compact outcome and expires_at at least 24h after final outcome, including a qualified commit/clock safety margin |
+| Home participation | terminal_at/expiry required for absorbing RELEASED/EXPIRED phases; retained original acquisition intent/reservation/winner; operation_results holds bounded phase outcomes, not an appended heartbeat history |
+| Outbox lifecycle | PENDING/INFLIGHT/DELIVERED; non-null next_attempt; immutable authority_bucket_id in [0,16383]; compact encoded payload≤8KiB enforced at insertion. INFLIGHT requires dispatch_owner/incarnation/generation/dispatch_until. Claim generation advances monotonically; completion matches the exact claim |
+
+All PK components are NOT NULL. Winner fields are all absent or a complete issuer+jti+incarnation+generation binding; acceptance never overwrites a committed winner. Check constraints enforce shape; guarded repository transitions enforce absorbing history and immutable identities. Retention expiry is never based solely on row creation for active/pending work. Same-cell foreign keys are used only where lifecycle/retention permits them, with referencing-column indexes and measured cost; no cross-cell foreign keys or hidden cascade deletion of replay records.
+
+| Query ID / operation | Predicates and projection | Selected access path / bound |
+|---|---|---|
+| DB01 session binding | Exact issuer+jti; generation/incarnation/token and gateway boot checks | session_registry PK (issuer,jti), gateway_lease PK (gateway_id,boot_id); at most one row per key |
+| DB02 live user routes/admission | user_id, closed_at IS NULL; recheck token expiry and boot lease under user guard | Partial (user_id,issuer,jti) WHERE closed_at IS NULL. Bounded current-route candidate set; at most five eligible routes, no terminal-history scan |
+| DB03 safety root/pulse | Full cell_id+ownership_hash_version+group_id; plain fresh validation SELECT, exact-token/sequence CAS for pulse | group_owner composite PK; optional stable owner_node/incarnation lookup only if measured. No ordinary lease_until/lease_sequence B-tree/INCLUDE index on hot root |
+| DB04 reservation/claim/renew/release | Exact user_id, reservation_id/call_id/version and valid source grant; compact fields | user_reservation PK user_id; relevant user_guard first. No lease-expiry index by default; bounded known-key renewal/expiry work |
+| DB05 call transition/grant | Exact call_id after barriers; phase/version/participant/authority checks | call_state PK call_id; native scalar projection or guarded update, no whole entity graph |
+| DB06 recovery routing hint / active recovery / idle check | Exact hash version+group, terminal_at IS NULL; stable call_id cursor | Partial (ownership_hash_version,ownership_group_id,call_id) WHERE terminal_at IS NULL; pre-acquire routing hint LIMIT 1 with no authority; full hydration page≤512 after acquisition; guarded idle check LIMIT 1 only for coordinated explicit retirement |
+| DB07 command replay | Full issuer+jti+command_scope+request_id, normalized hash | command_result hash partitioned by (issuer,jti); full composite PK including partition columns; single-session partition pruning |
+| DB08 home saga replay | Exact call_id+user_id; immutable acquire intent and absorbing phase | home_participation PK (call_id,user_id); no history/full-table scan |
+| DB09 outbox claim | delivery_state='PENDING', next_attempt≤fresh DB time; ordered next_attempt,event_id | Partial (next_attempt,event_id) WHERE delivery_state='PENDING'; small SKIP LOCKED claim page, initially≤128 and payload≤1MiB |
+| DB10 expired outbox claim | delivery_state='INFLIGHT', dispatch_until≤fresh DB time; exact claim generation | Partial (dispatch_until,event_id) WHERE delivery_state='INFLIGHT'; separate bounded reclaim then normal claim, no leased-row scans mixed into pending queue |
+| DB11 replay retirement | FINAL command expiry / terminal call/home expiry and complete stable tie-break key | Partition-local expiry indexes; command uses (expires_at,issuer,jti,command_scope,request_id) WHERE status='FINAL'; call/home terminal expiry indexes. Candidate batch≤512 and per-TX≤1MiB key/projection bytes |
+| DB12 gateway expiry cleanup | Exact pre-known gateway boot and bounded current-route candidates | Boot PK/known gateway set; optional measured stable (gateway_id,boot_id,issuer,jti) current-route index; conditional close with exact generation, no region-wide full session sweep |
+
+DB02 must not accumulate unlimited expired-but-unclosed candidates merely because only five are eligible. Under the user guard, retire bounded stale current routes and use a compact current-route view if required, preserving the canonical session PK/tombstone/incarnation authority. If cleanup cannot bound that working set, reject/defer registration instead of returning an incorrect five-session outcome from a truncated LIMIT.
+
+Reference index definitions for the unpartitioned logical tables (implementation migrations build/attach per partition where applicable):
+
+```sql
+CREATE INDEX call_active_group_idx
+  ON call_state (ownership_hash_version, ownership_group_id, call_id)
+  WHERE terminal_at IS NULL;
+CREATE INDEX session_current_user_idx
+  ON session_registry (user_id, issuer, jti)
+  WHERE closed_at IS NULL;
+CREATE INDEX outbox_pending_idx
+  ON control_outbox (next_attempt, event_id)
+  WHERE delivery_state = 'PENDING';
+CREATE INDEX outbox_reclaim_idx
+  ON control_outbox (dispatch_until, event_id)
+  WHERE delivery_state = 'INFLIGHT';
+```
+
+Recovery template, after authoritative group acquisition; :parameters represent bound JDBC values, not interpolated SQL:
+
+```sql
+SELECT call_id, version, state
+FROM call_state
+WHERE ownership_hash_version = :hash_version
+  AND ownership_group_id = :group_id
+  AND terminal_at IS NULL
+  AND call_id > :last_call_id
+ORDER BY call_id
+LIMIT :page_size;
+```
+
+Use a distinct first-page statement without the cursor predicate, not OFFSET. Loop fairly across groups and revisit pages; concurrent inserts/terminalization mean a sweep is not a consistent whole-table snapshot. Lost hints/new rows behind a cursor and silent actor failures must still meet the **measured oldest-unreconciled-age gate**, not just a nominal cycle duration. A ≤5s full cycle alone does not prove every newly inserted or stopped actor is discovered in ≤5s. Choose cadence/page scheduling accordingly; the 600k regional rows/s estimate is a lower bound and actual work may be higher. No per-call scan-checkpoint writes.
+
+Queue-only claim uses bounded hint and authoritative stages **within the short transaction**: acquire the cell shared barrier, read at most 128 due event IDs and immutable authority_bucket_id values as untrusted scheduling hints (no row locks yet), acquire their sorted bucket barriers, then freshly validate the local cell/bucket epochs/status. Frozen/stale buckets are deferred, not authorized by the hint. The final claim below is restricted to the validated candidate IDs. Hint cursors use stable (next_attempt,event_id) keysets, advance across deferred/contended pages, wrap fairly and retain oldest-age monitoring; repeatedly selecting the same frozen/busy prefix must not starve other buckets. Bound workers, page attempts and cursor state; no single unbounded global claim queue. The hint, barrier and validation statements add real round trips to DB09's manifest. Do not lock queue rows before required bucket barriers or claim events from unvalidated buckets.
+
+Queue-only claim template after those steps; selected payload/projection and claim expiry are bounded by the original deadline:
+
+```sql
+WITH candidates AS (
+  SELECT event_id
+  FROM control_outbox
+  WHERE delivery_state = 'PENDING'
+    AND event_id = ANY(:validated_candidate_ids)
+    AND next_attempt <= clock_timestamp()
+  ORDER BY next_attempt, event_id
+  LIMIT :claim_limit
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE control_outbox AS o
+SET delivery_state = 'INFLIGHT',
+    dispatch_owner = :worker_id,
+    dispatch_incarnation = :worker_incarnation,
+    dispatch_generation = o.dispatch_generation + 1,
+    dispatch_until = :claim_until
+FROM candidates AS c
+WHERE o.event_id = c.event_id
+RETURNING o.event_id, o.dispatch_generation, o.destination, o.payload;
+```
+
+This CTE is queue claiming, **not** authority validation combined with barrier acquisition. Bind the candidate IDs as a typed UUID array. Send RPC only after claim COMMIT and current destination/call authorization; a queue claim itself grants no delivery authority. Reclaim/complete/retire paths use the same immutable source bucket and fresh barriers, with exact event_id+worker/incarnation+generation checks. An expired claim/late callback cannot mark another worker's claim delivered. Crash/reclaim/replay can duplicate delivery, so stable event ID and destination dedupe remain mandatory. SKIP LOCKED is not permitted to infer USER_BUSY or absence of authority. Its skipping of row locks does not handle committed leased rows: DB10 explicitly reclaims them, then DB09 claims PENDING rows. Monitor oldest-event age/starvation. LIMIT bounds returned/locked candidates, not all rows examined, index dead entries, sort work or bytes; cap execution time and qualify actual plans.
+
+Use stable bind-parameter SQL templates and a bounded prepared-statement cache. Verify partial-index implication for actual prepared/generic plans; queries keep literal static lifecycle predicates rather than assuming a parameterized status always selects a partial index. Never index a moving predicate such as lease_until>now(). INCLUDE of frequently updated lease/sequence fields can prevent HOT; an index-only scan is not guaranteed when visibility-map state requires heap visits. Required expiry/queue indexes have real write costs; measure them rather than maximizing index count. Inspect SQL round trips, rows examined/returned, buffers, sort/temp bytes, lock time and WAL per operation. fetchSize or ORM pagination alone is not a bound on server work.
+
+Each query has a versioned implementation manifest: SQL text/hash, schema/index/partition dependencies, binds, traffic class, barriers, maximum statements/round trips, returned rows/bytes, timeout/remaining-deadline behavior, expected plan and retry classification. Values must be finite and captured from the real implementation before release. No SELECT * or unbounded actor hydration. Compact multi-row statements must not bypass fences, reorder locks or fan out across databases.
+
+### 46.4 Bounded Virtual Threads, Pools and Deadlines
+
+Selected baseline: **two fixed physical Hikari pools per database-serving process**, one safety pool for renewal/termination/fenced recovery, one control pool for interactive work/outbox/maintenance. Each has a matching audited persistence-unit/transaction-manager binding; qualify the selected transaction manager explicitly rather than relying on an ambiguous default @Transactional. One transaction uses exactly one pool. Do not open an unbudgeted default datasource or borrow from both pools. Qualify persistence-unit memory/startup overhead. Safety and control pools still share primary CPU/WAL/I/O: connection isolation alone is not workload isolation.
+
+Within each pool, reserve nonborrowable class credits (renewal, termination, recovery; interactive, outbox, maintenance respectively), with sum of class admitted task caps **no greater than that pool's maximum connections**. One admitted task uses at most one connection. All startup/health/validation borrowers and administrative jobs have explicit budget entries; no hidden bypass. This avoids intentional oversubscription/long pool queues, though connection validation/recreation/failure can still delay borrow. Separate bounded recovery-query and callback slots are also reserved. Maintenance/recovery cannot consume the renewal floor. Static quotas are the initial policy; any later lending must have a proved bound and cannot preempt an already held SQL transaction.
+
+The cell-wide inequality, including rolling surge and autoscaling, is:
+
+`sum over maximum simultaneously running pods (safetyPoolMax + controlPoolMax + other declared client connections) + operator/HA reserve <= tested primary connection budget under N−1`.
+
+If PgBouncer is introduced, bound both client connections and backend pools across all pooler replicas/database-role combinations; double pooling must not hide queues or overcommit backends. Do not use connection-count-per-CPU folklore as a certified sizing formula. No pool per socket/entity/shard/session; no HPA expansion without the connection budget. Release profiles declare pool maxima/minima, VT count/bytes, per-class caps and p99 targets before deployment; missing values fail configuration validation.
+
+Admission uses nonblocking try-acquire/atomic counters before task creation, checks original deadline and estimated remaining service cost, and charges queued/running tasks plus payloads/completion slots. Actor code never waits for a credit. No default unlimited executor queue or millions of VTs waiting for Hikari. Under normal admitted load, pool acquisition p99 remains≤10ms (§42); hard failure timeouts are not latency SLOs. Hikari currently documents a minimum connectionTimeout of **250ms**, so configuring a 10ms hard Hikari timeout is not a valid implementation of that p99 target. Pin/verify the chosen release's limits and validationTimeout relationship; use admission to avoid saturation, not unsafe per-request mutation of global pool configuration.
+
+Before beginning SQL after borrow, recheck the original remaining budget. If a caller deadline expires during borrow/SQL, end the logical wait appropriately but keep physical task/connection credits until cleanup finishes. An actor timeout may receive OUTCOME_UNKNOWN when effects could have begun; it never proves rollback. Moving an operation to recovery cannot free the still-running physical task from the aggregate count/connection budget. Bound quarantined/zombie tasks and replacement capacity; if cleanup stalls, trip that class/cell's circuit and stop new admission rather than replacing VTs indefinitely.
+
+Keep §24 limits (lock100ms, statement1s, transaction2s, idle-in-transaction1s) as proposed **failure ceilings**, lower according to remaining request/lease slack where the mechanism supports it. Install role-level defaults before traffic and SET LOCAL overrides inside the transaction; prove no timeout/isolation leakage on pooled reuse. A pinned PostgreSQL with transaction_timeout can terminate the session, not merely return a reusable connection; discard accordingly. Older versions require a qualified DB-side watchdog. Application/Spring transaction timeout alone does not prove a paused holder is bounded.
+
+Configure finite pgJDBC connect/socket/cancellation/network bounds with their actual units and semantics; zero socketTimeout disables that bound and is not the baseline. Keep cancellation's out-of-band connection attempts bounded/accounted. Test network partition, blocked COMMIT and driver cleanup; statement timeout does not by itself bound an unknown synchronous WAL COMMIT. Prewarm pools at bounded startup rate, prevent restart/credential-rotation connection storms, and coordinate maxLifetime/keepalive with infrastructure limits. No per-operation TLS/connection establishment on the warm path.
+
+### 46.5 Retry, Cancellation and Unknown Outcomes
+
+| Outcome | Required handling |
+|---|---|
+| 40001 serialization / 40P01 deadlock with confirmed transaction abort | Roll back/release; bounded whole-transaction retry with original business identity/deadline; one retry owner, jittered scheduled continuation |
+| 55P03 / failed try-barrier / guarded transient conflict | RETRYABLE_CONFLICT after rollback; not USER_BUSY; no retries while holding a connection |
+| 23505 | Confirm transaction abort; scoped fresh primary lookup and intent comparison; no new requestId or silent overwrite |
+| 57014 statement cancellation | Determine phase and transaction cleanup; cancellation before a confirmed rollback differs from uncertainty during COMMIT |
+| 08xxx, lost connection/COMMIT response, task interruption or caller timeout after effects could begin | OUTCOME_UNKNOWN; query/reconcile the same authoritative command or pulse/claim identity, never assume no commit |
+| Stale epoch/incarnation/version, expired lease or invalid proof | Fence/reconcile/fail closed; no blind replay under another token or revival of expired participation |
+| Admission/executor rejection before work starts | Explicit overload/retry advice; release reserved admission/completion resources once; no claimed business commit |
+
+Retry classification uses SQLSTATE and the actual transaction/COMMIT phase, not exception-message text or a blanket retry annotation. Server defaults and driver cleanup bound resource occupation even when a client cancels. Spring proxy/TransactionTemplate failure during COMMIT is not automatically a known rollback. Idempotency queries may themselves fail: retain bounded pending reconciliation; a lookup outage or transient empty result cannot manufacture success/failure.
+
+Lease pulses keep the stable operation and committed sequence until a lost acknowledgment is reconciled; do not advance a new cycle to conceal uncertainty. Outbox late completions match claim generation. Mailbox completions are incarnation/epoch/version checked, and physical credit cleanup occurs independently of whether the actor still exists. Expose a controlled completion/cancellation handle, not an unrestricted executor Future whose cancellation can detach credit accounting. Test every disconnect/cancel/actor-stop interleaving for exactly-once resource release and durable-result preservation. No actor retry may create a second simultaneous **mutation** task for an unresolved entity operation; bounded read-only reconciliation retains its own credits.
+
+### 46.6 Hot Keys, Hot Partitions and Write Amplification
+
+The design avoids a **mandatory global exclusive hot row/actor** on ordinary call work; it does not promise zero hotspots. Cell/bucket/group roots use shared barriers and fresh plain validation reads. Group pulses alone update their compact root at the bounded cadence; no FOR UPDATE root read per call, group-wide business actor queue, per-call owner heartbeat or per-frame durable write.
+
+A user guard necessarily serializes that user's session/reservation changes. Enforce bounded per-user/per-session new-command rates, idempotency-key creation rates, bytes and inflight work; reject abusive retries/new IDs before they monopolize cell resources, with authoritative controls preserved. Never spread one user's reservation across cells to bypass busy contention. Legitimate user serialization is different from an avoidable global bottleneck.
+
+Call IDs have well-distributed random components and a pinned full-canonical-ID hash; not a timestamp/range prefix used as the group selector. Monitor per-group placement, inflight, lock waits, recovery backlog and p99, not only average calls/group. Per-group fairness caps sit beneath process/cell caps without serializing all group SQL. A congested group is shed/fenced/recovered locally; unaffected groups retain their budgets. Jitter schedules while meeting lease deadlines; never batch all region renewals on a single timer instant.
+
+Hash-partitioned command_result distributes session keys but all commands for **one issuer+jti still hit one partition**. Preserve full scoped uniqueness; control hot sessions through admission rather than salting request IDs into an incompatible authority schema. Monitor partition/QPS/WAL/read skew and single-key floods, including one busy user/call, popular destinations, uneven buckets and adversarial key distributions. Do not claim hash partitioning alone eliminates hotspots. Stable partition count/hash changes require an explicit uniqueness-preserving migration, not an online modulus flag change.
+
+Measure cell load using SQL/RPC QPS, WAL/flush/storage, active calls, retained rows, recovery cost, queue ages and tails—not just socket counts. Shed new calls before renewal slack is endangered. Scale cells only below their tested N−1 latency knee; drain/fence bucket moves, keep live call coordinator/group assignment immutable, and retain original replay lookup. Peer/RPC destination failure uses class/destination bulkheads and original deadlines so it cannot form a global backlog.
+
+P2 unchanged: up to 610,240 established renewal row updates/s regionally (12,204.8/cell/s at 50 cells), plus at least 600k regional active-index rows examined/s and all control/read/cleanup work. Grouping's ~49.15% reduction applies only to the old established renewal component. At full 24h steady-state retention, command/home/call terminal populations sum to **5,166,720,000 records regionally, 103,334,400/cell** at equal distribution, before active rows, session history and outbox. Logical retirement is **59,800/s regionally, 1,196/cell/s**, before other cleanup/backlog. These are arithmetic workload assumptions, not equal physical row sizes or measured capacity.
+
+Maintain per-table fillfactor/autovacuum/analyze/freeze and partition-parent ANALYZE schedules in the tested deployment manifest; no arbitrary universal percentage. Monitor HOT ratio, dead tuples, vacuum/cleanup age, oldest transaction/xmin, replication-slot/feedback retention, XID/multixact age, checkpoints, disk/WAL/archive/PITR headroom and synchronous standby flush tails. Long snapshots can pin cleanup. HOT can prune obsolete versions; logical updates/day are not a claim of that many retained physical tuples. Warm/cold plans must be tested against realistic bloat/visibility maps and full retained populations.
+
+Expiry workers use bounded deterministic-key pages and short transactions honoring relevant barriers/status, with protected maintenance resources. Delays may retain history longer but must never purge pending/active authority or shorten replay windows. Active working-set indexes stay selective; whole-table scans over 100M retained rows are not a recovery strategy. Do not run routine VACUUM FULL on a serving critical table. Optional export cannot delete primary replay authority; if CDC is later selected, cap/monitor slot lag and retained WAL/catalog rows with an explicit sink-outage policy, not unlimited disk retention.
+
+### 46.7 Operations, Security and Deployment Compatibility
+
+Pin exact compatible JDK, Spring Boot, Hibernate/JPA provider, pgJDBC, HikariCP and PostgreSQL releases in the implementation BOM before qualification. Java21+ is the VT prerequisite, not proof a driver never pins carriers. Test the chosen JDK/driver/library behavior with JFR; older monitor-pinning behavior and newer JDK improvements do not remove native/foreign pinning or CPU limits. Debug with immutable operation/call/query IDs and per-stage traces, not raw tokens.
+
+Runtime database roles have only needed business access; HA/migration authority-mode/storage-epoch writers are separate, and runtime cannot directly promote/freeze/change those roots outside the approved interface. Separate migration/backup/operator privileges, use TLS certificate validation and bound parameters, redact binds/logs. Restrict repository entry points so every business writer obeys barriers/CAS. Any SECURITY DEFINER functions require fixed search_path, least privilege, revoked unintended PUBLIC execution and review. Never enable unsafe DDL auto-update in serving JVMs; schema validation is read-only at startup.
+
+Migrations use expand/compatible deploy/backfill/validate/contract with bounded lock_timeout and cancellation/rollback runbooks. CREATE INDEX CONCURRENTLY is an operator migration outside a transaction; build/attach partition indexes appropriately, inspect and clean failed INVALID indexes safely. Validate constraints in a controlled phase; do not block control traffic with a global DDL transaction or purge retained history as rollback. JPA mapping changes do not imply a live authority-mode flip.
+
+PgBouncer is optional, not assumed capacity. Transaction pooling requires one backend for the whole transaction; use transaction-scoped advisory locks/SET LOCAL, not session locks, LISTEN or session-owned state. Protocol-level prepared-statement support depends on pinned configuration; SQL PREPARE is not equivalent. Test prepared/generic plans and two-layer timeouts/queues before enabling it.
+
+Publish low-cardinality histograms by cell/class/query ID for admission/pool/SQL/COMMIT/RPC, event-loop lag, VT/carrier/pinning, oldest tasks, credit leaks, retry/unknown outcomes, locks, renew slack, outbox age and maintenance debt. pg_stat_statements aggregates SQL and WAL, not application end-to-end p99; collect application histograms separately. Top-K/skew reports are bounded; do not label every user/session/call in metrics or flood synchronous logs.
+
+### 46.8 Gap Closure and Required Release Evidence
+
+| Gap ID | Design correction now required | Evidence still required |
+|---|---|---|
+| D01 JPA might block Netty/actors | Explicit admitted VT boundary; synchronous SQL only there (§40) | Actual call-path/context tests, protected-thread detector, JFR under delayed I/O |
+| D02 ORM caches or combined CTE can accept stale authority | Fresh post-barrier native statement; no authority entity/query cache | Paused old-owner/takeover schedule, ORM-cache regression, same-statement counterexample |
+| D03 Insert conflict can produce invisible winner | Subsequent-statement scoped lookup; abort-aware 23505 handling | Concurrent insert/replay and home release-before-reserve tests |
+| D04 ACK/flush/future cancellation mistaken for COMMIT/rollback | Entire imperative transaction in one VT; post-COMMIT DTO; unknown-outcome protocol | COMMIT loss, interrupt/cancel/actor-stop fault matrix, credit-release assertions |
+| D05 VTs/pools/HPA can create overload | Pre-spawn count/byte/deadline caps, two fixed pools, reserved classes, aggregate budget | Max pod/surge/N−1 pool tests, driver cleanup bounds and overload fairness |
+| D06 Query/schema/index contract missing | Types/constraints, DB01–DB12 catalog, actual-SQL manifest | Executable migration tests, full-data plans, bounded rows/bytes/round trips |
+| D07 Group/session/partition skew can dominate latency | Per-key/group/class/destination fairness and admission; immutable authority | Hot-key/hot-partition distributions and unaffected-cell/group tail isolation |
+| D08 Replay population/cleanup/visibility debt omitted from tuning | Full retention preload, 1,196/cell/s baseline retirement and vacuum/WAL budget | 24h steady-state cleanup/bloat/replication/disk evidence, bounded outage catch-up |
+| D09 Driver/pooler/security/migration behavior unspecified | Pinned BOM/config, least privilege, compatible migrations and optional pooler checks | Exact runtime manifest, permission/invalid-index/rollback/connection-reuse tests |
+| D10 “Similar performance / no bottleneck” treated as guarantee | Real P2/N−1/failure qualification; no fixed performance delta promised | Reproducible measurements meeting all correctness, latency and resource gates |
+
+Before release, all existing §39/§44/§45 tests plus these must pass:
+
+- Acquire a shared barrier after another transaction commits takeover; show the **next** native authority statement rejects the old token, even when the old entity was previously loaded. Repeat group/bucket/storage promotion and grant reads. Different calls in a group must progress without common exclusive-root reads; exclusive takeover remains correctly ordered/bounded.
+- Race command/home inserts with a delayed uncommitted winner; duplicate intent returns the original outcome and conflicting intent is rejected. Neither empty same-statement fallback, delayed reserve, expired participation nor a restarted pulse can create a new call/lease/winner.
+- Delay pool borrow, SQL, synchronous standby flush and COMMIT response; disconnect/interrupt/cancel and stop/restart actors at every phase. Protected loops/dispatchers keep progressing; no false ACK/rollback, stale mailbox adoption, credit leak or unbounded physical task replacement.
+- Assert one physical connection/VT/transaction and post-proxy COMMIT acknowledgment. Test self-invocation/detached Future/misconfigured datasource/cache as negative cases. Freeze/migrate with pending work/outbox/cleanup; retained history and all old-writer fences survive.
+- Run every catalog query with actual prepared/generic plans against full P2 active/24h data, realistic skew and vacuum debt. Use EXPLAIN (ANALYZE, BUFFERS, WAL) for writes only on safe test fixtures—it executes them. Measure real durable COMMIT separately; EXPLAIN alone is not end-to-end latency evidence.
+- Sustain the full simultaneous 10M/P2 open-loop profile for≥24h with real TLS/RS256, synchronous replication and cleanup/export background load. Include max pod/surge limits, hot session/user/group/partition, pooler if enabled, old-transaction/CDC lag if used, synchronous-WAL stalls and one-AZ loss with its 20k calls/cell recovery load. No coordinated omission or empty-database surrogate.
+- Measure actual oldest-unreconciled age under lost hints and concurrent insertion, not just sweep speed. Recovery/outbox/maintenance remain bounded and cannot starve renewal. Expired leases may terminate calls safely; no claim that all calls survive DB RTO.
+- Verify command150ms/500ms, relay50ms/150ms p95/p99 and admitted stage queue gates under the qualified profile, plus N−1 error/recovery limits. If comparing R2DBC, hold SQL, pool limits, hardware, data, durability, workload and failure semantics equal; do not infer parity from thread microbenchmarks.
+
+**Revision 1.8 verdict:** the accepted JPA/VT choice and identified database gaps are addressed at the **spec-contract level**. Exact SQL/migrations/configuration and production performance still need implementation and measured evidence. The goal is to contain contention/overload and protect low-latency paths—not assert that an unbuilt system has no bottleneck or already supports 10M CCU.
+
+Additional primary grounding: [PostgreSQL READ COMMITTED](https://www.postgresql.org/docs/current/transaction-iso.html), [partial indexes](https://www.postgresql.org/docs/current/indexes-partial.html), [HOT](https://www.postgresql.org/docs/current/storage-hot.html), [index-only scans](https://www.postgresql.org/docs/current/indexes-index-only-scans.html), [SKIP LOCKED](https://www.postgresql.org/docs/current/sql-select.html), [timeouts](https://www.postgresql.org/docs/current/runtime-config-client.html), [vacuum](https://www.postgresql.org/docs/current/routine-vacuuming.html), [concurrent index creation](https://www.postgresql.org/docs/current/sql-createindex.html), [pg_stat_statements](https://www.postgresql.org/docs/current/pgstatstatements.html), [logical-decoding slots](https://www.postgresql.org/docs/current/logicaldecoding-explanation.html), [Spring Boot VT task execution](https://docs.spring.io/spring-boot/reference/features/task-execution-and-scheduling.html) and [PgBouncer feature compatibility](https://www.pgbouncer.org/features.html). The supplied AWS production playbook's access-pattern/skew/benchmark/migration guidance informed the review. Pool/class sizes and latency/capacity numbers remain design targets, not guarantees from these references.
+
+## 47. Revision 1.9 — Pekko Cluster Sharding Runtime and Ownership Contract
+
+This section closes the six previously identified sharding design gaps. It selects one implementation contract and supersedes conflicting earlier options. “Akka” in the discussion refers to the selected Apache Pekko Typed stack. The regional target remains 10M concurrent authenticated connections across independent cells; it is not a single 10M-member/session actor cluster. All tuning values below are proposed qualification defaults, not measured production results.
+
+### 47.1 Ingress, Entity Registration and Placement
+
+Run the cell gRPC ingress in each actor pod/JVM, with one cell-scoped ActorSystem. Gateways are RPC clients and never join that cluster. After authentication, target-home validation and count/byte/deadline admission, ingress constructs an immutable typed command and dispatches through EntityRef or the configured ShardingEnvelope extractor. Handlers return asynchronously; they never call Future.get/join, wait for an actor reply or execute JDBC. A business acknowledgment still requires the committed transaction result, not tell/enqueue success.
+
+Initialize both entity types on every actor member: `SignalingUserV1` and `SignalingCallV1`, role `signaling-actor`. Initialize storage admission, the lease adapter's process-local dependencies and serializers before sharding initialization. Entity type names are stable across compatible rolling releases; do not change them for ordinary code versions. Registration/startup is explicit, rather than triggered lazily by the first production RPC. There is no additional per-user singleton or global business router. A cached node address/ActorRef is not ownership authority; stale routes retry through sharding with the original requestId and remaining deadline.
+
+Use a custom, versioned extractor. CallActor shardId is the canonical decimal groupId from §45, exactly 0–1023. UserActor also has 1,024 logical shards in a separate type namespace with pinned user canonicalization/hash vectors. These are distinct from the 16,384 directory buckets. All members verify the same cell identity, entity types, roles, counts, hash versions and serializer contracts before serving. Never accidentally use a library/default hash in one dispatch path and the ownership hash in another. Changing either mapping requires a drained/fenced namespace migration; HPA changes pod count without changing the modulus.
+
+The illustrative cell has six actor pods, two per AZ. At 60k established calls/cell, placement averages 10k calls/pod; after losing one AZ, four survivors average 15k, before skew/transient work. Socket residency remains on gateways. The current qualification manifest allows six steady actor pods plus one rollout surge; larger actor HPA maxima require revised connection, association-memory and N−1 qualification before activation.
+
+### 47.2 Placement Metadata and Cell Isolation
+
+Set `pekko.cluster.sharding.state-store-mode=ddata` and `remember-entities=off` explicitly for both types. DData stores shard placement metadata; PostgreSQL stores business authority and call state. There is no application Pekko persistence journal or remembered-user history in this baseline. Disabling remembered entities does not remove the need for placement metadata or proactive application recovery.
+
+The framework's internal shard coordinator is a placement control-plane component. Existing routing caches support the steady data path; coordinator election, initial allocation and rebalance remain measurable dependencies. Neither the coordinator nor DData grants SQL ownership. MemberUp, successful registration and a placement decision are insufficient to authorize a call mutation.
+
+Use a unique ActorSystem/discovery identity per cell, for example `signaling-r1-c017`, with cell-scoped namespace/labels and policies. Never discover/join another cell, and never use cross-cell Pekko remoting. Retain join compatibility enforcement; add an application fingerprint check for the immutable mapping/authority/serializer settings not covered by the framework. Pod IP, AZ and pod UID are member-specific values, not required-equal fingerprint fields. Reject incompatible members before business admission; an incompatible rollout uses an explicit migration rather than disabling checks.
+
+### 47.3 Kubernetes Bootstrap and Readiness
+
+Select Pekko Management Cluster Bootstrap with Kubernetes API discovery. Discovery uses the exact cell namespace and cell/role label selector, a named management port and namespace-scoped service-account pod get/list permission. Advertise each pod's routable PodIP for Artery; bind locally as required, but never advertise 0.0.0.0 or a shared Service/LB address as the member address. Canonical address and cluster UniqueAddress UID identify a specific member incarnation.
+
+Discovery must include starting/not-ready pods so bootstrap does not depend on business readiness. The gRPC business Service selects only ready pods. Management/remoting endpoints are private and reachable by authorized cell peers during bootstrap; they are not exposed to clients. Use workload identity/mTLS, namespace-scoped RBAC and per-cell NetworkPolicies. Select this bootstrap mechanism exclusively: no simultaneous seed-node/direct-join scripts.
+
+| Profile | Formation policy | Admission |
+|---|---|---|
+| Initial controlled formation | `new-cluster-enabled=on`; required contact points=6, matching the six initial pods | Closed until formation succeeds and all serving pods are switched to the join-only profile |
+| Normal scale/roll/join | `new-cluster-enabled=off`; discover existing members; minimum actor membership for initial Up=4 | Open only after the local readiness contract; inability to find a cluster never authorizes a new isolated cluster |
+| Full actor-cluster loss | Join-only fails closed; controlled reformation verifies/fences old processes and storage/cell authority | Operator/controller runbook, then initial-profile sequence; no timeout-only reformation or automatic lease resurrection |
+
+Configure role minimum four and disable weakly-up admission. An initial min-members setting is not a continuous quorum/capacity check: normal new-call admission also requires at least four reachable Up actor members with the qualified AZ spread. Below that threshold, shed new calls while retaining bounded renewal/termination/reconciliation attempts for already owned work; do not shut down every lease merely because new-call readiness is false. Existing safety/clock/database fences remain authoritative.
+
+Startup order is configuration/identity and bounded DbBoundary → ActorSystem/management/discovery → membership Up → registration of both regions and dependency checks → business readiness. Readiness requires local Up, correct fingerprint, initialized regions, valid cell/storage mode, usable safety-pool/clock bounds, adequate capacity and no drain. It does not eagerly acquire every group, or require all 1,024 groups to be owned locally. A request still passes its group's acquisition/authority gate. Framework sharding-health registration alone is insufficient for ongoing readiness. Liveness checks process/scheduler health, not a database dependency that would trigger a restart storm.
+
+Use a proposed 30s unsuccessful-join shutdown with restart jitter and bounded rollout retries. Kubernetes API unavailability must not split an existing cluster into independently formed clusters. Full-cell reformation has a separate measured runbook/RTO; the ≤30s single-AZ recovery target is not a promise of operator-free full-cell reconstruction.
+
+### 47.4 Public Lease API ↔ PostgreSQL group_owner
+
+Select a custom PostgreSQL-backed implementation of the public `org.apache.pekko.coordination.lease.javadsl.Lease` API. Bind it through per-type `ClusterShardingSettings.withLeaseSettings(LeaseUsageSettings)` **only for SignalingCallV1**. Keep the global sharding use-lease setting empty and UserActor leasing disabled. The adapter is an implementation requirement, not an existing delivered class.
+
+| Approach reviewed | Decision and reason |
+|---|---|
+| Unconnected application lease controller | Rejected: leaves shard-start/handoff and group authority ordering implicit |
+| Kubernetes/framework lease plus independent PG root | Rejected baseline: adds a second lease/lifecycle without implementing the SQL fence |
+| Public Pekko Lease adapter using the existing PG root | Selected: framework startup is gated by the same durable ownership protocol, with the extra cold COMMIT made explicit |
+
+Resolve the framework lease name `<actorSystem>-shard-<typeName>-<shardId>` only against the configured cell identity, exact SignalingCallV1 prefix and canonical 0–1023 shardId. Reject unknown types/names/hash modes. Map it to the existing durable `(cellId, ownershipHashVersion, groupId)` row. Never derive a new SQL ownership namespace from a pod address or bootstrap generation: that would allow two roots for the same calls. Validate the framework owner host:port against the local member address, but durable owner_node also binds cluster UID and pod UID. Generate a fresh ownerIncarnation for each new group tenure. Reuse within one successful held tenure is idempotent; pod/IP reuse and reacquisition after loss require a new incarnation/epoch.
+
+The adapter and bounded controller share one state machine per group. Constructors, `checkLease`, lease-loss callbacks and actor handlers perform no JDBC/pool waits. acquire/release return CompletionStage; all root SQL runs through the admitted safety-pool DbBoundary on database virtual threads. `checkLease` reads an atomic immutable local snapshot in constant time. It is true only after a proven COMMIT for that exact tenure and before its conservative local expiry, with valid clock/storage bounds; it is a scheduling hint, never sufficient SQL authority.
+
+Required lifecycle:
+
+1. **Acquire:** take cell/shared and group/exclusive barriers in the existing order; read fresh primary authority, reject an unexpired different owner, and CAS a strictly newer epoch/incarnation with its initial durable sequence/expiry. Publish the local held snapshot and complete acquire(true) only after COMMIT is proven. The framework may then create CallActors. Known live-other-owner returns false; unknown/error outcomes never return true.
+2. **Unknown acquire:** retain a bounded pending operation identity and reconcile the primary before any subsequent acquire invents another incarnation. If the original Future has already failed/timed out, never late-enable entities; any committed orphan is exactly released or left gated with renewal stopped to expire safely. Physical DB work retains its credits until bounded cleanup; a logical timeout is not rollback.
+3. **Pulse:** one loop and at most one in-flight pulse per held group, TTL15s/period5s, exact-token/sequence CAS and durable operation identity (§45). No separate framework/application renewal loop or owner write per call. Query unknown COMMIT before advancing sequence. New acquisitions, pulse/release and reconciliation have separate bounded queues/class credits within the existing fixed pools.
+4. **Loss:** local invalidity/unknown renewal, expiry, placement loss, clock failure or storage fencing closes the application mutation/grant gate immediately. Notify the framework through the leaseLost callback after successful acquisition, once per tenure. Guard every completion/callback with its tenure identity so a late old callback cannot invalidate a newer tenure. Framework shard termination does not prove pending JDBC work rolled back; storage barriers still reject stale effects.
+5. **Release:** atomically gate that tenure, stop its pulses/new effects and perform exact-token matched release under the exclusive group barrier. Already admitted shared-barrier transactions are ordered before release; not-yet-admitted work rechecks and rejects afterward. Return release(true) only for a proven release/no-longer-authorized outcome, false for a known unsuccessful release, and fail for uncertainty. Never let a late old release modify a new owner. A committed orphan cleanup is distinct from falsely reporting a matched release.
+
+Every call mutation/grant continues fresh native primary validation under §24/§46 barriers, expected callVersion and participant bindings. Cached relay retains the existing ≤5s bound; failover may require resynchronization. A single CallActor restart within a held shard retains the root epoch/sequence and rehydrates its own version; it does not reacquire/reset group authority.
+
+**Cold-path consequence:** lease acquisition must COMMIT before the CallActor exists, so it cannot share the initial call-create transaction. Warm INVITE remains one COMMIT same-cell/three cross-cell; cold INVITE is two/four before retries. Waiting for an old unexpired root may exceed the caller's remaining deadline: return a retryable/unknown result according to the original scoped operation, rather than extending the RPC deadline or stealing the lease. Separate cold-start and warm SLIs; prewarming is bounded optional operational work and never hidden from the root-write budget.
+
+Keep acquired empty shards warm until framework handoff/shutdown or lease loss. Entity passivation does not mean the shard/group lease should be released. This consumes at most the existing 1,024 roots/cell: at 5s cadence, 204.8 root updates/s/cell and 10,240/s across 50 cells. No extra all-groups idle-check loop is required. A future idle-root optimization must explicitly prove public lifecycle/reacquisition safety and its query/cold-latency tradeoff before replacing this baseline.
+
+Use public APIs and the pinned BOM; do not introspect/patch internal Shard actors or depend on PostStop during SIGKILL. Prove acquire-before-child-start, lease-loss stop/retry and graceful release ordering with a multi-node adapter contract test before application rollout. If that public integration cannot satisfy these rules in the selected version, it is a release blocker requiring a reviewed alternative, not an undocumented fallback.
+
+### 47.5 Allocation, Rebalance and Proactive Recovery
+
+Select LeastShardAllocationStrategy with proposed absolute limit=2, relative limit=0.01 and rebalance interval=10s for each entity type. These are placement-count limits, not load-weighted balancing or a universal cap on crash recovery. The two types can each move up to two shards in a round; shared DB/hydration/RPC admission must bound their combined work. Failure-driven relocation is likewise bounded by application credits even if the framework must allocate many missing shards. No promise that “two shards” means only two CallActors or two simultaneous JDBC tasks.
+
+Use per-group call count, queue age/bytes, CPU/service rate, minimum renewal slack and hydration lag to gate new work and operational scale-in/roll decisions. Sample shard statistics asynchronously for monitoring; never query cluster-wide stats for each command or treat them as authority. Hash distribution helps but cannot guarantee equal load. Moving a hot shard relocates its hot key; per-user/call/group fairness and admission remain necessary. Reject overload without silently remapping live groups, serializing all group business work through the lease controller or oscillating placement.
+
+The recovery sequence is explicit:
+
+1. A bounded controller discovers affected durable group keys and reads DB06 LIMIT 1 for an existing nonterminal callId. This is a routing hint only, safe before acquisition. Do not use a fake/sentinel call or scan all call history.
+2. Send idempotent WakeCall through sharding with bounded count/bytes/age. Placement creates/routes the shard; the public adapter acquires authority before entity creation. A delayed envelope must recheck its deadline and authority on receipt.
+3. The acquired host pages DB06, at most 512 projected keys/rows per page, hydrates with fresh guarded reads, and restores timers/sagas/participant renewals with class-isolated credits. No RPC or hydration runs inside the takeover transaction.
+4. Supervision hints plus the existing complete ≤5s healthy active-index reconciliation repair silent stopped entities and lost hints even when root pulses succeed. Preserve cursor progress/oldest-unreconciled-age under concurrent insertions; repeated wakeups are idempotent.
+
+At P2 this still requires at least 600k active-index rows examined/s regionally, or 12k/cell/s, before hints/hydration/retries. One-AZ loss affects about 20k calls/cell: recovering them within 30s alone implies roughly 667 hydrations/s/cell, plus indexed reads, group acquisitions and remote participant work. Lease expiry can safely terminate calls; throughput arithmetic does not guarantee survival. Give approaching-deadline renewal/termination reserved service, and reduce new INVITEs/recovery concurrency when pool/WAL or lease slack is exhausted.
+
+SBR selects keep-majority scoped to the actor role, with proposed stable-after=10s and explicit down-removal-margin=10s for the six-member plus one-surge baseline; this supersedes the v1.9 5s proposal. Configure the SBR downing provider and keep down-all-when-unstable=on. Candidate failure-detector settings remain heartbeat1s, acceptable pause3s and threshold8; validate them under GC/CPU/network stalls. Stability and removal margins are not the total failover time: add measured detection/allocation and group acquisition/hydration (§48). An equal 3+3 partition/tie-break does not provide the four-member serving capacity. Test indirect/partial meshes and any down-all behavior in the exact version. SBR chooses membership; only the PG root/storage fence excludes stale writers. Do not enable naive timeout auto-down or steal roots on Unreachable.
+
+Use topology spread, baseline PDB minAvailable=4, rollout maxUnavailable=1/maxSurge=1 and one-pod actor drain at a time. PDBs protect voluntary disruption, not AZ failure. Freeze scale-in/roll progression while affected lease/recovery lag or the post-loss capacity gate is unhealthy. Increasing actor count requires a qualified maximum-member/pool/remoting-memory manifest; gateway scale-out remains independent.
+
+### 47.6 Dispatchers, Mailboxes, Remoting and Runtime Limits
+
+Keep application entity/controller/ingress-completion processing on dedicated bounded CPU dispatchers; keep the framework internal/cluster dispatcher isolated. JPA/pool acquisition stays entirely in DbBoundary VTs, including lease adapter SQL. Never assign a blocking database dispatcher to cluster heartbeats/sharding internals. Serialization, parsing, fanout and actor work remain bounded; large CPU work uses its admitted CPU boundary. Proposed application dispatcher throughput=32 and scheduling deadline=5ms require fairness/heartbeat tests.
+
+Use NonBlockingBoundedMailbox for application entities with proposed capacity128. Preserve the stricter data admission of 64 messages/256KiB per entity, accounting payload/stash and reserving capacity for bounded control/completion traffic. Reserve completion admission before starting a mutation; no unbounded retry/completion queue when the mailbox fills. Lifecycle signals/framework system queues have separate runtime bounds. A mailbox count does not enforce bytes, and priority does not create capacity. Overflow goes to dead letters, never a successful business ACK; callers use bounded timeout/query/retry with the original identity. Do not install a positive push-timeout mailbox or substitute an unbounded priority mailbox.
+
+| Runtime setting / scope | Proposed baseline | Required behavior |
+|---|---|---|
+| Sharding state/remember/role | ddata / off / signaling-actor | Applied to both types; CallActor passivation disabled for nonterminal calls |
+| SBR stable-after / cluster down-removal-margin | 10s / 10s | Same on every member; qualify dissemination, pauses and the full recovery window (§48) |
+| SBR downing / unstable partition | SplitBrainResolverProvider; keep-majority role=signaling-actor; down-all-when-unstable=on | No naive timeout auto-down; instability can deliberately stop the whole cell |
+| ShardRegion buffer-size | 256 per local type/region | Bound unknown-location/acquisition buffers; reject expired work at execution |
+| Handoff / shard-start timeout | 10s / 5s | Entity stop settles critical work within its ≤2s DB bounds; timed-out work follows unknown-outcome rules |
+| Lease operation / lease retry | 2s / 1s | Root TTL15s/period5s unchanged; failed starts remain bounded and do not reset RPC deadlines |
+| Application envelope encoded size | ≤96KiB including routing envelope | Public frame80KiB plus bounded metadata; compact control/completion payloads |
+| Artery transport / private ports | tls-tcp; remoting25520, management8558, gRPC8443 | Direct PodIP member addresses; cell-scoped trust/authentication |
+| Artery advanced maximum-frame-size | 256KiB | Allows audited framework metadata; application validator retains the tighter 96KiB bound |
+| Artery advanced outbound-message-queue-size | 256 per association | End-to-end admission; drop is not commit/ACK |
+| Artery advanced outbound-control-queue-size / system-message-buffer-size | 256 / 512 per association | Finite failure/quarantine buffers; qualification must exclude overload-induced false membership churn |
+| Large-message lane | No application destinations; maximum-large-frame-size256KiB, outbound-large-message-queue-size16 | No alternate unbounded path for oversized SDP/application DTOs |
+| Actor pod termination grace | 90s | Coordinated bounded phase budget, with database resources retained through lease release |
+
+Resolve exact HOCON paths/per-type APIs against the pinned dependency BOM in an executable effective-config test; values in this table are requirements, not an already supplied deployment file. Reject silent unknown keys/default fallbacks. The lease heartbeat settings must agree with the adapter's persisted 15s/5s rules rather than framework defaults.
+
+Budget **all** buffers: application admissions/stashes, unknown-shard buffers, Artery queues/system-message retransmission, decoded DTOs, serialization copies, TLS/direct buffers, framework metadata and pool/JVM overhead. Two 256-message region buffers at the application 96KiB ceiling alone allow 48MiB, before object/copy overhead. Native remoting queues multiply by associations/lanes and their audited payload ceilings; account for six peers during a seven-pod surge, not just one peer. A direct-buffer pool-size is a reuse setting, not a hard allocation cap. Enforce the qualified maximum members and transport/connection caps and include conservative peak native overhead in RSS headroom. The existing 256MiB aggregate actor relay budget remains in force and is separate from framework buffers.
+
+An ask/RPC timeout releases logical waiting state but does not prove a framework-buffered envelope was removed; budget native retention independently, and reject its expired command if later delivered. Never launch replacement physical DB work merely because a caller timed out. Dead-letter/serialization logging retains bounded metadata and samples/rate-limits events, without logging SDP/JWT or retaining payloads.
+
+Use versioned protobuf application serializers, explicit bindings/size limits and approved framework serializers; disable Java native serialization. Do not serialize EntityManager, Spring beans, Channel, ByteBuf or implicit authority caches. Where internal replies carry typed ActorRefs, use the supported framework resolver/serializer contract rather than hand-built node paths. Validate N/N−1 schemas and serialized-size limits, including full DData/coordinator metadata and recovery/control bursts. TLS/remoting/serializer configuration changes that are not rolling compatible require an explicit drain plan.
+
+### 47.7 Ordered Shutdown and Handoff
+
+Register asynchronous application tasks in application-owned CoordinatedShutdown phases; retain the framework's sharding/cluster phase ownership. Entity stop messages and the adapter provide the handoff contract. Do not block actor/shutdown threads while waiting for JDBC, and do not add competing application tasks inside framework-owned cluster phases.
+
+| Order | Bounded action |
+|---|---|
+| before-service-unbind / service-unbind | Mark readiness false; reject new INVITEs/ownership admission; deregister ingress and stop accepting new RPC streams |
+| service-requests-done / service-stop | Drain already admitted control within proposed 5s phase bounds; preserve renewal/termination and immutable completions; durable outbox remains authoritative |
+| before-cluster-shutdown | Prepare per-entity bounded stop/drain; keep DB pools and lease controller running for groups not yet handed off |
+| cluster-sharding-shutdown-region | Framework handoff with proposed 30s phase timeout; adapter gates/releases each exact tenure, preserving §24 transaction order |
+| cluster-leave / exiting / exiting-done / shutdown | Complete membership departure with a proposed combined 20s envelope; do not activate a new owner from departure alone |
+| before-actor-system-terminate | After framework handoff/leave, close physical DB work/executors/pools with bounded cleanup, proposed5s; then terminate the ActorSystem |
+
+The effective phase sum, scheduling/management overhead and stop-message timing must fit inside 90s with margin. Declare per-phase overruns and unknown releases; do not report graceful success if Kubernetes force-kills first. Do not wait for every active call to end before rollout: durable calls relocate and hydrate. Do not close pools at application-context shutdown before the adapter has released leases. Groups awaiting their own handoff keep required renewal; stopping all pulses at drain start can expire calls during the rollout. Preserve outbound RPC clients and internal actor/completion delivery through handoff; unbinding the draining pod's business listener does not close those resources. Peers route new inbound renewal/termination requests through other ready cell ingresses.
+
+On timeout/SIGKILL, assume neither matched release nor pending transaction rollback. Primary expiry/storage fences and bounded recovery determine the outcome. Release ambiguity is reconciled; old callbacks cannot release a new incarnation. In-flight outbox dispatch uses its durable claim fence, and volatile negotiation loss follows retry/resynchronization rules. Framework handoff is not an atomic migration of Netty sockets or all volatile CallActor state.
+
+### 47.8 Gap Closure and Qualification Evidence
+
+| Gap ID | Selected contract | Mandatory implementation evidence |
+|---|---|---|
+| C01 ingress/location | gRPC co-located with one actor-pod ActorSystem; typed sharding routing | No gateway membership; local/remote shard routing and compatible entity registration |
+| C02 formation/readiness | Cell-scoped Kubernetes API bootstrap; initial6/join-only/min4 profiles | Not-ready discovery, correct address, API outage, rolling/full restart and cross-cell rejection |
+| C03 metadata | Explicit ddata placement, remember-off, PG business state | Coordinator failover, metadata-size/recovery tests; no implicit application journal |
+| C04 allocation/recovery | Bounded least-shard rebalance plus independent physical work credits | Skew/hot-key/multi-type rebalance, cold-start bursts and AZ recovery progress under P2 |
+| C05 group bridge | CallActor-only public PG Lease adapter; exact-token lifecycle | Acquire-before-entity, callback/release ordering, unknown COMMIT and stale-tenure proof |
+| C06 runtime/operations | Isolated dispatchers, nonblocking mailbox, finite buffers and ordered shutdown | Effective-config/BOM, protected-thread/JFR tests, peak RSS/queues and forced-shutdown tests |
+
+Required additional adversarial tests:
+
+- Race duplicate acquire, lost COMMIT response, delayed pulse, release versus newly admitted mutation, callback after reacquisition and pod/IP reuse. No false acquire/release success, sequence reset, orphan renewal or old-token effect after takeover; one physical cleanup credit lifecycle.
+- Start a shard with no prior entity, recover a silent call with remember-off, and crash during routing-hint/acquire/hydration. Prove hints grant no authority, entity startup follows the root COMMIT, and recovery does not require client traffic or sentinel calls.
+- Lose one AZ; partition 3+3 and partial meshes; pause old actors; isolate Kubernetes API/DData/SQL independently. Rejoining old pods cannot extend expired authority or form a serving parallel cell. Test full-cell controlled reformation separately from single-AZ recovery.
+- Roll one pod with busy groups, stalled SQL/WAL, full mailboxes and pending outbox completions; exceed phase deadlines/force kill. Database resources remain available for exact release until the proper phase; no false ACK, global renewal stop, leaked VT/connection or unbounded framework queue.
+- Measure **cold two/four versus warm one/three** actual INVITE COMMIT counts and p95/p99, total expiry-wait latency, lease acquisition/renewal contention, oldest-unreconciled age and remaining home lease slack. Root pulses do not substitute for per-call recovery/liveness.
+- Sustain all §39/§44/§45/§46 real simultaneous 10M/P2/24h/N−1 requirements with these queues, serializer/TLS and metadata settings. Include rollout surge, skew, multiple entity types and approximately20k affected calls/cell. Reject tuning that meets average throughput while missing tail, renewal, error, memory or safety gates.
+
+**Revision 1.9 verdict:** the six missing sharding areas now have selected spec contracts, including the previously implicit lease-start/recovery ordering and cold-path cost. The custom adapter, actual effective configuration and runtime behavior still require implementation/contract tests; no deployed sharding capability, minimum latency, bottleneck-free system or achieved 10M CCU is claimed.
+
+Primary grounding: [Pekko Typed Cluster Sharding](https://pekko.apache.org/docs/pekko/current/typed/cluster-sharding.html) defines placement, lease-before-entity behavior and count-based allocation; [public coordination Lease API](https://pekko.apache.org/docs/pekko/current/coordination.html) defines asynchronous acquisition/release and lease-loss callbacks; [typed settings API](https://pekko.apache.org/api/pekko/current/org/apache/pekko/cluster/sharding/typed/ClusterShardingSettings.html) exposes per-type lease settings. [Cluster Bootstrap](https://pekko.apache.org/docs/pekko-management/current/bootstrap/index.html) and [Kubernetes API discovery](https://pekko.apache.org/docs/pekko-management/current/discovery/kubernetes.html) support the selected formation/discovery approach. [Mailboxes](https://pekko.apache.org/docs/pekko/current/typed/mailboxes.html), [default configuration](https://pekko.apache.org/docs/pekko/current/general/configuration-reference.html), [Artery](https://pekko.apache.org/docs/pekko/current/remoting-artery.html), [SBR](https://pekko.apache.org/docs/pekko/current/split-brain-resolver.html) and [CoordinatedShutdown](https://pekko.apache.org/docs/pekko/current/coordinated-shutdown.html) ground the framework behavior. SQL mapping, budgets, formation policy, warm-root policy and performance targets above are this design's choices; they require the existing storage-fencing proof and measured qualification.
+
+## 48. Revision 1.10 — HA, Failure Recovery and Routing Complexity
+
+### 48.1 Framework HA Is Not Complete Business Recovery
+
+Pekko Cluster Sharding supplies entity location abstraction and shard/coordinator failover after membership/downing is resolved. It does not synchronously mirror each actor's RAM to a hot standby. There is one intended active entity per key in a correctly resolved cluster, not a replica of each workflow on every pod. Process pauses/partitions still require the existing storage fences; actor location alone cannot establish exclusive business authority.
+
+| Failure / state | Framework capability | Required application contract |
+|---|---|---|
+| Actor exception in a healthy shard | Typed behavior stops by default unless explicit supervision is installed | Classify faults; use explicit bounded restart/backoff for eligible transient failures, or stop and WakeCall recovery; hydrate before accepting mutations |
+| Hosting pod/node lost | Relocate affected shards once removal/downing permits it | Group acquisition COMMIT before CallActor startup, then indexed hydration/timer/saga recovery (§47) |
+| ShardCoordinator lost | New coordinator recovers placement metadata; known healthy shard routes can continue | Unknown/new/relocating routes may wait; bounded buffers/deadlines and monitored coordinator readiness |
+| Shard moved/rebalanced | Stop and recreate entities at a new location | Restore durable state; volatile negotiation buffers are not transferred |
+| Message or reply lost | Ordinary messaging is at-most-once/best-effort | Stable request identity, bounded retry/query, idempotent SQL and post-COMMIT ACK; durable outbox deduplication |
+| Database authority unavailable / leases expired | Sharding does not supply a substitute database authority | Fail control closed, preserve unknown-outcome accounting, safely terminalize expired workflows |
+| Whole cell actor cluster lost | Join-only pods do not automatically form a competing cluster | Controlled reformation/fencing runbook, followed by bounded proactive recovery; separate full-cell RTO |
+
+Validation/busy/overload errors are typed protocol outcomes, not crash triggers. No unbounded restart loop or blanket resume of possibly corrupted in-memory state. After restart/recreation, allocate a fresh local actor incarnation, read committed native DTOs on DbBoundary VTs, rebuild durable deadlines, and reconcile pending scoped operations before resuming critical mutation. A single entity restart does not reset a still-held group's epoch/sequence. Protect callbacks with actor incarnation plus the full group token; stopped actors do not release physical JDBC credits prematurely. The failed message is not assumed to replay itself.
+
+With remember-entities=off, silent established calls need the existing explicit WakeCall/reconciliation mechanism. Timer reconstruction is an application responsibility; a renewed root is not evidence that every call actor is healthy. PostgreSQL protects committed control/history; negotiation retry/resynchronization handles volatile loss. Netty sockets stay on their gateway—actor HA cannot migrate a socket after gateway failure.
+
+The six-pod/three-AZ cell is a capacity hypothesis for one-AZ tolerance, not an unconditional HA guarantee. Four surviving ready actors, sufficient database durability/service rate, bounded recovery and participant reachability must all be qualified. Network partitions or dependency failure can intentionally reduce availability to preserve safety; no claim of uninterrupted availability under every partition.
+
+### 48.2 What “O(1) Routing” Means
+
+Once a shard location is resolved, the source ShardRegion uses its known location and forwards to the destination region/shard/entity without consulting the ShardCoordinator for every message. A first use, lost route or handoff can require coordinator resolution and buffering. Cross-cell communication remains a direct authenticated RPC to the destination cell, followed by local sharding; no region-wide actor discovery broadcast.
+
+**Selected terminology:** steady-state cached location/entity lookup is modeled as expected near-O(1) for bounded identifiers and appropriate map implementations. This is an engineering complexity model, not a formal worst-case or latency guarantee from Pekko. Pin/test the chosen extractor and runtime implementation before claiming exact complexity. Hashing an identifier of length L costs O(L); the protocol bounds L. No shard search over every actor or every member is required on the warm data path.
+
+| Work | Complexity / practical cost |
+|---|---|
+| Known shard location and entity lookup | Expected near-constant map lookup; a bounded forwarding path independent of total entity count |
+| First/unknown/relocating shard | Additional coordination, placement, buffering, lease acquisition and possibly hydration; outside the warm-lookup claim |
+| Encode/decode a payload of B bytes | At least proportional to B; transport/copy/TLS work is not erased by constant lookup |
+| Fanout to K sessions/entities | O(K) sends; not a single O(1) operation |
+| Allocation/rebalance, membership dissemination and recovery scans | Control/recovery work depends on members/shards/affected entities; not covered by steady-state lookup complexity |
+
+Use EntityRef/sharding envelopes for relocatable entity addressing. An EntityRef is not a cached guarantee that the same physical actor instance/node remains alive. Do not retain a direct physical ActorRef/node path as the permanent address for a sharded business entity. Direct ActorRef messaging may be appropriate for incarnation-scoped replies and local components, using the approved resolver/serializer contract.
+
+End-to-end time includes admission queue, routing/serialization, network, target mailbox/service, and any guarded SQL/COMMIT. O(1) lookup does not imply fixed p99, no blocking risk, no hot actor or arbitrary throughput. Each actor's handler executes serially; adding pods cannot parallelize one overloaded call/user key. Apply existing count/byte/age and per-key/group fairness limits, and preserve separate control/relay resources. The warm authorized relay stays free of per-frame SQL; control ACK still requires durable COMMIT.
+
+### 48.3 SBR Timing and Lease-Aware Recovery Budget
+
+Select `pekko.cluster.split-brain-resolver.stable-after=10s` and `pekko.cluster.down-removal-margin=10s` for the six-member/seven-with-surge profile, identically on every member. Enable `org.apache.pekko.cluster.sbr.SplitBrainResolverProvider`, keep-majority for the signaling-actor role, and down-all-when-unstable=on. Capture the resolved unstable-duration and effective settings in the pinned-BOM manifest. The earlier stable-after5s proposal is superseded, not an alternative production default.
+
+The Pekko guidance lists stability/removal margins of 7s for five members and 10s for ten members. Selecting 10s for this six/seven-member envelope is a conservative design starting point, not a documented exact six-node minimum. Validate actual membership dissemination and JVM/CPU pauses; a larger qualified maximum membership requires reevaluating these margins. Do not shorten them merely to make an RTO chart pass.
+
+Record distinct fault-timeline durations using observer/workflow timing with defined clock uncertainty:
+
+- T_detect: failure detection/reachability observations; heartbeat/phi settings do not establish a deterministic bound.
+- T_stable and T_removal: stable membership observations and the applicable down/removal margin; unstable reachability may defer a decision or trigger down-all.
+- T_allocate: coordinator availability and route/shard assignment/start.
+- T_authority: wait for proven matched release or primary root expiry plus acquire COMMIT; membership never overrides a live root.
+- T_restore: queued/indexed hydration, timer/saga repair and home lease validation/renewal, or durable safe terminalization.
+
+For a stable crash scenario, model placement eligibility approximately as `T_detect + T_stable + T_removal + T_allocate`. Group-expiry wait may overlap this elapsed interval: measure eligibility on both gates, then acquire after **both** placement and storage authority permit it. Never blindly sum overlapping waits, or omit the remaining wait for an old owner that continued renewing. Root TTL15s/period5s and home TTL15s/30s remain unchanged; SBR10s is not a lease extension.
+
+The existing ≤30s/99% affected-workflow recovery objective is measured from the fault, not from actor creation or lease acquisition. For illustration only, detection5s + stability10s + removal10s consumes about25s before allocation/acquisition/hydration; this is not the candidate detector's guaranteed timing. Restoring approximately20k affected calls/cell in the remaining5s alone implies at least4,000 hydrations/s/cell, rather than667/s calculated over the entire30s. Actual usable time may be smaller; include normal P2 load, authority reads, root commits, remote participant renewals and queue/CPU/WAL tails.
+
+A workflow is recovered only when its new owner has proven authority, restored its current durable phase/deadlines and validated live participant bindings, or committed the correct absorbing terminal outcome with reservation release/verified expiry. A timeout, queued WakeCall, new ActorSystem or successful root pulse alone is not recovery. Report preserved calls, correctly terminalized calls, unresolved workflows and their ages separately. PREPARING/short-slack calls can expire before membership converges. Never revive an expired participation or silently reset deadlines to claim call continuity.
+
+If the measured complete fault timeline cannot meet the objective, the baseline fails qualification: improve bounded recovery service/cell sizing or submit a reviewed RTO/SLO revision before release. Do not waive fences, remove safety margins, inflate lease deadlines or relabel an unmet target as achieved. Full-cell reformation, majority loss and database outage retain their separately defined availability/runbook behavior.
+
+### 48.4 Added Evidence and Release Checks
+
+- Crash a typed entity and its hosting pod at each transaction/COMMIT/ACK phase. Test the default-stop negative case, bounded supervision, silent-call wakeup, reconstructed timers and old callback rejection. Confirm no volatile-state replication or automatic failed-command replay is assumed.
+- Kill the coordinator separately from a busy shard host. Known healthy routes must retain measured progress; unknown/new routes use finite buffers and original deadlines. Inject lost messages/replies, retries and late envelopes; no duplicate winner/effect or false business ACK.
+- Measure warm local/remote and cold/rebalanced routing independently, cache misses/coordinator interactions, payload-size/fanout scaling and hot-key isolation. No per-message global coordinator/directory/database lookup on the qualified warm relay path.
+- Fault one AZ, clean/partial partitions, long JVM pauses and membership churn. Record detection, stability/removal, authority wait, hydration and participant slack, plus safe terminalization. Test with full P2/24h retained data, normal background load and unchanged nonblocking JPA/VT boundaries.
+- Assert effective stable-after10s/down-removal-margin10s and consistent role/mapping/config fingerprints on all six/seven members. Keep down-all protection and verify controlled recovery rather than automatic parallel-cluster formation.
+- Enforce the original command/relay tail and resource budgets as well as the complete recovery objective. Successful sharding initialization or near-constant lookup is not evidence of HA, minimum latency or achieved10M CCU.
+
+Primary grounding: [Cluster Sharding concepts](https://pekko.apache.org/docs/pekko/current/typed/cluster-sharding-concepts.html), [Typed fault tolerance](https://pekko.apache.org/docs/pekko/current/typed/fault-tolerance.html), [Message delivery reliability](https://pekko.apache.org/docs/pekko/current/general/message-delivery-reliability.html), and [Split Brain Resolver](https://pekko.apache.org/docs/pekko/current/split-brain-resolver.html). The O(1) qualification model, selected10s margins and recovery arithmetic are design interpretations/choices, not a vendor capacity or timing guarantee.
+
+**Revision 1.10 verdict:** HA/recovery responsibilities, routing-complexity terminology and SBR timing are explicit at the spec level. Runtime adapter/configuration correctness, fault behavior and simultaneous10M/P2 performance still require implementation and measured qualification.
+
+## 49. Revision 1.11 — Production-Standard Closure
+
+This section is normative. It closes design-level gaps found in the final production review. It does **not** convert proposed capacity, latency, RTO, RPO or availability targets into measured facts. A deployment may call itself production-qualified only after every applicable gate in §49.9 passes on the pinned implementation, infrastructure and client versions.
+
+### 49.1 Trickle ICE Delivery Contract
+
+RFC 8838 semantics are implemented at the boundary to the client ICE agent, not assumed from WebSocket/TCP transport alone. For each `(callId, negotiationId, iceGeneration, senderSessionIncarnation)` maintain a bounded receive cursor and duplicate window. `candidateSequence` starts at 1 and is monotonic within the generation; a batch covers a contiguous sequence range. Retransmission reuses the original candidate identity/sequence. The receiver may acknowledge a highest contiguous sequence plus bounded missing ranges, but it must not expose a later candidate to the ICE implementation ahead of a missing earlier candidate. Duplicate signaling frames are acknowledged/dropped without a second `addIceCandidate` call.
+
+`END_OF_CANDIDATES` is generation-scoped, ordered after the final candidate and idempotent. No candidate from that generation is accepted after the marker has been delivered to the ICE implementation. An ICE restart creates a new `iceGeneration` and new username-fragment/password generation; delayed frames from an old generation are ignored. Reorder/resend buffers obey the existing aggregate memory budgets; no per-call unbounded queue is permitted. If a gap, remote-description dependency or reconnect cannot be repaired within the bounded relay deadline, return `RESYNC_REQUIRED` and start a fresh negotiation/ICE generation rather than replaying an ambiguous old sequence.
+
+Required tests include duplicate batches, missing middle sequence, end marker before a delayed candidate, reconnect during a gap, simultaneous ICE restart, old-generation replay, reordered cross-cell relay and gateway retry after unknown delivery outcome. The assertion is on calls into the local ICE implementation: each accepted candidate/end marker exactly once, in sender order, for the agreed generation.
+
+### 49.2 Calling Authorization and Session Revocation
+
+Authentication establishes identity; it never implies permission to call a target. Production exposes a versioned `CallAuthorizationPolicy` contract evaluated before caller reservation/INVITE commitment. The deployment must select its business rule (for example tenant membership, contact/block policy or an explicitly open authenticated-user policy) and identify its authoritative source. The decision binds caller, callee, issuer/tenant where applicable, policy version and decision expiry. Deny and dependency-unknown are fail-closed for new calls. Existing established calls are not retroactively terminated by a transient policy-service outage unless the policy explicitly emits a revocation/block event. Authorization caches have bounded age and cannot outlive the security epoch or token.
+
+Immediate security revocation is a separate plane from RS256 verification. The identity authority emits durable ordered revocation records with a monotonic issuer/user/session security epoch. Each cell persists the latest applied epoch required for correctness before acknowledging application of a revocation; gateways consume the local applied state and close matching sockets with a typed security reason. Replayed/duplicate events are idempotent; out-of-order older epochs cannot resurrect access. A periodic reconciliation cursor compares local progress with the identity authority/event-log high-water mark so a missed notification cannot remain silent indefinitely.
+
+The production target is a configurable `revocationPropagationSLO` measured from authoritative revocation commit to the affected signaling socket losing authorization. Set the concrete value from the identity platform contract before release; it must be materially shorter than maximum JWT lifetime if the product promises immediate logout/disable semantics. If revocation freshness exceeds its hard safety bound, reject new critical commands and new AUTH/refresh for the affected scope; do not silently treat a stale revocation cache as current. Token expiry remains a final bound, not the normal revocation mechanism. Revocation-event transport is control-plane infrastructure and is not placed on the per-frame relay hot path.
+
+### 49.3 Workflow Convergence vs Active-Call Preservation
+
+Replace any dashboard interpretation that treats safe terminalization as equivalent to preserving a live call. Report at least these separate failure-recovery SLIs:
+
+| SLI | Numerator / denominator | Purpose |
+|---|---|---|
+| Workflow convergence | Affected workflows that are authoritatively rehydrated **or** committed to the correct terminal state within the recovery objective / all affected workflows | Safety and bounded recovery backlog |
+| Active-call preservation | ESTABLISHED/CONNECTING calls present immediately before the fault that remain valid and usable after recovery without forced terminalization / eligible pre-fault active calls | User-visible continuity |
+| Signaling reattachment | Eligible surviving participants that restore an authorized signaling route within the transport recovery objective / eligible disconnected participants | Gateway/client recovery |
+| Media continuity | Eligible calls whose media remains connected or successfully restarts ICE within the media recovery window / eligible calls with client telemetry | End-user call continuity |
+
+The existing ≤30s/99% affected-workflow target applies to **workflow convergence**, not automatically to active-call preservation. Publish a separate active-call-preservation target after fault-injection measurements establish what the 15s/30s authority and participant lease slack can support. Never extend expired leases, skip fencing or reset deadlines to improve this metric.
+
+### 49.4 Media Connectivity, ICE Restart and Terminal Semantics
+
+The signaling state machine distinguishes signaling reachability from media connectivity. Client telemetry uses at least `MEDIA_CONNECTED`, `MEDIA_DISCONNECTED`, `ICE_RESTARTING`, `MEDIA_FAILED` and `MEDIA_RECOVERED`; these are observations, not database ownership authority. A transient WebRTC `disconnected` observation does not immediately terminate the call. The client applies a bounded debounce/grace and, when appropriate, requests one server-authorized ICE restart round using a new `negotiationId/iceGeneration`. Network changes may request restart earlier.
+
+`failed` or a disconnected condition exceeding the configured media-recovery window triggers a bounded restart policy. Only one restart/renegotiation round is active at a time; retries reuse the round request identity. After the maximum attempts/window, either participant may commit `HANGUP`/`MEDIA_FAILED` terminalization according to the product policy. Server loss of volatile SDP/ICE never replays an arbitrary old description; it returns `RESYNC_REQUIRED` and starts a new round if the durable call remains eligible. Signaling reconnection does not reset a healthy PeerConnection solely because the WSS route changed.
+
+TURN/STUN failure, ICE failure and signaling failure have separate reason codes and metrics. Signaling availability must not count a TURN outage as a signaling success while hiding degraded call completion; the client-experience SLI reports both dimensions.
+
+### 49.5 Privacy, Retention and Data Deletion
+
+Classify stored fields into: authoritative security/control, bounded replay/idempotency, operational telemetry, and optional analytics/audit. Raw JWTs, SDP, ICE candidates, TURN credentials and unnecessary IP-bearing payloads are prohibited from normal durable application logs and optional analytics. Crash dumps, traces and debug captures that can contain them are access-controlled, encrypted where supported, time-bounded and disabled by default in production.
+
+Every durable table/export has an owner, purpose, retention class and deletion mechanism. Active authority and fencing tombstones may be retained as long as required for correctness; a privacy deletion request must not delete a token/epoch/tombstone whose removal could resurrect stale authority. Instead pseudonymize or detach nonessential personal attributes while retaining the minimum opaque safety key until its replay/fencing window expires. Terminal replay/idempotency records are deleted only after their published replay window; optional analytics follows the separately approved privacy retention. Deletion workers use the same bounded maintenance budgets as §38/§46 and cannot starve control or renewal.
+
+Backups/PITR are not mutated in place for each deletion request. The privacy runbook records backup retention, restoration handling and reapplication of deletion/tombstone state after restore before the recovered environment serves traffic. Access to production data, exports, backups and debug artifacts is least-privilege and audited. Concrete jurisdictional/legal retention periods are deployment policy and must be approved before release; this technical spec does not invent them.
+
+### 49.6 Production HA Implementations and Authority Dependencies
+
+The architecture does not accept an unspecified "HA database" or "directory quorum" at release time. The deployment manifest must pin exactly one tested PostgreSQL HA controller/topology and one directory-authority implementation, including versions, quorum/election rules, fencing mechanism, synchronous standby policy, topology spread and failure-domain mapping. Critical PostgreSQL transactions use `synchronous_commit=on` with at least one eligible cross-AZ synchronous standby configured through `synchronous_standby_names`; `remote_write`, asynchronous fallback or a read replica is not equivalent to the required durable acknowledgment. Promotion is permitted only for a candidate proven to contain acknowledged WAL, and the old primary is fenced before the new writer serves authority traffic.
+
+The chosen topology must demonstrate static capacity after loss of one AZ: surviving database, actor, gateway, directory and network resources support the published degraded-mode envelope without adding emergency infrastructure to satisfy the immediate recovery objective. Loss of synchronous durability causes critical control to fail closed while already-authorized relay/media may continue within their bounded authority windows.
+
+The PostgreSQL-backed Pekko Lease adapter is a production-critical component. Its contract tests must cover acquire, duplicate acquire, release, late release, renewal, lease loss callback, DB timeout before/after COMMIT, connection cancellation, actor/process pause past expiry, takeover, old callback arrival, shard handoff, process crash, full-cell restart and database failover. Lease acquisition is successful only after the authoritative root COMMIT; a client timeout is `OUTCOME_UNKNOWN` until the primary authority is queried. No framework-local success callback can manufacture ownership after an unknown database outcome.
+
+### 49.7 WebSocket and Edge Security Baseline
+
+Production accepts WSS only. Browser handshakes validate an exact Origin allowlist; native clients use the separate authenticated transport policy. Unauthenticated upgraded sockets receive only the bounded AUTH path and are closed on timeout. Enforce connection, TLS-handshake, frame-rate, frame-size, fragmented-message, aggregate-buffer and per-user/session limits before expensive parsing/actor work where possible. Keep `permessage-deflate` disabled unless a dedicated security/performance review later enables it.
+
+Authorization is checked per operation, not only at connection establishment. Internal RPC uses workload identity plus operation-level authorization and destination scope. Secrets/tokens are redacted from access logs, exception messages, traces and metrics. Security telemetry records authentication/authorization failures, origin rejection, rate limiting, malformed frames, revocation lag and abnormal disconnects without raw token/SDP/ICE contents. DDoS/WAF/LB configuration must preserve WebSocket upgrades while enforcing the published connection and handshake envelope.
+
+### 49.8 Configuration, Compatibility and Change Safety
+
+All production-affecting constants are typed configuration with validated ranges and an owner: heartbeat/grace, JWT clock skew, revocation freshness, lease TTL/renewal, SBR timing, mailbox/queue bytes and counts, RPC deadlines/credits, SQL transaction deadlines, connection-pool quotas, retry budgets, retention windows, ICE reorder/resend windows, media restart limits and rate limits. Startup rejects an unsafe or internally inconsistent configuration rather than silently falling back to library defaults.
+
+A versioned compatibility manifest pins JDK, Spring Boot, Netty, Pekko modules, PostgreSQL/driver, Hibernate, protobuf/gRPC, container base image and infrastructure/controller versions. Rolling upgrades support only explicitly tested adjacent protocol/schema versions. Every persisted schema and wire change defines expand/contract compatibility, rollback behavior and the point after which rollback is no longer safe. Config fingerprints and protocol/schema versions are exported as low-cardinality build metadata so mixed fleets are detectable.
+
+### 49.9 Final Production Qualification Gate
+
+A release is **not production-qualified** until one reproducible candidate build passes all applicable gates below with the same effective configuration intended for production. Tests run against realistically populated 24h retention state, not empty databases.
+
+| Gate | Mandatory evidence |
+|---|---|
+| Functional protocol | Full call state machine, multi-device winner, reconnect/resume, ordered Trickle ICE, ICE restart, authorization and revocation conformance |
+| Safety/consistency | Zero invariant violations under duplicate/reordered/lost messages, stale actors, delayed COMMIT replies, process pauses, takeover, DB failover and cross-cell saga faults |
+| Capacity | P0 and simultaneous P2 steady state with measured CPU, heap/native memory, FD, network, actor/mailbox, DB pool, WAL, storage, queue age and p95/p99/p99.9 latency |
+| Burst/skew | 2× setup microburst, 5× hot destination/bucket, multi-device fanout, slow consumers and malicious-but-valid traffic with bounded queues and explicit shedding |
+| Soak | ≥24h P2-equivalent retained-data run with cleanup/vacuum/export/reconciliation enabled; no unbounded memory, WAL, disk, queue or tombstone growth |
+| N−1 / AZ loss | Lose one AZ at P2; measure reconnect, shard recovery, workflow convergence, active-call preservation, renewal slack and degraded admission without safety violation |
+| Dependency faults | PostgreSQL primary/standby, directory, revocation stream, Redis cache, TURN/STUN, Kubernetes API/discovery, DNS and internal RPC partial failures |
+| Chaos/timing | JVM pause, CPU starvation, packet loss/reorder, clock uncertainty, shard/coordinator crash, old-node rejoin, partial partition and SBR instability |
+| Security | Origin/auth bypass, stolen/replayed token behavior, logout/revocation propagation, authorization bypass, malformed/oversized/fragmented frames, rate-limit/DDoS and dependency/CVE scan |
+| DR/restore | PITR restore from independent backup, new recovery epoch, old-authority invalidation, deletion-state reapplication, checksum/data validation and measured RTO/RPO |
+| Deployment | Canary, rolling upgrade, schema expand/contract, forced rollback, mixed-version window, drain/reconnect storm and irreversible-migration recovery drill |
+| Operations | Dashboards, burn-rate alerts, revocation/lease/recovery lag, runbooks, on-call ownership, capacity headroom, cost/unit, backup age and restore evidence |
+
+Release evidence records hardware/instance types, kernel/JVM settings, pod requests/limits, topology, dependency versions, dataset cardinalities, traffic generator model, test seed/scenario, raw histograms and failure timeline. Averages alone are insufficient. Any safety invariant failure blocks release regardless of throughput. Missing or stale evidence cannot be replaced by architectural reasoning.
+
+### 49.10 Production Status Semantics
+
+Use these terms consistently:
+
+- **Production-standard specification:** design contracts, failure semantics, security boundaries, operational requirements and measurable release gates are explicit. This is the status of v1.11.
+- **Production-qualified implementation:** the pinned implementation has passed §49.9 for its declared workload envelope and deployment topology.
+- **10M-qualified deployment:** the exact candidate has demonstrated P0/P2 10M CCU requirements, N−1/AZ-loss behavior and soak/recovery gates at the declared scale. Do not infer this status from extrapolation or a smaller test without a separately reviewed capacity model and validation points.
+
+If the measured system misses a target, change capacity/cell sizing or revise the target through an ADR and repeat affected qualification. Never weaken fencing, durability, authorization, queue bounds, SBR safety margins or expiry semantics merely to make a benchmark pass.
+
+Primary external grounding for this revision: RFC 8838 requires the using protocol to present trickled candidates and end-of-candidates to the receiving Trickle ICE implementation exactly once and in order, correlated to the active ICE generation; OWASP WebSocket Security guidance supports WSS, Origin allowlisting, message-level authorization, bounded input, backpressure and session invalidation; PostgreSQL synchronous-replication documentation distinguishes durable standby flush (`synchronous_commit=on` with configured synchronous standbys) from weaker `remote_write`; and Pekko's SBR/cluster configuration documents stable-after/downing behavior as cluster coordination rather than application-state replication. These sources constrain semantics; they do not certify this deployment's capacity.
+
+**Revision 1.11 verdict:** the remaining identified **design-level** production gaps are converted into explicit normative contracts and release gates. Production certification remains intentionally open until the pinned implementation supplies the required measured evidence.
+
