@@ -14,6 +14,7 @@ public final class AuthoritySql {
     public static void bucketBarrier(Connection c,int bucket,boolean exclusive)throws SQLException {if(bucket<0||bucket>16383)throw new IllegalArgumentException("Invalid bucket");barrier(c,101,bucket,exclusive);}
     public static void groupBarrier(Connection c,int group,boolean exclusive)throws SQLException {if(group<0||group>1023)throw new IllegalArgumentException("Invalid group");barrier(c,102,group,exclusive);}
     public static void callBarrier(Connection c,String call)throws SQLException {barrier(c,103,callKey(call),true);}
+    public static void callReadBarrier(Connection c,String call)throws SQLException {barrier(c,103,callKey(call),false);}
     public static int callKey(String call) {try{return ByteBuffer.wrap(MessageDigest.getInstance("SHA-256").digest(call.getBytes(StandardCharsets.UTF_8))).getInt();}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     private static void barrier(Connection c,int namespace,int key,boolean exclusive)throws SQLException {
         if(c.getAutoCommit())throw new IllegalStateException("Authority barriers require a transaction");
@@ -48,6 +49,9 @@ public final class AuthoritySql {
     public static void coordinator(Connection c,GroupToken token,Map<Integer,Long> buckets,List<String> users,List<String> calls)throws SQLException {
         roots(c,token.cell(),token.storageEpoch(),buckets);groupBarrier(c,token.group(),false);validateGroup(c,token);userGuards(c,users);
         if(calls.size()>16)throw new IllegalArgumentException("Call batch exceeds limit");for(String call:new TreeSet<>(calls))callBarrier(c,call);
+    }
+    public static void coordinatorGrant(Connection c,GroupToken token,Map<Integer,Long> buckets,String call)throws SQLException {
+        roots(c,token.cell(),token.storageEpoch(),buckets);groupBarrier(c,token.group(),false);validateGroup(c,token);callReadBarrier(c,call);
     }
     private static void roots(Connection c,String cell,long epoch,Map<Integer,Long> buckets)throws SQLException {
         if(buckets.size()>128)throw new IllegalArgumentException("Bucket batch exceeds limit");cellBarrier(c,false);validateCell(c,cell,epoch);

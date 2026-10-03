@@ -38,6 +38,7 @@ public final class CallWorkflowService {
         }
         Snapshot current=calls.find(c,previous.callId());String code=state.equals("ACCEPTED")?"ACCEPTED_PENDING_ACTIVATION":state.equals("CONNECTING")?"CALL_READY":state;
         var events=events(c,current,code);completeOrigin(c,current,code,events);
+        if(transition.step()==Step.ACCEPT){var key=current.winner().key();var scope=CommandScope.call(current.callId());var request=new RequestId(transition.operation());var result=results.find(c,key,scope,request);if(result!=null&&result.status().equals("PENDING"))results.finalizeResult(c,key,scope,request,new CallCommandService.Outcome("FINAL",code,current.callId(),current.version(),current.state(),events));}
         return record(c,transition,intent,new Outcome(code,current,events));
     });}
     private void validateEvidence(Connection c,Transition t,Snapshot s,Instant now)throws Exception {

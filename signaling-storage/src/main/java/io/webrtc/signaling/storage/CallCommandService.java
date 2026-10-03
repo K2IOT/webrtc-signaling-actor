@@ -58,6 +58,10 @@ public final class CallCommandService {
         if(invite)return create(c,command,context,bucket);
         if(snapshot.hashVersion()!=context.group().hashVersion()||snapshot.group()!=context.group().group())throw new AuthoritySql.FencedException();
         if(snapshot.terminalAt()!=null)return finish(c,command,new Outcome("FINAL","ALREADY_TERMINAL",snapshot.callId(),snapshot.version(),snapshot.state(),List.of()));
+        if(command.type()==SignalEnvelope.Type.ACCEPT&&snapshot.winner()!=null){
+            if(!snapshot.callee().equals(command.sender().userId()))throw new AuthorizationRejected();
+            return finish(c,command,new Outcome("FINAL",snapshot.winner().samePrincipal(command.sender())?"ACCEPTED_PENDING_ACTIVATION":"ANSWERED_ELSEWHERE",snapshot.callId(),snapshot.version(),snapshot.state(),List.of()));
+        }
         requireOperation(command,snapshot);
         if(context.expectedCallVersion()>0&&context.expectedCallVersion()!=snapshot.version())return finish(c,command,new Outcome("FINAL","STALE_VERSION",snapshot.callId(),snapshot.version(),snapshot.state(),List.of()));
         return switch(command.type()) {
@@ -101,7 +105,7 @@ public final class CallCommandService {
     private static void requirePrincipal(AuthenticatedSession sender,Snapshot snapshot){if(snapshot==null||!snapshot.caller().samePrincipal(sender)&&(snapshot.winner()==null||!snapshot.winner().samePrincipal(sender))&&!snapshot.callee().equals(sender.userId()))throw new AuthorizationRejected();}
     private static void requireOperation(CallCommand command,Snapshot s)throws Exception {
         boolean caller=s.caller().sameBinding(command.sender()),winner=s.winner()!=null&&s.winner().sameBinding(command.sender());
-        boolean offered=false;for(var route:JSON.readTree(s.offeredSessions()))if(route.path("issuer").asText().equals(command.sender().key().issuer())&&route.path("jti").asText().equals(command.sender().key().jti()))offered=true;
+        boolean offered=false;for(var route:JSON.readTree(s.offeredSessions()))if(JSON.treeToValue(route,Participant.class).samePrincipal(command.sender()))offered=true;
         boolean allowed=switch(command.type()){
             case CANCEL -> caller&&Set.of("PREPARING","RINGING","ACCEPTED","ACTIVATING").contains(s.state());
             case HANGUP -> (caller||winner)&&Set.of("ACCEPTED","ACTIVATING","CONNECTING","ESTABLISHED").contains(s.state());

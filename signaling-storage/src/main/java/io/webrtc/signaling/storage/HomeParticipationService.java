@@ -10,8 +10,9 @@ import java.util.concurrent.CompletionStage;
 public final class HomeParticipationService {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
     public enum Phase { PREPARING,RINGING }
-    public record Grant(String cell,long storageEpoch,long hashVersion,int group,long groupEpoch,long sequence,UUID operation,Instant issuedAt,Instant expiresAt,String proof) {
-        public Grant {if(cell==null||storageEpoch<1||hashVersion<1||group<0||group>1023||groupEpoch<1||sequence<1||proof==null||proof.length()>4096)throw new IllegalArgumentException("Invalid home grant");Objects.requireNonNull(operation);Objects.requireNonNull(issuedAt);Objects.requireNonNull(expiresAt);}
+    public record Grant(String cell,long storageEpoch,long hashVersion,int group,long groupEpoch,long sequence,UUID operation,Instant issuedAt,Instant expiresAt,String proof,long authorizedCallVersion) {
+        public Grant(String cell,long storageEpoch,long hashVersion,int group,long groupEpoch,long sequence,UUID operation,Instant issuedAt,Instant expiresAt,String proof){this(cell,storageEpoch,hashVersion,group,groupEpoch,sequence,operation,issuedAt,expiresAt,proof,0);}
+        public Grant {if(authorizedCallVersion<0||cell==null||storageEpoch<1||hashVersion<1||group<0||group>1023||groupEpoch<1||sequence<1||proof==null||proof.length()>4096)throw new IllegalArgumentException("Invalid home grant");Objects.requireNonNull(operation);Objects.requireNonNull(issuedAt);Objects.requireNonNull(expiresAt);}
     }
     public record Request(UserId user,CallId call,UUID acquireOperation,String payloadHash,long directoryEpoch,Phase phase,Grant grant) {
         public Request {Objects.requireNonNull(user);Objects.requireNonNull(call);Objects.requireNonNull(acquireOperation);Objects.requireNonNull(phase);Objects.requireNonNull(grant);if(directoryEpoch<1||payloadHash==null||!payloadHash.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("Invalid home intent");}

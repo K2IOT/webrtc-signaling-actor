@@ -72,4 +72,18 @@ class CrossCellSagaIT {
             assertThat(reservations.releaseIfCallVersion(request,null,0).toCompletableFuture().join().terminal()).isTrue();assertThat(reservations.reserveUser(request).toCompletableFuture().join().terminal()).isTrue();assertThat(reservations.reserveUser(request).toCompletableFuture().join().reservationId()).isNull();
         }
     }
+    @Test void rejectedOrUnknownPhaseNeverStartsNextEffectAndUnknownWinnerRequiresReconciliation(){
+        for(String code:List.of("OVERLOADED","UNAUTHORIZED","UNAVAILABLE","INVALID","OUTCOME_UNKNOWN")){
+            var seen=new AtomicInteger();var saga=new CrossCellSaga((phase,op,budget)->{seen.incrementAndGet();return CompletableFuture.completedFuture(code);});
+            var result=saga.accept(UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();assertThat(seen).hasValue(1);assertThat(result.code()).isEqualTo(code);assertThat(result.reconcileHomeWinner()).isEqualTo(code.equals("OUTCOME_UNKNOWN"));
+        }
+    }
+    @Test void productionTlsChecksDestinationIdentityBeforeAnyBackendExecution()throws Exception {
+        var seen=new AtomicInteger();
+        try(var server=new CellRpcServer("c003","test",0,serverTls(),new RpcAdmission(4,256*1024,4,256*1024),(op,c,p,b)->{seen.incrementAndGet();return CompletableFuture.completedFuture(committed(c));},event->CompletableFuture.failedFuture(new UnsupportedOperationException())).start();
+            var client=new CellRpcClient("test",Map.of("c003",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("actor.crt"),cert("actor.key")),new RpcAdmission(4,256*1024,4,256*1024))){
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c003"),Duration.ofMillis(500)).toCompletableFuture().join().getAckCommitted()).isFalse();assertThat(seen).hasValue(0);
+        }
+    }
+
 }

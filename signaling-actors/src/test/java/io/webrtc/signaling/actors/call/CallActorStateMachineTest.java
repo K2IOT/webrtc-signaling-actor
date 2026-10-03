@@ -45,11 +45,40 @@ class CallActorStateMachineTest {
         first.logical.complete(new CallWorkflowService.Outcome("RINGING",snapshot("RINGING",2),List.of()));assertThat(replies.receiveMessage().snapshot().version()).isEqualTo(2);assertThat(backend.started).hasValue(1);
         first.physical.complete(DbOperation.PhysicalCompletion.FINISHED);var replay=backend.next();replies.expectNoMessage(Duration.ofMillis(50));replay.done(new CallWorkflowService.Outcome("RINGING",snapshot("RINGING",2),List.of()));assertThat(replies.receiveMessage().code()).isEqualTo("RINGING");assertThat(backend.started).hasValue(2);
     }
-    @Test void closedGroupGatePreventsAnyNewMutationEvenWithPreviouslyHydratedState(){var actor=spawn();held.set(false);progress(actor);assertThat(replies.receiveMessage().code()).isEqualTo("FENCED");assertThat(backend.started).hasValue(0);}
+    @Test void closedGroupGatePreventsAnyNewMutationEvenWithPreviouslyHydratedState(){var actor=spawn();var state=kit.<Optional<Snapshot>>createTestProbe();actor.tell(new CallActor.GetSnapshot(state.ref()));state.receiveMessage();held.set(false);progress(actor);assertThat(replies.receiveMessage().code()).isEqualTo("FENCED");assertThat(backend.started).hasValue(0);}
     @Test void unknownCompletionAndLateOldIncarnationCannotEnableReplacement()throws Exception {
         var old=spawn();progress(old);var p=backend.next();p.logical.completeExceptionally(new DbOutcomeUnknownException());assertThat(replies.receiveMessage().code()).isEqualTo("UNKNOWN");progress(old);assertThat(replies.receiveMessage().code()).isEqualTo("UNAVAILABLE");assertThat(backend.started).hasValue(1);
         kit.stop(old);var freshBackend=new Backend();var replacement=kit.spawn(CallActor.create(CALL,freshBackend,()->Optional.of(TOKEN),Clock.fixed(NOW,ZoneOffset.UTC)));freshBackend.hydration.done(Optional.of(snapshot("RINGING",2)));p.physical.complete(DbOperation.PhysicalCompletion.FINISHED);
         var state=kit.<Optional<Snapshot>>createTestProbe();replacement.tell(new CallActor.GetSnapshot(state.ref()));assertThat(state.receiveMessage()).contains(snapshot("RINGING",2));
     }
     @Test void restoresDurableTimerWithoutClientTraffic()throws Exception {var actor=spawn();time.timePasses(Duration.ofSeconds(15));var timeout=backend.next();timeout.done(new CallWorkflowService.Outcome("TIMEOUT",snapshot("TERMINAL",2),List.of()));assertThat(backend.started).hasValue(1);kit.stop(actor);}
+    @Test void unknownEntityRetiresOnlyAfterPhysicalCleanupSoRecoveryCanRecreateIt()throws Exception {
+        var actor=spawn();progress(actor);var work=backend.next();work.logical.completeExceptionally(new DbOutcomeUnknownException());assertThat(replies.receiveMessage().code()).isEqualTo("UNKNOWN");progress(actor);assertThat(replies.receiveMessage().code()).isEqualTo("UNAVAILABLE");assertThat(backend.started).hasValue(1);
+        work.physical.complete(DbOperation.PhysicalCompletion.FINISHED);replies.expectTerminated(actor,Duration.ofSeconds(2));
+    }
+    @Test void shardStopDrainsPhysicalWorkThenTerminatesWithoutRequestingAnotherPassivation()throws Exception {
+        var shard=kit.<org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding.ShardCommand>createTestProbe();
+        var actor=kit.spawn(CallActor.create(CALL,backend,()->Optional.of(TOKEN),Clock.fixed(NOW,ZoneOffset.UTC),shard.ref()));
+        backend.hydration.done(Optional.of(snapshot("PREPARING",1)));progress(actor);var work=backend.next();actor.tell(CallActor.Stop.INSTANCE);
+        work.logical.complete(new CallWorkflowService.Outcome("RINGING",snapshot("RINGING",2),List.of()));replies.receiveMessage();
+        work.physical.complete(DbOperation.PhysicalCompletion.FINISHED);replies.expectTerminated(actor,Duration.ofSeconds(2));shard.expectNoMessage(Duration.ofMillis(50));
+    }
+
+    @Test void homeGrantIsQueuedThroughActorAndOldOwnershipCannotProduceSuccessfulProof()throws Exception {
+        var grantWork=new Pending<CoordinatorGrantService.Issued>();var delegate=new Backend();
+        CallActor.Backend grantBackend=new CallActor.Backend(){
+            public DbOperation<Optional<Snapshot>> load(CallId c,AuthoritySql.GroupToken t,Duration b){return delegate.load(c,t,b);}
+            public DbOperation<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition t,Duration b){return delegate.progress(t,b);}
+            public DbOperation<CallCommandService.Outcome> command(io.webrtc.signaling.protocol.CallCommand c,AuthoritySql.GroupToken t,long v,String p,Duration b){return delegate.command(c,t,v,p,b);}
+            public DbOperation<CallWorkflowService.Outcome> expire(CallId c,AuthoritySql.GroupToken t,long v,Duration b){return delegate.expire(c,t,v,b);}
+            public DbOperation<CoordinatorGrantService.Issued> grant(HomeParticipationService.Request r,HomeParticipationService.AuthorizationIntent a,AuthoritySql.GroupToken t,long v,Duration b){assertThat(t).isEqualTo(TOKEN);assertThat(v).isEqualTo(1);return grantWork.handle();}
+        };
+        var actor=kit.spawn(CallActor.create(CALL,grantBackend,()->held.get()?Optional.of(TOKEN):Optional.empty(),Clock.fixed(NOW,ZoneOffset.UTC)));delegate.hydration.done(Optional.of(snapshot("PREPARING",1)));
+        var request=new HomeParticipationService.Request(new UserId("bob"),CALL,UUID.randomUUID(),"a".repeat(64),1,HomeParticipationService.Phase.PREPARING,new HomeParticipationService.Grant("c001",1,1,TOKEN.group(),2,1,UUID.randomUUID(),NOW,NOW.plusSeconds(5),"UNSIGNED"));
+        var results=kit.<CallActor.GrantReply>createTestProbe();actor.tell(new CallActor.GrantToHome(request,HomeParticipationService.AuthorizationIntent.reserve(),results.ref(),NOW.plusSeconds(2),1024));
+        var observer=kit.<Optional<Snapshot>>createTestProbe();actor.tell(new CallActor.GetSnapshot(observer.ref()));observer.receiveMessage();held.set(false);
+        grantWork.done(new CoordinatorGrantService.Issued(snapshot("PREPARING",1),TOKEN,1,NOW,NOW.plusSeconds(5),"a".repeat(64)));
+        var result=results.receiveMessage();assertThat(result.code()).isEqualTo("UNKNOWN");assertThat(result.issued()).isNull();
+    }
+
 }
