@@ -5,6 +5,9 @@
 <dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-cluster-sharding-typed_2.13</artifactId><version>${pekko.version}</version></dependency>
 <dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-coordination_2.13</artifactId><version>${pekko.version}</version></dependency>
 <dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-serialization-jackson_2.13</artifactId><version>${pekko.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-management_2.13</artifactId><version>${pekko-management.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-management-cluster-bootstrap_2.13</artifactId><version>${pekko-management.version}</version></dependency>
+<dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-discovery-kubernetes-api_2.13</artifactId><version>${pekko-management.version}</version></dependency>
 <dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-actor-testkit-typed_2.13</artifactId><version>${pekko.version}</version><scope>test</scope></dependency>
 <dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-storage</artifactId><version>${project.version}</version><type>test-jar</type><scope>test</scope></dependency>
 <dependency><groupId>org.testcontainers</groupId><artifactId>postgresql</artifactId><scope>test</scope></dependency>

@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.*;
 import org.junit.jupiter.api.*;
 class PostgresShardLeaseContractIT {
     static DbTestRuntime runtime;static GroupOwnerRepository repository;static ScheduledThreadPoolExecutor timer;
-    @BeforeAll static void setup()throws Exception {runtime=new DbTestRuntime();repository=new GroupOwnerRepository(runtime.sql,"c001",1);timer=new ScheduledThreadPoolExecutor(2);timer.setRemoveOnCancelPolicy(true);try(var c=PgFixture.connection();var s=c.createStatement()){s.execute("INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023) n");}}
+    @BeforeAll static void setup()throws Exception {runtime=new DbTestRuntime();repository=new GroupOwnerRepository(runtime.sql,"c001",1);timer=new ScheduledThreadPoolExecutor(2);timer.setRemoveOnCancelPolicy(true);try(var c=PgFixture.connection();var s=c.createStatement()){s.execute("INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023) n ON CONFLICT DO NOTHING");}}
     @AfterAll static void close(){timer.shutdownNow();runtime.close();}
     static LeaseSettings settings(int group,long timeoutMs){return LeaseSettings.apply(ConfigFactory.parseString("heartbeat-interval=5s\nheartbeat-timeout=15s\nlease-operation-timeout="+timeoutMs+"ms"),"lease-contract-shard-SignalingCallV1-"+group,"127.0.0.1:2552");}
     static PostgresShardLease lease(int group,GroupOwnership ownership,AtomicLong nanos){return new PostgresShardLease(settings(group,2000),new PostgresShardLease.Namespace("lease-contract","c001",1,"127.0.0.1:2552","member#clusterUID#podUID"),ownership,timer,()->true,nanos==null?System::nanoTime:nanos::get);}
@@ -75,6 +75,7 @@ class PostgresShardLeaseContractIT {
             pekko.actor.provider=cluster
             pekko.remote.artery.canonical.hostname="127.0.0.1"
             pekko.remote.artery.canonical.port=0
+            signaling.lease-placement-mailbox { mailbox-type="org.apache.pekko.dispatch.NonBlockingBoundedMailbox", mailbox-capacity=2048, mailbox-push-timeout-time=0ms }
             signaling.postgres-lease {
               lease-class="io.webrtc.signaling.actors.lease.PostgresShardLease"
               heartbeat-interval=5s
@@ -84,7 +85,7 @@ class PostgresShardLeaseContractIT {
             """).withFallback(ConfigFactory.load());
         var system=org.apache.pekko.actor.ActorSystem.create("lease-provider-test",config);
         try {
-            var address=org.apache.pekko.cluster.Cluster.get(system).selfAddress();String host=address.host().get()+":"+address.port().get();
+            var address=org.apache.pekko.cluster.Cluster.get(system).selfAddress();String host=address.hostPort();
             var provider=org.apache.pekko.coordination.lease.javadsl.LeaseProvider.get(system);
             assertThatThrownBy(()->provider.getLease("lease-provider-test-shard-SignalingCallV1-106","signaling.postgres-lease",host)).isInstanceOf(IllegalStateException.class);
             PostgresShardLeaseProvider.install(system,repository,"c001",1,UUID.randomUUID(),()->true);

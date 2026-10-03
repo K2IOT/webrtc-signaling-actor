@@ -30,7 +30,7 @@ public final class PostgresShardLease extends Lease {
     @Override public CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){return engine.acquire(callback);}
     @Override public CompletionStage<Boolean> release(){return engine.release();}
     @Override public boolean checkLease(){return engine.check();}
-    public Optional<GroupOwnerRepository.Grant> currentGrant(){var held=engine.held.get();return engine.check()&&held!=null?Optional.of(held.grant()):Optional.empty();}
+    public Optional<GroupOwnerRepository.Grant> currentGrant(){return engine.currentGrant();}
     public void invalidate(Throwable reason){engine.invalidate(reason);}
 
     static final class Engine {
@@ -53,6 +53,7 @@ public final class PostgresShardLease extends Lease {
             var timeouts=settings.timeoutSettings();if(!timeouts.getHeartbeatInterval().equals(Duration.ofSeconds(5))||!timeouts.getHeartbeatTimeout().equals(Duration.ofSeconds(15))||timeouts.getOperationTimeout().isZero()||timeouts.getOperationTimeout().isNegative()||timeouts.getOperationTimeout().compareTo(Duration.ofSeconds(2))>0)throw new IllegalArgumentException("Unqualified lease timeout settings");
         }
         boolean check(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0;}
+        Optional<GroupOwnerRepository.Grant> currentGrant(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0?Optional.of(current.grant()):Optional.empty();}
         synchronized CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){
             Objects.requireNonNull(callback);if(check()){held.get().tenure().callback=callback;return done(true);}
             if(held.get()!=null)lose(new AuthoritySql.FencedException(),true);
@@ -97,6 +98,7 @@ public final class PostgresShardLease extends Lease {
             p.result.complete(true);cancel(p.deadline);finishKnown(p);
         }
         private synchronized void expire(Tenure tenure){Held current=held.get();if(current!=null&&current.tenure()==tenure&&!check())lose(new AuthoritySql.FencedException(),true);}
+        synchronized void placementLost(AuthoritySql.GroupToken token){var current=held.get();var candidate=current==null?retired:current;if(candidate!=null&&candidate.grant().token().equals(token)){invalidate(new AuthoritySql.FencedException());release();}}
         synchronized void invalidate(Throwable error){lose(error,true);if(pending!=null&&!pending.unknown)unknown(pending,error,true);}
         private void lose(Throwable error,boolean notify){
             Held previous=held.getAndSet(null);if(previous!=null)retired=previous;cancel(pulse);cancel(expiry);if(previous!=null&&notify&&previous.tenure().notified.compareAndSet(false,true))notifyLost(previous.tenure(),error);

@@ -11,8 +11,11 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 4 | Implemented contract | `a3a8990`; bootstrap, bucket hashing, durable-directory interfaces and freeze/install/publication protocol; JDBC adapter follows storage |
 | 5 | Complete | `884e19c`; real PostgreSQL 17.6 migrations and safety constraints; two fixed pools, admitted VTs, native authority barriers and JPA-bound transaction tests |
 | 6 | Complete | `62df892`; generation/incarnation fences, five-session admission, refresh, old-close protection, irreversible gateway boots and bounded pulse batches |
-| 7 | In progress | Real PostgreSQL participation, reservation and winner race verification |
-| 8–24 | Pending | Runtime correctness and qualification prerequisites remain unfulfilled |
+| 7 | Complete | `5fd5d4f`; reciprocal reservations, Release-before-Reserve tombstone, immutable winner and 100 ACCEPT race |
+| 8 | Implemented transaction layer | `c4b474b`; scoped result/call/outbox COMMIT, primary replay and fenced outbox completion; workflow transitions follow actors/RPC |
+| 9 | Implemented lease adapter | `5fa4179`; public LeaseProvider, physical cleanup/reconciliation, sequence replay and stale callback gates |
+| 10 | Complete local runtime tests | PostgreSQL acquire-before-child, warm/cold routes, exact placement release, coordinator restart, shard relocation, full actor restart, incompatible fingerprint rejection |
+| 11–24 | Pending | Business actors, RPC/WSS, deployment and qualification remain unfulfilled |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
@@ -55,3 +58,8 @@ One Minor finding remains deferred as the inline skill prescribes: config issuer
 ## Qualification
 
 Release status: **NOT_QUALIFIED**. There is no deployed candidate image, runtime call path, PostgreSQL HA, browser/native interop, distributed load, AZ-loss, security/DR drill or 24-hour evidence. Tasks 23–24 additionally need the specified infrastructure and measured staged execution; architecture or unit tests cannot substitute for those gates.
+
+Task 10 verification: `./mvnw -B -pl signaling-actors -am clean verify` passes **90 tests** in the selected reactor, including nine PostgreSQL/public Lease tests and two multi-node scenarios. Tests use loopback TCP with explicit test-only seed discovery; production requires cell-scoped Kubernetes API discovery and supplied mTLS contexts. The test-only full reformation has no automatic production reformation counterpart. Expected fault-injection and shutdown warnings are retained; these tests do not certify Kubernetes, PKI, shutdown deadlines, PostgreSQL HA or 10M throughput.
+
+9. Avoid Pekko 1.1.3 Java `stateStoreModeDdata()`, which returns persistence; read the mode from config and assert its runtime name plus coordinator conversion. Cost if wrong: rerun compatibility gates after any BOM update.
+10. Match the public `Address.hostPort()` owner format and observe the real shard parent via public Adapter/DeathWatch to gate and release exact placement tenures; the pinned Shard lifecycle does not itself call release on termination. This shares the existing controller and introduces no competing ownership loop. Cost if wrong: rollout remains blocked by lease lifecycle qualification.
