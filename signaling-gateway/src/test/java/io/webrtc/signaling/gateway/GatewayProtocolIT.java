@@ -18,6 +18,7 @@ class GatewayProtocolIT {
     static final String AUTH="{\"v\":1,\"type\":\"AUTH\",\"payload\":{\"token\":\"TEST_ONLY\"}}";
     final UUID boot=UUID.randomUUID();final Instant now=Instant.parse("2026-10-03T00:00:00Z");final Clock clock=Clock.fixed(now,ZoneOffset.UTC);
     final AuthPrincipal principal=new AuthPrincipal(new UserId("alice"),new SessionKey("TEST_ONLY","jti"),now.plusSeconds(600),now,"TEST_ONLY",1);
+    final AtomicReference<String> commandToken=new AtomicReference<>();final AtomicReference<SessionRepository.Route> commandRoute=new AtomicReference<>();
     final AtomicBoolean validBoot=new AtomicBoolean(true);final AtomicInteger commands=new AtomicInteger();final CompletableFuture<SessionRepository.Route> registration=new CompletableFuture<>();
     final ConnectionRegistry registry=new ConnectionRegistry("gw",boot,1000);
     final GatewayServices services=new GatewayServices(){
@@ -27,6 +28,7 @@ class GatewayProtocolIT {
         public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID connection,Duration budget){return registration;}
         public CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal p,Duration budget){return CompletableFuture.completedFuture(route);}
         public CompletionStage<Void> close(SessionRepository.Route route){return CompletableFuture.completedFuture(null);}
+        @Override public CompletionStage<String> command(CallCommand command,SessionRepository.Route route,String token,Duration budget){commandToken.set(token);commandRoute.set(route);return command(command,budget);}
         public CompletionStage<String> command(CallCommand command,Duration budget){commands.incrementAndGet();return CompletableFuture.completedFuture("{\"v\":1,\"type\":\"ACK_COMMITTED\"}");}
     };
     EmbeddedChannel channel(){return new EmbeddedChannel(new WebSocketFrameAggregator(81920),new FrameAdmissionHandler(new ProtocolValidator(ProtocolLimits.v1()),Runnable::run),new AuthHandler(registry,services,clock,Runnable::run),new HeartbeatHandler(registry,services,clock));}
@@ -86,4 +88,5 @@ class GatewayProtocolIT {
             var stale=stream.send(event.toBuilder().setDestination(event.getDestination().toBuilder().setConnectionGeneration(2)).build());channel.runPendingTasks();assertThat(stale.toCompletableFuture().join().getErrorCode()).isEqualTo("STALE_BINDING");assertThat((Object)channel.readOutbound()).isNull();
         }finally{channel.finishAndReleaseAll();}
     }
+    @Test void commandCarriesTheOriginalVerifiedTokenAndExactCommittedRouteForIndependentNativeProofRead(){var channel=channel();try{authenticate(channel);((TextWebSocketFrame)channel.readOutbound()).release();channel.writeInbound(new TextWebSocketFrame("{\"v\":1,\"type\":\"SYNC_CALL\",\"requestId\":\""+UUID.randomUUID()+"\",\"callId\":\"c001.e1.00000000-0000-0000-0000-000000000001\",\"payload\":{}}"));channel.runPendingTasks();assertThat(commandToken).hasValue("TEST_ONLY");assertThat(commandRoute.get().connectionId()).isEqualTo(channel.attr(ConnectionRegistry.CONNECTION).get());assertThat(commandRoute.get().connectionGeneration()).isEqualTo(1);}finally{channel.finishAndReleaseAll();}}
 }

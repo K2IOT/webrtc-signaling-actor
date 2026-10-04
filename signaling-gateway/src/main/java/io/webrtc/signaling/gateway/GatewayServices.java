@@ -16,4 +16,6 @@ public interface GatewayServices {
     default CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal principal,String originalVerifiedToken,Duration budget){return refresh(route,principal,budget);}
     CompletionStage<Void> close(SessionRepository.Route route);
     CompletionStage<String> command(CallCommand command,Duration budget);
+    default CompletionStage<String> command(CallCommand command,SessionRepository.Route route,String originalVerifiedToken,Duration budget){return command(command,budget);}
+
 }

@@ -16,6 +16,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     public interface Backend {
         default HomeParticipationService.Request sealGrant(HomeParticipationService.Request request,String destination,CoordinatorGrantService.Issued issued){throw new IllegalStateException("Native coordinator proof signer is required");}
         default DbOperation<CoordinatorGrantService.Issued> grant(HomeParticipationService.Request r,HomeParticipationService.AuthorizationIntent action,AuthoritySql.GroupToken token,long version,Duration budget){throw new IllegalStateException("Coordinator grant service is required");}
+        default DbOperation<Optional<Snapshot>> loadCold(CallId call,AuthoritySql.GroupToken token,Duration budget){return load(call,token,budget);}
         DbOperation<Optional<Snapshot>> load(CallId call,AuthoritySql.GroupToken token,Duration budget);
         DbOperation<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition transition,Duration budget);
         DbOperation<CallCommandService.Outcome> command(CallCommand command,AuthoritySql.GroupToken token,long version,String proof,Duration budget);
@@ -39,7 +40,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     private final UUID incarnation=UUID.randomUUID();private final CallId call;private final Backend backend;private final Supplier<Optional<AuthoritySql.GroupToken>> gate;private final Clock clock;private final TimerScheduler<CallMessage> timers;private final ActorRef<ClusterSharding.ShardCommand> shard;
     private final ArrayDeque<CallMessage> queue=new ArrayDeque<>();private final List<ActorRef<Optional<Snapshot>>> observers=new ArrayList<>();private Optional<Snapshot> snapshot=Optional.empty();private Pending pending;private int bytes;private boolean ready,unknown,stopping,passivating;
     private CallActor(ActorContext<CallMessage> c,TimerScheduler<CallMessage> t,CallId call,Backend backend,Supplier<Optional<AuthoritySql.GroupToken>> gate,Clock clock,ActorRef<ClusterSharding.ShardCommand> shard){super(c);this.call=Objects.requireNonNull(call);this.backend=Objects.requireNonNull(backend);this.gate=Objects.requireNonNull(gate);this.clock=Objects.requireNonNull(clock);timers=t;this.shard=shard;
-        var token=current();if(token.isEmpty()){unknown=true;ready=true;return;}pending=new Pending(null,token.get());submit(()->backend.load(call,pending.token,Duration.ofSeconds(2)));
+        var token=current();if(token.isEmpty()){unknown=true;ready=true;return;}pending=new Pending(null,token.get());submit(()->backend.loadCold(call,pending.token,Duration.ofSeconds(2)));
     }
     @Override public Receive<CallMessage> createReceive(){return newReceiveBuilder().onMessage(GrantToHome.class,this::enqueue).onMessage(Progress.class,this::enqueue).onMessage(Execute.class,this::enqueue).onMessage(WakeCall.class,this::enqueue).onMessage(GetSnapshot.class,this::observe).onMessage(Completed.class,this::completed).onMessage(Cleaned.class,this::cleaned).onMessage(Expire.class,this::expire).onMessage(Retire.class,r->retire()).onMessage(Stop.class,r->stop()).build();}
     private Optional<AuthoritySql.GroupToken> current(){return gate.get().filter(t->call.coordinatorCell().equals(t.cell())&&call.routingEpoch()==t.storageEpoch()&&t.hashVersion()==1&&t.group()==HomeParticipationService.group(call));}

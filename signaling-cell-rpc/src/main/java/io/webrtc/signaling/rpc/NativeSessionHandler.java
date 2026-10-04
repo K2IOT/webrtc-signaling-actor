@@ -12,7 +12,8 @@ public final class NativeSessionHandler {
     public record GatewayIdentity(String gatewayId,UUID bootId,String cell,long storageEpoch,String region) {
         public GatewayIdentity {if(gatewayId==null||!gatewayId.matches("[A-Za-z0-9_.-]{1,128}")||bootId==null||cell==null||!cell.matches("[a-z][a-z0-9-]{0,23}")||storageEpoch<=0||region==null||region.isBlank()||region.length()>64)throw new IllegalArgumentException("Invalid gateway identity");}
     }
-    public record Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation) {
+    public record Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation,io.webrtc.signaling.protocol.CallCommand proofCommand) {
+        public Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation){this(type,gateway,token,route,connection,directoryEpoch,renewalSequence,operation,null);}
         public Request {Objects.requireNonNull(type);Objects.requireNonNull(gateway);Objects.requireNonNull(operation);if(token!=null&&(token.isBlank()||token.length()>16384))throw new IllegalArgumentException("Invalid token");}
         @Override public String toString(){return "SessionRequest[type="+type+", operation="+operation+"]";}
     }
@@ -27,8 +28,10 @@ public final class NativeSessionHandler {
             if(!request.operation().equals(operation)||!command.getType().equals(request.type())||!peer.cell().equals(gateway.cell())||peer.workloadId().isBlank()||!peer.workloadId().equals(gateway.gatewayId())||!workloads.test(peer,gateway))return rejected(command,"UNAUTHORIZED");
             if(Set.of("BOOT_START","BOOT_RENEW").contains(request.type())){if(!cell.equals(gateway.cell())||gateway.storageEpoch()!=epoch||request.renewalSequence()<=0||request.token()!=null||request.route()!=null||request.connection()!=null)return rejected(command,"UNAUTHORIZED");}
             else if(request.type().equals("REGISTER")){if(request.token()==null||request.connection()==null||request.route()!=null||request.directoryEpoch()<=0)return rejected(command,"INVALID_MESSAGE");}
-            else if(Set.of("REFRESH","CLOSE").contains(request.type())){var route=request.route();if(route==null||request.directoryEpoch()<=0||!route.gatewayId().equals(gateway.gatewayId())||!route.bootId().equals(gateway.bootId())||request.type().equals("REFRESH")&&request.token()==null)return rejected(command,"UNAUTHORIZED");}
+            else if(Set.of("REFRESH","CLOSE","READ_PROOF").contains(request.type())){var route=request.route();if(route==null||request.directoryEpoch()<=0||!route.gatewayId().equals(gateway.gatewayId())||!route.bootId().equals(gateway.bootId())||Set.of("REFRESH","READ_PROOF").contains(request.type())&&request.token()==null)return rejected(command,"UNAUTHORIZED");}
             else return rejected(command,"UNSUPPORTED_OPERATION");
+            if(request.type().equals("READ_PROOF")){var proof=request.proofCommand();if(proof==null||proof.callId()==null||!proof.requestId().value().equals(operation)||!proof.sender().userId().equals(request.route().user())||!proof.sender().key().equals(request.route().key())||!proof.sender().incarnation().equals(request.route().incarnation())||proof.sender().connectionGeneration()!=request.route().connectionGeneration()||!proof.sender().connectionId().equals(request.route().connectionId())||Set.of(io.webrtc.signaling.protocol.SignalEnvelope.Type.OFFER,io.webrtc.signaling.protocol.SignalEnvelope.Type.ANSWER,io.webrtc.signaling.protocol.SignalEnvelope.Type.ICE_CANDIDATES,io.webrtc.signaling.protocol.SignalEnvelope.Type.END_OF_CANDIDATES).contains(proof.type()))return rejected(command,"UNAUTHORIZED");}
+            else if(request.proofCommand()!=null)return rejected(command,"INVALID_MESSAGE");
             long millis=Math.min(2000,Math.min(command.getRemainingBudgetMs(),budget.toMillis()));if(millis<=0)return rejected(command,"OUTCOME_UNKNOWN");return operations.execute(request,Duration.ofMillis(millis));
         }catch(Exception invalid){return rejected(command,"UNAUTHORIZED");}
     }

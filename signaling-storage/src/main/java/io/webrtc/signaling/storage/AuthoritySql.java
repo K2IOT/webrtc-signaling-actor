@@ -41,7 +41,7 @@ public final class AuthoritySql {
     public static void userGuards(Connection c,List<String> users)throws SQLException {
         if(users.size()>16)throw new IllegalArgumentException("Guard batch exceeds limit");
         var sorted=new TreeSet<>(users);for(String user:sorted)try(var s=c.prepareStatement("INSERT INTO user_guard(user_id) VALUES(?) ON CONFLICT DO NOTHING")){s.setString(1,user);s.executeUpdate();}
-        for(String user:sorted)try(var s=c.prepareStatement("SELECT user_id FROM user_guard WHERE user_id=? FOR UPDATE NOWAIT")){s.setString(1,user);try(var r=s.executeQuery()){if(!r.next())throw new RetryableConflict();}}
+        for(String user:sorted)try(var s=c.prepareStatement("SELECT user_id FROM user_guard WHERE user_id=? FOR UPDATE NOWAIT")){s.setString(1,user);try(var r=s.executeQuery()){if(!r.next())throw new RetryableConflict();}}catch(SQLException conflict){if("55P03".equals(conflict.getSQLState()))throw new RetryableConflict();throw conflict;}
     }
     public static void home(Connection c,String cell,long storageEpoch,Map<Integer,Long> buckets,List<String> users)throws SQLException {
         roots(c,cell,storageEpoch,buckets);userGuards(c,users);

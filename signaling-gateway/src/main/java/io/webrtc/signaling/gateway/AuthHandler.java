@@ -15,7 +15,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
     private final ConnectionRegistry registry;private final GatewayServices services;private final Clock clock;private final ProtocolValidator protocol=new ProtocolValidator(ProtocolLimits.v1());
     private static final Executor DEFAULT_CPU=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(1024),Thread.ofPlatform().daemon().name("gateway-binding-",0).factory(),new ThreadPoolExecutor.AbortPolicy());
     private final Executor cpu;
-    private UUID connection;private SessionRepository.Route route;private boolean verifying;private io.netty.util.concurrent.ScheduledFuture<?> authTimeout;
+    private UUID connection;private SessionRepository.Route route;private String verifiedToken;private boolean verifying;private io.netty.util.concurrent.ScheduledFuture<?> authTimeout;
     public AuthHandler(ConnectionRegistry registry,GatewayServices services,Clock clock){this(registry,services,clock,DEFAULT_CPU);}
     public AuthHandler(ConnectionRegistry registry,GatewayServices services,Clock clock,Executor cpu){this.cpu=Objects.requireNonNull(cpu);this.registry=Objects.requireNonNull(registry);this.services=Objects.requireNonNull(services);this.clock=Objects.requireNonNull(clock);}
     @Override public void channelActive(ChannelHandlerContext ctx){try{connection=ctx.channel().attr(ConnectionRegistry.CONNECTION).get();if(connection==null)connection=registry.attach(ctx.channel());authTimeout=ctx.executor().schedule(()->{if(route==null)ctx.close();},5,TimeUnit.SECONDS);ctx.fireChannelActive();}catch(RejectedExecutionException full){ctx.close();}}
@@ -23,7 +23,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
         var envelope=frame.envelope();if(!services.currentBoot()||route!=null&&!registry.current(connection,route)){frame.release().run();ctx.close();return;}
         if(envelope.type()==SignalEnvelope.Type.AUTH||envelope.type()==SignalEnvelope.Type.AUTH_REFRESH){boolean refresh=envelope.type()==SignalEnvelope.Type.AUTH_REFRESH;if(verifying||refresh!=(route!=null)){frame.release().run();ctx.close();return;}verify(ctx,frame,refresh);return;}
         var binding=registry.binding(connection);if(route==null||binding==null||services.cachedSecurity(binding.principal(),clock.instant())!=AuthorizationStatus.ALLOWED){frame.release().run();ctx.close();return;}
-        try{var sender=new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),connection);cpu.execute(()->{try{var command=protocol.bind(envelope,sender);var result=services.command(command,remaining(frame));respond(ctx,frame,result,false);}catch(RuntimeException invalid){ctx.executor().execute(()->{frame.release().run();ctx.close();});}});}catch(RuntimeException invalid){frame.release().run();ctx.close();}
+        try{var sender=new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),connection);var committedRoute=route;var originalToken=verifiedToken;cpu.execute(()->{try{var command=protocol.bind(envelope,sender);var result=services.command(command,committedRoute,originalToken,remaining(frame));respond(ctx,frame,result,false);}catch(RuntimeException invalid){ctx.executor().execute(()->{frame.release().run();ctx.close();});}});}catch(RuntimeException invalid){frame.release().run();ctx.close();}
     }
     private Duration remaining(FrameAdmissionHandler.Admitted frame){long left=TimeUnit.SECONDS.toNanos(2)-(System.nanoTime()-frame.submittedNanos());if(left<=0)throw new RejectedExecutionException("INGRESS_EXPIRED");return Duration.ofNanos(left);}
     private void verify(ChannelHandlerContext ctx,FrameAdmissionHandler.Admitted frame,boolean refresh){
@@ -46,13 +46,13 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                     if(error!=null||!ctx.channel().isActive()||!services.currentBoot()||services.cachedSecurity(value.getKey(),clock.instant())!=AuthorizationStatus.ALLOWED||!registry.bind(connection,value.getValue(),value.getKey())){
                         failed.set(true);if(value!=null)closeOnce.accept(value.getValue());ctx.close();return;
                     }
-                    route=value.getValue();authTimeout.cancel(false);ctx.fireUserEventTriggered(new GatewayServer.Authenticated(registry.binding(connection)));
+                    route=value.getValue();verifiedToken=token;authTimeout.cancel(false);ctx.fireUserEventTriggered(new GatewayServer.Authenticated(registry.binding(connection)));
                     ctx.writeAndFlush(new TextWebSocketFrame("{\"v\":1,\"type\":\"AUTH_OK\",\"sessionIncarnation\":\""+route.incarnation().value()+"\",\"connectionGeneration\":\""+route.connectionGeneration()+"\"}"));
                 }finally{frame.release().run();}});
             });
         }catch(Exception invalid){failed.set(true);verifying=false;frame.release().run();ctx.close();}
     }
     private void respond(ChannelHandlerContext ctx,FrameAdmissionHandler.Admitted frame,CompletionStage<String> response,boolean auth){response.toCompletableFuture().orTimeout(remaining(frame).toNanos(),TimeUnit.NANOSECONDS).whenComplete((value,error)->ctx.executor().execute(()->{try{if(ctx.channel().isActive()&&services.currentBoot()&&registry.current(connection,route)){String output=error==null?value:"{\"v\":1,\"type\":\"OUTCOME_UNKNOWN\"}";if(output==null||output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>98304){ctx.close();return;}ctx.writeAndFlush(new TextWebSocketFrame(output));}}finally{frame.release().run();}}));}
-    @Override public void channelInactive(ChannelHandlerContext ctx){if(authTimeout!=null)authTimeout.cancel(false);if(connection!=null)registry.remove(connection);if(route!=null)services.close(route);ctx.fireChannelInactive();}
+    @Override public void channelInactive(ChannelHandlerContext ctx){if(authTimeout!=null)authTimeout.cancel(false);if(connection!=null)registry.remove(connection);if(route!=null)services.close(route);verifiedToken=null;ctx.fireChannelInactive();}
     @Override public void exceptionCaught(ChannelHandlerContext ctx,Throwable error){ctx.close();}
 }

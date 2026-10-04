@@ -18,7 +18,7 @@ import org.apache.pekko.actor.typed.javadsl.AskPattern;
 import io.webrtc.signaling.actors.cluster.CallMessage;
 class CallRecoveryIT {
     static <T>T finish(DbOperation<T> operation){try{return operation.logical().toCompletableFuture().join();}finally{operation.physicalCompletion().toCompletableFuture().join();}}
-    static <T>T finishRetry(DbOperation<T> first,java.util.function.Supplier<DbOperation<T>> sameIntent){try{return finish(first);}catch(CompletionException e){if(e.getCause() instanceof AuthoritySql.RetryableConflict)return finish(sameIntent.get());throw e;}}
+    static <T>T finishRetry(DbOperation<T> first,java.util.function.Supplier<DbOperation<T>> sameIntent){var operation=first;for(int attempt=0;attempt<200;attempt++){try{return finish(operation);}catch(CompletionException e){if(!(e.getCause() instanceof AuthoritySql.RetryableConflict))throw e;java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);operation=sameIntent.get();}}throw new AssertionError("Native lock contention failed to converge");}
     static final class Fixture implements AutoCloseable {
         final DbTestRuntime runtime;final String url;final Map<CallId,AuthoritySql.GroupToken> tokens=new HashMap<>();final SessionRegistryService sessions;final GatewayLeaseRepository.Boot boot;final CallWorkflowService workflow;final CallCommandService commands;final Map<CallId,AuthenticatedSession> callers=new HashMap<>();final Map<CallId,Participant> callees=new HashMap<>();
         Fixture()throws Exception {
@@ -43,7 +43,7 @@ class CallRecoveryIT {
             UUID activation=UUID.randomUUID();var activating=finish(f.workflow.apply(f.transition(call,3,CallWorkflowService.Step.ACTIVATE,UUID.randomUUID(),winner,activation),Duration.ofSeconds(2)));assertThat(activating.snapshot().state()).isEqualTo("ACTIVATING");
             var connecting=finish(f.workflow.apply(f.transition(call,4,CallWorkflowService.Step.READY,UUID.randomUUID(),winner,activation),Duration.ofSeconds(2)));assertThat(connecting.code()).isEqualTo("CALL_READY");
             // Seed the committed negotiation round produced by Task 16; media cannot establish round zero.
-            try(var c=f.connection();var q=c.prepareStatement("UPDATE call_state SET negotiation_id=1,version=version+1 WHERE call_id=? AND version=5")){q.setString(1,call.value());assertThat(q.executeUpdate()).isEqualTo(1);}
+            try(var c=f.connection();var q=c.prepareStatement("UPDATE call_state SET negotiation_id=1,version=version+1,deadlines=deadlines||'{\"mediaCallerConnected\":true,\"mediaWinnerConnected\":true,\"iceGeneration\":\"1\"}'::jsonb WHERE call_id=? AND version=5")){q.setString(1,call.value());assertThat(q.executeUpdate()).isEqualTo(1);}
             var established=finish(f.workflow.apply(f.transition(call,6,CallWorkflowService.Step.ESTABLISH,UUID.randomUUID(),winner,activation),Duration.ofSeconds(2)));assertThat(established.snapshot().state()).isEqualTo("ESTABLISHED");
             var terminal=finish(f.workflow.apply(f.transition(call,7,CallWorkflowService.Step.TERMINATE,UUID.randomUUID(),winner,activation),Duration.ofSeconds(2)));assertThat(terminal.snapshot().winner()).isEqualTo(winner);assertThat(terminal.snapshot().terminalAt()).isNotNull();assertThat(finish(f.workflow.apply(f.transition(call,8,CallWorkflowService.Step.READY,UUID.randomUUID(),winner,activation),Duration.ofSeconds(2))).snapshot().state()).isEqualTo("TERMINAL");
         }

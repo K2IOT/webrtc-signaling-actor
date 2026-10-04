@@ -54,8 +54,8 @@ public final class ProtocolValidator {
             if (type == INVITE && (call != null || round != null || generation != null)) throw invalid();
             if (type != INVITE && type != AUTH && type != AUTH_REFRESH && type != GET_COMMAND_RESULT && call == null) throw invalid();
             if ((type == OFFER || type == ANSWER || type == ICE_CANDIDATES || type == END_OF_CANDIDATES
-                || type == MEDIA_CONNECTED || type == MEDIA_RECOVERED) && round == null) throw invalid();
-            if ((type == ICE_CANDIDATES || type == END_OF_CANDIDATES) && generation == null) throw invalid();
+                || media(type)) && round == null) throw invalid();
+            if ((type == ICE_CANDIDATES || type == END_OF_CANDIDATES || media(type)) && generation == null) throw invalid();
             JsonNode payload = root.path("payload");
             validatePayload(type,payload);
             return new SignalEnvelope(1,type,request,call,round,generation,canonical(payload));
@@ -146,13 +146,18 @@ public final class ProtocolValidator {
                 if (!payload.path("iceRestart").isBoolean()) throw invalid();
             }
             case MEDIA_FAILED -> {
-                fields(payload,Set.of("reason"));
+                fields(payload,Set.of("reason","senderSequence","quality"));
+                validateMedia(payload);
                 if (!Set.of("ICE_FAILED","TURN_UNAVAILABLE","STUN_UNAVAILABLE","RECOVERY_EXHAUSTED")
                     .contains(string(payload,"reason",64))) throw invalid();
             }
+            case MEDIA_CONNECTED,MEDIA_DISCONNECTED,ICE_RESTARTING,MEDIA_RECOVERED -> {fields(payload,Set.of("senderSequence","quality"));validateMedia(payload);}
             default -> fields(payload,Set.of());
         }
     }
+    private static boolean media(SignalEnvelope.Type type){return Set.of(MEDIA_CONNECTED,MEDIA_DISCONNECTED,ICE_RESTARTING,MEDIA_FAILED,MEDIA_RECOVERED).contains(type);}
+    private void validateMedia(JsonNode payload){if(payload.has("senderSequence"))counter(payload,"senderSequence");if(payload.has("quality")){var quality=payload.get("quality");fields(quality,Set.of("rttMillis","jitterMicros","packetsLost","framesDropped"));try{new MediaTelemetry.Quality(qualityCounter(quality,"rttMillis"),qualityCounter(quality,"jitterMicros"),qualityCounter(quality,"packetsLost"),qualityCounter(quality,"framesDropped"));}catch(IllegalArgumentException invalid){throw invalid();}}}
+    private long qualityCounter(JsonNode value,String field){var n=value.path(field);if(!n.isIntegralNumber()||!n.canConvertToLong()||n.longValue()<0)throw invalid();return n.longValue();}
     private void fields(JsonNode value, Set<String> allowed) {
         if (!value.isObject()) throw invalid();
         value.fieldNames().forEachRemaining(k -> { if (!allowed.contains(k)) throw invalid(); });

@@ -120,4 +120,6 @@ class ProtocolContractTest {
             .isInstanceOf(ProtocolException.class).hasMessage("INVALID_FRAME");
     }
 
+    @ParameterizedTest @ValueSource(strings={"MEDIA_CONNECTED","MEDIA_DISCONNECTED","ICE_RESTARTING","MEDIA_RECOVERED","MEDIA_FAILED"})
+    void everyMediaObservationRequiresRoundGenerationAndBoundsPrivacySafeQuality(String type){String payload=type.equals("MEDIA_FAILED")?"{\"reason\":\"ICE_FAILED\"}":"{}";assertThatThrownBy(()->decode(frame(type,payload).replace(",\"negotiationId\":\"1\"", ""))).isInstanceOf(ProtocolException.class);assertThatThrownBy(()->decode(frame(type,payload).replace(",\"iceGeneration\":\"1\"", ""))).isInstanceOf(ProtocolException.class);String quality="\"senderSequence\":\"7\",\"quality\":{\"rttMillis\":12,\"jitterMicros\":30,\"packetsLost\":1,\"framesDropped\":0}";String bounded=type.equals("MEDIA_FAILED")?"{\"reason\":\"ICE_FAILED\","+quality+"}":"{"+quality+"}";assertThat(decode(frame(type,bounded)).type().name()).isEqualTo(type);assertThatThrownBy(()->decode(frame(type,bounded.replace("\"rttMillis\":12","\"rttMillis\":120001")))).isInstanceOf(ProtocolException.class);assertThatThrownBy(()->decode(frame(type,bounded.replace("\"rttMillis\":12","\"remoteIp\":\"127.0.0.1\"")))).isInstanceOf(ProtocolException.class);}
 }

@@ -39,4 +39,5 @@ class AuthoritySqlIT {
             try(var c=PgFixture.connection();var s=c.createStatement();var r=s.executeQuery("SELECT user_id FROM user_guard WHERE user_id IN ('tx-committed','tx-rolledback')")){r.next();assertThat(r.getString(1)).isEqualTo("tx-committed");assertThat(r.next()).isFalse();}
         }
     }
+    @Test void contendedNativeUserGuardReturnsTypedRetryWithoutWaiting()throws Exception{String user="contention-"+UUID.randomUUID();try(var seed=PgFixture.connection();var q=seed.prepareStatement("INSERT INTO user_guard(user_id) VALUES(?)")){q.setString(1,user);q.executeUpdate();}try(var first=PgFixture.connection();var second=PgFixture.connection()){first.setAutoCommit(false);second.setAutoCommit(false);AuthoritySql.userGuards(first,List.of(user));assertThatThrownBy(()->AuthoritySql.userGuards(second,List.of(user))).isInstanceOf(AuthoritySql.RetryableConflict.class);second.rollback();first.commit();AuthoritySql.userGuards(second,List.of(user));second.commit();}}
 }
