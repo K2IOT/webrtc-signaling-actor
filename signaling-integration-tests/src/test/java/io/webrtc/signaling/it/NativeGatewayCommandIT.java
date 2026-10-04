@@ -70,7 +70,8 @@ class NativeGatewayCommandIT {
                     try(var c=f.connection();var q=c.createStatement();var r=q.executeQuery("SELECT count(*) FROM command_result WHERE status='FINAL'")){r.next();assertThat(r.getInt(1)).isZero();}return;
                 }
                 assertThat(first.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(first.path("callVersion").isTextual()).isTrue();
-                var call=new CallId(first.path("callId").asText());CoordinatorGrantIT.done(f.groups.releaseTracked(f.token(call)));f.tokens.remove(HomeParticipationService.group(call));
+                var call=new CallId(first.path("callId").asText());var releasedToken=f.token(call);
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).pollInterval(Duration.ofMillis(20)).ignoreExceptionsMatching(error->error instanceof CompletionException&&error.getCause() instanceof AuthoritySql.RetryableConflict).until(()->CoordinatorGrantIT.done(f.groups.releaseTracked(releasedToken)));f.tokens.remove(HomeParticipationService.group(call));
                 var lookup=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,request,null,CommandScope.invite(),null,null,null,"{}","b".repeat(64));
                 var recovered=JSON.readTree(gateway.command(lookup,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());
                 assertThat(recovered.path("type").asText()).isEqualTo("COMMAND_RESULT");assertThat(recovered.path("callId").asText()).isEqualTo(call.value());assertThat(recovered.path("ackCommitted").asBoolean()).isFalse();

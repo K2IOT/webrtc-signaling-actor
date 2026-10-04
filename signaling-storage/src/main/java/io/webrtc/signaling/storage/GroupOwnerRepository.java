@@ -40,7 +40,8 @@ public final class GroupOwnerRepository implements GroupOwnership {
             bindToken(s,1,token);return s.executeUpdate()==1;
         }
     });}
-    public CompletionStage<Optional<Grant>> reconcile(int group,String node,UUID incarnation){return sql.submit(DbClass.RECOVERY,Duration.ofSeconds(2),c->{
+    public CompletionStage<Optional<Grant>> reconcile(int group,String node,UUID incarnation){return reconcileTracked(group,node,incarnation).logical();}
+    public DbOperation<Optional<Grant>> reconcileTracked(int group,String node,UUID incarnation){return sql.submitTracked(DbClass.RECOVERY,Duration.ofSeconds(2),c->{
         roots(c,group,false);Root current=read(c,group);return current.live()&&current.storageEpoch()==storageEpoch&&node.equals(current.node())&&incarnation.equals(current.incarnation())?Optional.of(grant(group,current)):Optional.empty();
     });}
     private void roots(Connection c,int group,boolean exclusive)throws SQLException {AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,storageEpoch);AuthoritySql.groupBarrier(c,group,exclusive);}

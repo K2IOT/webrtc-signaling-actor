@@ -40,6 +40,7 @@ class PostgresShardLeaseContractIT {
             public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
             public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){return repository.releaseTracked(token);}
             public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){return repository.reconcile(group,node,incarnation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){return repository.reconcileTracked(group,node,incarnation);}
         };
         var lease=new PostgresShardLease(settings(104,200),new PostgresShardLease.Namespace("lease-contract","c001",1,"127.0.0.1:2552","delayed#clusterUID#podUID"),delayed,timer,()->true,System::nanoTime);
         var acquired=lease.acquire();var grant=committed.join();assertThatThrownBy(()->acquired.toCompletableFuture().join()).hasCauseInstanceOf(DbOutcomeUnknownException.class);assertThat(lease.checkLease()).isFalse();
@@ -58,6 +59,7 @@ class PostgresShardLeaseContractIT {
             public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){var actual=repository.pulseTracked(grant,sequence,operation);actual.logical().thenAccept(pulseCommit::complete);return new DbOperation<>(late.minimalCompletionStage(),actual.physicalCompletion());}
             public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){return repository.releaseTracked(token);}
             public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){return repository.reconcile(group,node,incarnation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){return repository.reconcileTracked(group,node,incarnation);}
         };
         var lease=new PostgresShardLease(settings(107,500),new PostgresShardLease.Namespace("lease-contract","c001",1,"127.0.0.1:2552","pulse-delay#clusterUID#podUID"),delayed,timer,()->true,System::nanoTime);
         assertThat(lease.acquire(error->loss.incrementAndGet()).toCompletableFuture().join()).isTrue();var committed=pulseCommit.get(7,TimeUnit.SECONDS);assertThat(committed.sequence()).isEqualTo(2);
@@ -90,7 +92,41 @@ class PostgresShardLeaseContractIT {
             assertThatThrownBy(()->provider.getLease("lease-provider-test-shard-SignalingCallV1-106","signaling.postgres-lease",host)).isInstanceOf(IllegalStateException.class);
             PostgresShardLeaseProvider.install(system,repository,"c001",1,UUID.randomUUID(),()->true);
             var adapter=provider.getLease("lease-provider-test-shard-SignalingCallV1-106","signaling.postgres-lease",host);assertThat(adapter).isInstanceOf(PostgresShardLease.class);
-            assertThat(adapter.acquire().toCompletableFuture().join()).isTrue();assertThat(adapter.release().toCompletableFuture().join()).isTrue();
+            assertThat(adapter.acquire().toCompletableFuture().join()).isTrue();
+            PostgresShardLeaseProvider.drain(system).toCompletableFuture().get(3,TimeUnit.SECONDS);
+            assertThat(((PostgresShardLease)adapter).currentGrant()).isEmpty();
+            assertThatThrownBy(()->adapter.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+            assertThat(adapter.release().toCompletableFuture().join()).isTrue();
         }finally{system.terminate();system.getWhenTerminated().toCompletableFuture().get(10,TimeUnit.SECONDS);}
     }
+    @Test void drainWaitsForPositiveNativeReleasePhysicalCleanupAndPermanentlyStopsAcquisition(){
+        var cleanup=new CompletableFuture<DbOperation.PhysicalCompletion>();
+        GroupOwnership delayed=new GroupOwnership(){
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return repository.acquireTracked(group,node,incarnation,operation);}
+            public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
+            public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){var actual=repository.releaseTracked(token);assertThat(actual.logical().toCompletableFuture().join()).isTrue();actual.physicalCompletion().toCompletableFuture().join();return new DbOperation<>(CompletableFuture.completedFuture(true),cleanup);}
+            public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){return repository.reconcile(group,node,incarnation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){return repository.reconcileTracked(group,node,incarnation);}
+        };
+        var lease=lease(111,delayed,null);assertThat(lease.acquire().toCompletableFuture().join()).isTrue();
+        var drain=lease.drain().toCompletableFuture();assertThat(lease.checkLease()).isFalse();assertThat(drain).isNotDone();assertThat(lease.drain().toCompletableFuture()).isNotDone();
+        assertThatThrownBy(()->lease.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+        cleanup.complete(DbOperation.PhysicalCompletion.FINISHED);drain.join();assertThat(lease.drain().toCompletableFuture()).isCompleted();
+    }
+
+    @Test void reconciliationReadRetainsPhysicalCreditBeforeMatchedReleaseAndDrain()throws Exception{
+        var acquireReply=new CompletableFuture<Optional<GroupOwnerRepository.Grant>>();var readCleanup=new CompletableFuture<DbOperation.PhysicalCompletion>();var readSeen=new CompletableFuture<Void>();var releases=new AtomicInteger();
+        GroupOwnership delayed=new GroupOwnership(){
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){var actual=repository.acquireTracked(group,node,incarnation,operation);actual.logical().toCompletableFuture().join();return new DbOperation<>(acquireReply,actual.physicalCompletion());}
+            public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
+            public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){releases.incrementAndGet();return repository.releaseTracked(token);}
+            public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){var actual=repository.reconcile(group,node,incarnation);readSeen.complete(null);return actual;}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){var actual=repository.reconcileTracked(group,node,incarnation);actual.logical().toCompletableFuture().join();actual.physicalCompletion().toCompletableFuture().join();readSeen.complete(null);return new DbOperation<>(actual.logical(),readCleanup);}
+        };
+        var lease=new PostgresShardLease(settings(112,500),new PostgresShardLease.Namespace("lease-contract","c001",1,"127.0.0.1:2552","reconcile-physical#clusterUID#podUID"),delayed,timer,()->true,System::nanoTime);
+        assertThatThrownBy(()->lease.acquire().toCompletableFuture().join()).hasCauseInstanceOf(DbOutcomeUnknownException.class);readSeen.get(2,TimeUnit.SECONDS);
+        var drain=lease.drain().toCompletableFuture();assertThatThrownBy(()->drain.get(500,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);assertThat(releases).hasValue(0);
+        readCleanup.complete(DbOperation.PhysicalCompletion.FINISHED);drain.get(3,TimeUnit.SECONDS);assertThat(releases).hasValue(1);assertThat(lease.checkLease()).isFalse();
+    }
+
 }

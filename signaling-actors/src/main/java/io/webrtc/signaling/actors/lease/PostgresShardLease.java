@@ -29,6 +29,7 @@ public final class PostgresShardLease extends Lease {
     @Override public CompletionStage<Boolean> acquire(){return engine.acquire(error->{});}
     @Override public CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){return engine.acquire(callback);}
     @Override public CompletionStage<Boolean> release(){return engine.release();}
+    public CompletionStage<Void> drain(){return engine.drain();}
     @Override public boolean checkLease(){return engine.check();}
     public Optional<GroupOwnerRepository.Grant> currentGrant(){return engine.currentGrant();}
     public void invalidate(Throwable reason){engine.invalidate(reason);}
@@ -47,7 +48,7 @@ public final class PostgresShardLease extends Lease {
         }
         private final LeaseSettings settings;private final Namespace namespace;private final int group;
         private final GroupOwnership repository;private final ScheduledExecutorService timers;private final BooleanSupplier clock;private final LongSupplier nanos;
-        final AtomicReference<Held> held=new AtomicReference<>();private Held retired;private Pending pending;private ScheduledFuture<?> pulse,expiry;
+        final AtomicReference<Held> held=new AtomicReference<>();private Held retired;private Pending pending;private boolean draining;private final CompletableFuture<Void> drained=new CompletableFuture<>();private ScheduledFuture<?> pulse,expiry;
         Engine(LeaseSettings settings,Namespace namespace,GroupOwnership repository,ScheduledExecutorService timers,BooleanSupplier clock,LongSupplier nanos){
             this.settings=settings;this.namespace=namespace;group=namespace.group(settings);this.repository=Objects.requireNonNull(repository);this.timers=Objects.requireNonNull(timers);this.clock=Objects.requireNonNull(clock);this.nanos=Objects.requireNonNull(nanos);
             var timeouts=settings.timeoutSettings();if(!timeouts.getHeartbeatInterval().equals(Duration.ofSeconds(5))||!timeouts.getHeartbeatTimeout().equals(Duration.ofSeconds(15))||timeouts.getOperationTimeout().isZero()||timeouts.getOperationTimeout().isNegative()||timeouts.getOperationTimeout().compareTo(Duration.ofSeconds(2))>0)throw new IllegalArgumentException("Unqualified lease timeout settings");
@@ -55,7 +56,7 @@ public final class PostgresShardLease extends Lease {
         boolean check(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0;}
         Optional<GroupOwnerRepository.Grant> currentGrant(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0?Optional.of(current.grant()):Optional.empty();}
         synchronized CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){
-            Objects.requireNonNull(callback);if(check()){held.get().tenure().callback=callback;return done(true);}
+            Objects.requireNonNull(callback);if(draining)return failed(new AuthoritySql.FencedException());if(check()){held.get().tenure().callback=callback;return done(true);}
             if(held.get()!=null)lose(new AuthoritySql.FencedException(),true);
             if(pending!=null)return pending.kind==Kind.ACQUIRE&&!pending.unknown?pending.result.minimalCompletionStage():failed(new DbOutcomeUnknownException());
             if(retired!=null){release();return done(false);}
@@ -84,7 +85,8 @@ public final class PostgresShardLease extends Lease {
         private synchronized void physical(Pending p){if(pending!=p)return;p.physicalDone=true;if(p.unknown)cleanup(p);else finishKnown(p);}
         private void finishKnown(Pending p){
             if(pending!=p||!p.physicalDone||!p.result.isDone()||p.unknown)return;pending=null;if(p.kind==Kind.RELEASE&&retired!=null&&retired.tenure()==p.tenure)retired=null;Held current=held.get();
-            if(current!=null&&current.tenure()==p.tenure){cancel(pulse);long next=p.start+Duration.ofSeconds(5).toNanos();pulse=timers.schedule(this::pulse,Math.max(0,next-nanos.getAsLong()),TimeUnit.NANOSECONDS);}
+            if(!draining&&current!=null&&current.tenure()==p.tenure){cancel(pulse);long next=p.start+Duration.ofSeconds(5).toNanos();pulse=timers.schedule(this::pulse,Math.max(0,next-nanos.getAsLong()),TimeUnit.NANOSECONDS);}
+            completeDrain();
         }
         private synchronized void timeout(Pending p){if(pending==p&&!p.result.isDone())unknown(p,new DbOutcomeUnknownException(),p.kind==Kind.PULSE);}
         private synchronized void pulse(){
@@ -107,10 +109,15 @@ public final class PostgresShardLease extends Lease {
         private void unknown(Pending p,Throwable error,boolean notify){
             if(pending!=p)return;p.unknown=true;cancel(p.deadline);lose(error,notify);p.result.completeExceptionally(error);if(p.physicalDone)cleanup(p);
         }
+        synchronized CompletionStage<Void> drain(){
+            if(!draining){draining=true;lose(new AuthoritySql.FencedException(),false);release();completeDrain();}
+            return drained.minimalCompletionStage();
+        }
+        private void completeDrain(){if(draining&&held.get()==null&&retired==null&&pending==null)drained.complete(null);}
         synchronized CompletionStage<Boolean> release(){
             Held current=held.getAndSet(null);if(current!=null)retired=current;else current=retired;cancel(pulse);cancel(expiry);
             if(pending!=null){var p=pending;if(p.releaseResult!=null)return p.releaseResult.minimalCompletionStage();p.releaseResult=new CompletableFuture<>();p.unknown=true;cancel(p.deadline);p.result.completeExceptionally(new DbOutcomeUnknownException());releaseDeadline(p);if(p.physicalDone)cleanup(p);return p.releaseResult.minimalCompletionStage();}
-            if(current==null)return done(true);var p=new Pending(Kind.RELEASE,current.tenure(),UUID.randomUUID(),nanos.getAsLong());pending=p;
+            if(current==null){completeDrain();return done(true);}var p=new Pending(Kind.RELEASE,current.tenure(),UUID.randomUUID(),nanos.getAsLong());pending=p;
             try{var attempt=repository.releaseTracked(current.grant().token());track(p,attempt);attempt.logical().whenComplete((value,error)->released(p,value,error));}
             catch(RuntimeException error){p.physicalDone=true;unknown(p,error,false);}return p.result.minimalCompletionStage();
         }
@@ -118,17 +125,24 @@ public final class PostgresShardLease extends Lease {
         private void releaseDeadline(Pending p){p.deadline=timers.schedule(()->{synchronized(this){if(pending==p&&p.releaseResult!=null)p.releaseResult.completeExceptionally(new DbOutcomeUnknownException());}},settings.timeoutSettings().getOperationTimeout().toNanos(),TimeUnit.NANOSECONDS);}
         private void cleanup(Pending p){
             if(pending!=p||!p.physicalDone||p.cleaning)return;p.cleaning=true;
-            repository.reconcile(group,namespace.ownerNode(),p.tenure.incarnation).whenComplete((value,error)->reconciled(p,value,error));
+            try{
+                var read=repository.reconcileTracked(group,namespace.ownerNode(),p.tenure.incarnation);
+                read.logical().handle((value,error)->new ReadOutcome(value,error)).thenCombine(read.physicalCompletion(),(observed,finished)->observed)
+                    .whenComplete((observed,unprovenCleanup)->{if(unprovenCleanup==null)reconciled(p,observed.value(),observed.error());});
+            }catch(RuntimeException notStarted){p.cleaning=false;retryCleanup(p);}
         }
+        private record ReadOutcome(Optional<GroupOwnerRepository.Grant> value,Throwable error) {}
         private synchronized void reconciled(Pending p,Optional<GroupOwnerRepository.Grant> result,Throwable error){
             if(pending!=p)return;if(error!=null){p.cleaning=false;retryCleanup(p);return;}
             if(result.isEmpty()){clean(p);return;}var grant=result.get();if(!valid(grant,p.tenure)){p.cleaning=false;retryCleanup(p);return;}
-            var release=repository.releaseTracked(grant.token());var known=new AtomicBoolean();
-            release.logical().whenComplete((value,failure)->{if(failure==null&&Boolean.TRUE.equals(value))known.set(true);});
-            release.physicalCompletion().whenComplete((completion,failure)->{synchronized(this){if(pending!=p)return;if(known.get())clean(p);else {p.cleaning=false;retryCleanup(p);}}});
+            try{
+                var release=repository.releaseTracked(grant.token());
+                release.logical().handle((value,failure)->failure==null&&Boolean.TRUE.equals(value)).thenCombine(release.physicalCompletion(),(known,finished)->known)
+                    .whenComplete((known,unprovenCleanup)->{synchronized(this){if(pending!=p||unprovenCleanup!=null)return;if(known)clean(p);else {p.cleaning=false;retryCleanup(p);}}});
+            }catch(RuntimeException notStarted){p.cleaning=false;retryCleanup(p);}
         }
         private void retryCleanup(Pending p){cancel(p.retry);p.retry=timers.schedule(()->{synchronized(this){cleanup(p);}},Duration.ofSeconds(1).toNanos(),TimeUnit.NANOSECONDS);}
-        private void clean(Pending p){if(pending!=p)return;pending=null;if(retired!=null&&retired.tenure()==p.tenure)retired=null;cancel(p.deadline);cancel(p.retry);if(p.releaseResult!=null)p.releaseResult.complete(true);}
+        private void clean(Pending p){if(pending!=p)return;pending=null;if(retired!=null&&retired.tenure()==p.tenure)retired=null;cancel(p.deadline);cancel(p.retry);if(p.releaseResult!=null)p.releaseResult.complete(true);completeDrain();}
         private static void cancel(ScheduledFuture<?> future){if(future!=null)future.cancel(false);}
         private static CompletionStage<Boolean> done(boolean value){return CompletableFuture.completedFuture(value).minimalCompletionStage();}
         private static CompletionStage<Boolean> failed(Throwable error){return CompletableFuture.<Boolean>failedFuture(error).minimalCompletionStage();}
