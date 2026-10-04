@@ -42,4 +42,39 @@ class BackpressureIT {
         for(int node=0;node<7;node++){var admission=EntityAdmission.forIngressProducers(7);for(int slot=0;slot<9;slot++){held.add(admission.acquire("shared-entity",slot<7?EntityAdmission.Priority.NORMAL:EntityAdmission.Priority.SAFETY,1024));admitted++;}assertThatThrownBy(()->admission.acquire("shared-entity",EntityAdmission.Priority.SAFETY,1)).isInstanceOf(EntityAdmission.Overloaded.class);}
         assertThat(admitted).isLessThanOrEqualTo(64);assertThat(admitted+16+2).isLessThan(128);held.forEach(EntityAdmission.Ticket::close);
     }
+    @Test void cleanupBeforeReplyCannotRetireCollectorCreditWhileLogicalWorkIsStillPending()throws Exception{
+        var kit=org.apache.pekko.actor.testkit.typed.javadsl.ActorTestKit.create();
+        try{
+            var replyRef=new AtomicReference<org.apache.pekko.actor.typed.ActorRef<String>>();
+            var receiptRef=new AtomicReference<CompletionReceipt>();
+            var tracked=TrackedEntityAsk.ask(kit.system(),Duration.ofSeconds(2),String.class,(reply,receipt)->{replyRef.set(reply);receiptRef.set(receipt);});
+            receiptRef.get().signal();
+            var barrier=new CompletableFuture<Void>();
+            kit.system().scheduler().scheduleOnce(Duration.ofMillis(100),()->barrier.complete(null),kit.system().executionContext());
+            barrier.get(1,TimeUnit.SECONDS);
+            assertThat(tracked.logical().toCompletableFuture()).isNotDone();
+            assertThat(tracked.physicalCompletion().toCompletableFuture()).isNotDone();
+            replyRef.get().tell("DONE");
+            assertThat(tracked.logical().toCompletableFuture().get(1,TimeUnit.SECONDS)).isEqualTo("DONE");
+            tracked.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+        }finally{kit.shutdownTestKit();}
+    }
+
+    @Test void collectorRetainsCreditUntilSynchronousProofContinuationActuallyReturns()throws Exception{
+        var kit=org.apache.pekko.actor.testkit.typed.javadsl.ActorTestKit.create();
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try{
+            var replyRef=new AtomicReference<org.apache.pekko.actor.typed.ActorRef<String>>();
+            var receiptRef=new AtomicReference<CompletionReceipt>();
+            var tracked=TrackedEntityAsk.ask(kit.system(),Duration.ofSeconds(2),String.class,(reply,receipt)->{replyRef.set(reply);receiptRef.set(receipt);});
+            var continuation=tracked.logical().thenApply(value->{entered.countDown();try{release.await();}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new CompletionException(interrupted);}return value;});
+            receiptRef.get().signal();replyRef.get().tell("NATIVE_DTO");
+            assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
+            assertThat(continuation.toCompletableFuture()).isNotDone();
+            assertThat(tracked.physicalCompletion().toCompletableFuture()).isNotDone();
+            release.countDown();assertThat(continuation.toCompletableFuture().get(1,TimeUnit.SECONDS)).isEqualTo("NATIVE_DTO");
+            tracked.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+        }finally{release.countDown();kit.shutdownTestKit();}
+    }
+
 }

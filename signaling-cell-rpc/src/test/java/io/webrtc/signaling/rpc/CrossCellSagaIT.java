@@ -103,4 +103,20 @@ class CrossCellSagaIT {
             assertThat(client.deliver("c002",event,Duration.ofSeconds(1)).toCompletableFuture().join().getStatus()).isEqualTo("WRITE_COMPLETED");assertThat(seen).hasValue(1);
         }
     }
+    @Test void serverCreditCannotRetireWhenCleanupPrecedesLogicalReply()throws Exception{
+        var admission=new RpcAdmission(1,262144,4,262144);var pending=new CompletableFuture<InternalReply>();var entered=new CountDownLatch(1);var firstCommand=command("c002");
+        CellRpcServer.Backend backend=new CellRpcServer.Backend(){
+            public CompletionStage<InternalReply> execute(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer peer,Duration budget){throw new AssertionError();}
+            public RpcOperation<InternalReply> executeTracked(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer peer,Duration budget){entered.countDown();return new RpcOperation<>(pending,CompletableFuture.completedFuture(null));}
+        };
+        try(var server=new CellRpcServer("c002","test",0,serverTls(),admission,backend,event->CompletableFuture.failedFuture(new AssertionError())).start();var client=client(server.port(),"actor")){
+            var first=client.call(CellRpcServer.Operation.RESERVE,firstCommand,Duration.ofSeconds(2));assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(1)).toCompletableFuture().get(2,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OVERLOADED");
+            assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+            pending.complete(InternalReply.newBuilder().setOperationId(firstCommand.getOperationId()).setCallId(firstCommand.getCallId()).setStatus("COMMITTED").setAckCommitted(true).build());
+            assertThat(first.toCompletableFuture().get(1,TimeUnit.SECONDS).getAckCommitted()).isTrue();
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1)).until(()->admission.inFlight(RpcAdmission.Lane.CONTROL)==0);
+        }finally{pending.complete(InternalReply.getDefaultInstance());}
+    }
+
 }

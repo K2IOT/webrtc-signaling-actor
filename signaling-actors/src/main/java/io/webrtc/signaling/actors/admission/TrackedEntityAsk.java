@@ -21,6 +21,7 @@ public final class TrackedEntityAsk {
         var collector=system.systemActorOf(behavior,"physical-completion-"+operation,Props.empty());var receipt=new CompletionReceipt(operation,collector.narrow());
         logical.orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS);
         try{send.accept(collector.narrow(),receipt);}catch(RuntimeException failed){logical.completeExceptionally(failed);/* Unknown dispatch is quarantined until an explicit physical receipt. */}
-        return new ActorOperation<>(logical.minimalCompletionStage(),physical.minimalCompletionStage());
+        var retained=CompletableFuture.allOf(physical,logical.handle((value,failure)->null));
+        return new ActorOperation<>(logical.minimalCompletionStage(),retained.minimalCompletionStage());
     }
 }

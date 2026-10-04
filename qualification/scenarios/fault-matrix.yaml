@@ -1,0 +1,72 @@
+matrixVersion: 1
+status: EXECUTION_REQUIRED
+candidateBinding: [gitCommit, imageDigests, configurationFingerprint, compatibilityFingerprint, cellTopology]
+# Test names identify local contracts; they never substitute for real three-AZ drills.
+faults:
+  - id: commit-before-wal
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [CrashScheduleIT]
+    invariant: no result or outbox acknowledgment before durable transaction completion
+  - id: committed-ack-lost
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [CrashScheduleIT]
+    invariant: reconcile the same scoped operation; no duplicate call or winner
+  - id: outbox-hint-lost
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [MaintenanceWorkersIT]
+    invariant: bounded native polling recovers hints and application receipt stays distinct from socket write
+  - id: stale-phase-after-pause
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [PartitionAndPauseIT]
+    invariant: expired native phase/media/grace cannot mint fresh acquisitions or renewals
+  - id: phase-deadline-proof-expiry
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [PartitionAndPauseIT]
+    invariant: acquisition proof expiry never crosses the original native phase deadline
+  - id: physical-before-logical
+    scope: LOCAL_RUNTIME
+    tests: [BackpressureIT]
+    invariant: collector/RPC count and bytes remain retained through cleanup and logical/CPU continuation
+  - id: late-cleanup-after-entity-stop
+    scope: LOCAL_RUNTIME
+    tests: [BackpressureIT, PostgresShardLeaseContractIT]
+    invariant: actual cleanup owns retirement; lost receipts never mint completion
+  - id: coordinator-host-loss
+    scope: LOCAL_PEKKO_CLUSTER
+    tests: [MultiNodeShardingIT]
+    invariant: exact native root grant before new entity placement; old tenure callbacks cannot invalidate new tenure
+  - id: full-host-restart
+    scope: LOCAL_PEKKO_CLUSTER
+    tests: [MultiNodeShardingIT, CallRecoveryIT]
+    invariant: cold hydration preserves original deadlines and invalidates incomplete volatile negotiation
+  - id: partial-partition-and-old-node-rejoin
+    scope: EXTERNAL_THREE_AZ
+    tests: [PartitionAndPauseIT]
+    invariant: native cell/bucket/group/call fences reject every stale mutation despite surviving actor location
+    requiredEvidence: [faultTimeline, authenticatedMembership, nativeEpochs, physicalCleanup, convergenceHistogram]
+  - id: primary-clock-uncertainty
+    scope: LOCAL_AND_EXTERNAL
+    tests: [PartitionAndPauseIT]
+    invariant: uncertain clock shuts mutation/grant admission without extending lease or phase deadlines
+  - id: revocation-lag-and-key-retirement
+    scope: LOCAL_AND_EXTERNAL
+    tests: [RevocationSecurityIT, MaintenanceWorkersIT]
+    invariant: fresh ordered high-water required; duplicate old page does not refresh security freshness
+  - id: postgres-primary-failure
+    scope: EXTERNAL_THREE_AZ
+    tests: [DatabaseFailoverIT]
+    invariant: every acknowledged WAL record survives; old primary physically fenced before new authority traffic
+    requiredEvidence: [oldWriterIdentity, acknowledgedWalHighWater, promotedTimeline, crossAzSyncStandby, physicalFenceReceipt, nativeOperationReconciliation]
+  - id: one-az-loss
+    scope: EXTERNAL_THREE_AZ
+    invariant: static surviving DB/actor/gateway/directory/network capacity meets the qualified degraded envelope
+    requiredEvidence: [hardwareInventory, faultTimeline, rawControlHistograms, recoverySlis, activeCallPreservation, mediaInterruption]
+  - id: mixed-version-and-forced-rollback
+    scope: LOCAL_AND_EXTERNAL
+    tests: [CompatibilityWindowTest, PekkoShutdownLifecycleTest, ShutdownCoordinatorTest]
+    invariant: feature admission waits for authenticated supported peers; incompatible native work prevents rollback
+  - id: restore-history-loss
+    scope: LOCAL_AND_EXTERNAL
+    tests: [RecoveryEpochIT]
+    invariant: epoch above outside-backup high-water; recovered live work aborted; security/privacy replay before reactivation
+    requiredEvidence: [backupIdentity, walRestoreTarget, externalEpochHighWater, physicalFenceReceipt, deletionReplayReceipt, securityHighWater]
