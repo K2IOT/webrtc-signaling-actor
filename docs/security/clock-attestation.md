@@ -1,0 +1,11 @@
+# Required clock-monitor contract
+
+`ClockSafetyMonitor` consumes an external Ed25519 attestation; it does not estimate infrastructure clock quality. Production admission must use `monitor::valid` and an explicitly enrolled monitor public key. No report, expired report, process suspension, elapsed-clock discontinuity or observed wall-clock step closes short-grant admission. JWT's independent 30-second allowance never applies.
+
+The source must measure pairwise uncertainty between the selected native PostgreSQL primary and every relevant serving host, bounded by 250,000 microseconds, and relative elapsed-clock rate error bounded by 1,000 ppm. It must report loss of continuity, steps and suspensions. A source that only signs `Instant.now()`, reports NTP service availability, or derives confidence from a TLS connection does not satisfy this contract.
+
+Reports bind source key ID, cell, storage epoch, Kubernetes pod UID, a fresh per-process boot UUID, increasing sequence, source observation time, expiry (at most five seconds), measured uncertainty/rate bounds and continuity. The signing representation is the length-prefixed binary domain `signaling-clock-bound-v1` defined by `ClockSafetyMonitor.signingBytes`; JSON serialization is not the signature representation. Keys are pinned Ed25519 public keys, with bounded overlap during an operator-managed rotation. Signing keys remain in the monitor's separate trust boundary.
+
+Capture local monotonic request start before source I/O. The consumer subtracts measured uncertainty and maximum drift, takes the earlier source expiry/request-start deadline, and never renews freshness from replay. Wall-clock steps make cached trust permanently invalid until a fresh higher-sequence attestation is accepted. Bind all reports to the native storage epoch; epoch promotion starts a new monitor instance. Feed failures invalidate readiness and grant issuance without stopping guarded native reconciliation/expiry.
+
+The source endpoint, source identity/key pins, complete measured clock coverage, process-boot request binding and freshness must be supplied by the deployment. Local signed test fixtures prove consumer validation only; they do not qualify time monitoring, HA or lease survival. Until genuine same-candidate measurement evidence exists, release remains NOT_QUALIFIED.
