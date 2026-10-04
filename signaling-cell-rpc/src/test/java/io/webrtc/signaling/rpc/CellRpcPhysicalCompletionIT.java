@@ -17,6 +17,24 @@ import org.junit.jupiter.api.Test;
 
 class CellRpcPhysicalCompletionIT {
     static File cert(String name) { return new File(Objects.requireNonNull(CellRpcPhysicalCompletionIT.class.getResource("/test-only-pki/" + name)).getFile()); }
+    @Test void actualRpcListenerDrainWaitsForNativeCleanupAfterUnknownResponse() throws Exception {
+        var physical=new CompletableFuture<Void>();var admission=new RpcAdmission(1,98304,1,98304);
+        var backend=new CellRpcServer.Backend(){
+            public CompletionStage<InternalReply> execute(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer p,Duration b){return executeTracked(op,c,p,b).logical();}
+            public RpcOperation<InternalReply> executeTracked(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer p,Duration b){
+                return new RpcOperation<>(CompletableFuture.completedFuture(InternalReply.newBuilder().setOperationId(c.getOperationId()).setCallId(c.getCallId()).setErrorCode("OUTCOME_UNKNOWN").build()),physical);
+            }
+        };
+        try(var server=new CellRpcServer("c002","test",0,RpcTlsContexts.server("test","c002",cert("ca.crt"),cert("server.crt"),cert("server.key")),admission,backend,event->CompletableFuture.failedFuture(new AssertionError())).start();
+            var client=new CellRpcClient("test",Map.of("c002",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("actor.crt"),cert("actor.key")),new RpcAdmission(1,98304,1,98304))){
+            var c=InternalCommand.newBuilder().setSchemaMajor(1).setDestinationCell("c002").setOperationId(UUID.randomUUID().toString()).setCallId("c001.e1."+UUID.randomUUID()).setRemainingBudgetMs(2000).setPayloadHash(com.google.protobuf.ByteString.copyFrom(new byte[32])).build();
+            assertThat(client.call(CellRpcServer.Operation.RESERVE,c,Duration.ofSeconds(2)).toCompletableFuture().get(2,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
+            assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+            var drain=server.drain();assertThat(drain.toCompletableFuture()).isNotDone();
+            physical.complete(null);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);
+            assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+        }finally{physical.complete(null);}
+    }
     @Test void actualTlsUnaryReplyKeepsTransportCreditUntilStreamEndsAndDrainRejectsNewWork() throws Exception {
         var held = new AtomicReference<StreamObserver<InternalReply>>();
         var entered = new CountDownLatch(1);

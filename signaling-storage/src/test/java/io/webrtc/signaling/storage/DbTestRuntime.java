@@ -12,5 +12,9 @@ public final class DbTestRuntime implements AutoCloseable {
         var quotas=new DbAdmission(Map.of(DbClass.CRITICAL,8,DbClass.RENEWAL,2,DbClass.TERMINATION,2,DbClass.RECOVERY,2,DbClass.OUTBOX,2,DbClass.MAINTENANCE,1));
         boundary=new DbBoundary(quotas);pools=new DbPools(url,username,password,quotas,6,11);sql=new SqlTransactions(boundary,pools);
     }
-    public void close(){pools.close();boundary.close();}
+    public void close(){
+        try{boundary.drain().toCompletableFuture().get(5,java.util.concurrent.TimeUnit.SECONDS);}
+        catch(Exception unknown){throw new IllegalStateException("Native fixture cleanup unproven; pools remain open",unknown);}
+        pools.close();
+    }
 }

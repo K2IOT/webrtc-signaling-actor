@@ -20,10 +20,10 @@ public final class CellRpcServer implements AutoCloseable {
     private static final Context.Key<Peer> PEER=Context.key("authenticated-cell-peer");
     private final String cell,environment;private final int requestedPort;private final SslContext tls;private final RpcAdmission admission;private final Backend backend;private final Function<ControlEvent,CompletionStage<InternalReply>> deliver;
     private final ExecutorService executor=new ThreadPoolExecutor(4,4,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(256),Thread.ofPlatform().daemon().name("cell-rpc-cpu-",0).factory(),new ThreadPoolExecutor.AbortPolicy());
-    private Server server;private NativeSessionHandler sessions;
+    private Server server;private NativeSessionHandler sessions;private boolean draining;private final CompletableFuture<Void> drained=new CompletableFuture<>();
     public CellRpcServer sessions(NativeSessionHandler handler){if(server!=null)throw new IllegalStateException("Already started");sessions=Objects.requireNonNull(handler);return this;}
     public CellRpcServer(String cell,String environment,int port,SslContext tls,RpcAdmission admission,Backend backend,Function<ControlEvent,CompletionStage<InternalReply>> deliver){if(cell==null||!cell.matches("[a-z][a-z0-9-]{0,23}")||environment==null||!environment.matches("[a-z0-9-]{1,32}")||port<0||port>65535)throw new IllegalArgumentException("Invalid RPC listener identity");this.cell=cell;this.environment=environment;requestedPort=port;this.tls=Objects.requireNonNull(tls);this.admission=Objects.requireNonNull(admission);this.backend=Objects.requireNonNull(backend);this.deliver=Objects.requireNonNull(deliver);}
-    public CellRpcServer start()throws java.io.IOException {if(server!=null)throw new IllegalStateException("RPC server already started");server=NettyServerBuilder.forPort(requestedPort).sslContext(tls).maxInboundMessageSize(98304).maxConcurrentCallsPerConnection(128).executor(executor).intercept(new ServerInterceptor(){@Override public <Q,A> ServerCall.Listener<Q> interceptCall(ServerCall<Q,A> call,Metadata headers,ServerCallHandler<Q,A> next){Peer peer=extract(call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION));if(peer==null){call.close(Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"),new Metadata());return new ServerCall.Listener<>(){};}return Contexts.interceptCall(Context.current().withValue(PEER,peer),call,headers,next);}}).addService(new Ingress()).addService(new SessionService()).build().start();return this;}
+    public synchronized CellRpcServer start()throws java.io.IOException {if(draining)throw new IllegalStateException("RPC server draining");if(server!=null)throw new IllegalStateException("RPC server already started");server=NettyServerBuilder.forPort(requestedPort).sslContext(tls).maxInboundMessageSize(98304).maxConcurrentCallsPerConnection(128).executor(executor).intercept(new ServerInterceptor(){@Override public <Q,A> ServerCall.Listener<Q> interceptCall(ServerCall<Q,A> call,Metadata headers,ServerCallHandler<Q,A> next){Peer peer=extract(call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION));if(peer==null){call.close(Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"),new Metadata());return new ServerCall.Listener<>(){};}return Contexts.interceptCall(Context.current().withValue(PEER,peer),call,headers,next);}}).addService(new Ingress()).addService(new SessionService()).build().start();return this;}
     public int port(){if(server==null)throw new IllegalStateException("RPC server not started");return server.getPort();}
     private Peer extract(SSLSession session){return RpcTlsIdentity.extract(session,environment);}
     private static boolean allowed(Peer peer,Operation operation){return peer!=null&&(peer.role().equals("actor")||Set.of(Operation.EXECUTE,Operation.RELAY,Operation.SYNC).contains(operation));}
@@ -60,5 +60,21 @@ public final class CellRpcServer implements AutoCloseable {
     private final class Ingress extends CellIngressGrpc.CellIngressImplBase {
         @Override public void reserveUser(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RESERVE,c,r);}@Override public void claimAccept(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.CLAIM,c,r);}@Override public void releaseIfCallVersion(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RELEASE,c,r);}@Override public void executeCallCommand(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.EXECUTE,c,r);}@Override public void relayNegotiation(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RELAY,c,r);}@Override public void syncCall(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.SYNC,c,r);}@Override public void deliverControlEvent(ControlEvent c,StreamObserver<InternalReply> r){deliver(c,r);}
     }
-    @Override public void close(){if(server!=null)server.shutdown();executor.shutdown();}
+    /** Permanently unbind admission and wait for both native cleanup and actual transport termination. */
+    public synchronized CompletionStage<Void> drain(){
+        if(!draining){
+            draining=true;if(server!=null)server.shutdown();
+            admission.drain().whenComplete((settled,failure)->{
+                if(failure!=null){drained.completeExceptionally(failure);return;}
+                if(server==null){executor.shutdown();drained.complete(null);return;}
+                Thread.startVirtualThread(()->{
+                    try{if(!server.awaitTermination(2,TimeUnit.SECONDS))throw new TimeoutException("RPC transport termination unproven");executor.shutdown();drained.complete(null);}
+                    catch(InterruptedException interrupted){Thread.currentThread().interrupt();drained.completeExceptionally(interrupted);}
+                    catch(TimeoutException unknown){drained.completeExceptionally(unknown);}
+                });
+            });
+        }
+        return drained.minimalCompletionStage();
+    }
+    @Override public void close(){drain();}
 }
