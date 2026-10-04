@@ -12,7 +12,7 @@ public final class NativeSessionHandler {
     public record GatewayIdentity(String gatewayId,UUID bootId,String cell,long storageEpoch,String region) {
         public GatewayIdentity {if(gatewayId==null||!gatewayId.matches("[A-Za-z0-9_.-]{1,128}")||bootId==null||cell==null||!cell.matches("[a-z][a-z0-9-]{0,23}")||storageEpoch<=0||region==null||region.isBlank()||region.length()>64)throw new IllegalArgumentException("Invalid gateway identity");}
     }
-    public record Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation,io.webrtc.signaling.protocol.CallCommand proofCommand) {
+    public record Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation,@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) io.webrtc.signaling.protocol.CallCommand proofCommand) {
         public Request(String type,GatewayIdentity gateway,String token,SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation){this(type,gateway,token,route,connection,directoryEpoch,renewalSequence,operation,null);}
         public Request {Objects.requireNonNull(type);Objects.requireNonNull(gateway);Objects.requireNonNull(operation);if(token!=null&&(token.isBlank()||token.length()>16384))throw new IllegalArgumentException("Invalid token");}
         @Override public String toString(){return "SessionRequest[type="+type+", operation="+operation+"]";}

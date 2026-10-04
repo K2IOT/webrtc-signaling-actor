@@ -8,6 +8,13 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import org.junit.jupiter.api.Test;
 class NativeSessionHandlerTest {
+    record PreviousRequest(String type,NativeSessionHandler.GatewayIdentity gateway,String token,io.webrtc.signaling.storage.SessionRepository.Route route,UUID connection,long directoryEpoch,long renewalSequence,UUID operation) {}
+    @Test void ordinarySessionRequestRemainsReadableByTheStrictPreviousMinorDecoder()throws Exception{
+        var request=new NativeSessionHandler.Request("BOOT_START",new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c002",1,"TEST_ONLY_REGION"),null,null,null,1,1,UUID.randomUUID());
+        var previous=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        assertThat(previous.readValue(RpcBusinessHandler.encode(request),PreviousRequest.class).operation()).isEqualTo(request.operation());
+    }
+
     @Test void nativeSessionIngressRejectsWorkloadMismatchAndCrossCellBootBeforeTokenOrActorWork(){
         var calls=new AtomicInteger();NativeSessionHandler.Operations operations=(request,budget)->{calls.incrementAndGet();throw new AssertionError();};
         var handler=new NativeSessionHandler("c002",1,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),operations);

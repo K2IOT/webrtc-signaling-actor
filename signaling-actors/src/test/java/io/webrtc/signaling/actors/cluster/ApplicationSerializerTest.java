@@ -18,4 +18,12 @@ class ApplicationSerializerTest {
             assertThatThrownBy(()->serializer.toBinary(new Object())).isInstanceOf(IllegalArgumentException.class);assertThatThrownBy(()->serializer.fromBinary(new byte[98305],"v1")).isInstanceOf(IllegalArgumentException.class);
         }finally{kit.shutdownTestKit();}
     }
+    @Test void unsignedSchemaMinorOutsideTheAdjacentWindowCannotWrapIntoAnAcceptedNegativeInteger()throws Exception{
+        var kit=ActorTestKit.create();try{
+            var serializer=new ApplicationSerializer(Adapter.toClassic(kit.system()));
+            var envelope=ActorEnvelope.parseFrom(serializer.toBinary(UserCommand.Stop.INSTANCE));
+            assertThatThrownBy(()->serializer.fromBinary(envelope.toBuilder().setSchemaMinor(-1).build().toByteArray(),"v1")).isInstanceOf(IllegalArgumentException.class);
+        }finally{kit.shutdownTestKit();}
+    }
+
 }

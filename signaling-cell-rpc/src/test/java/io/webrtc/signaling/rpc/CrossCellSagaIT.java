@@ -119,4 +119,29 @@ class CrossCellSagaIT {
         }finally{pending.complete(InternalReply.getDefaultInstance());}
     }
 
+    @Test void clientRejectsAuthenticatedReplyWithCorrectOperationButDifferentCall()throws Exception{
+        var unsafe=new CellIngressGrpc.CellIngressImplBase(){
+            @Override public void reserveUser(InternalCommand c,io.grpc.stub.StreamObserver<InternalReply> reply){
+                reply.onNext(InternalReply.newBuilder().setOperationId(c.getOperationId()).setCallId("c001.e1.00000000-0000-0000-0000-000000000099").setAckCommitted(true).setStatus("COMMITTED").build());reply.onCompleted();
+            }
+        };
+        var server=io.grpc.netty.NettyServerBuilder.forPort(0).sslContext(serverTls()).addService(unsafe).build().start();
+        try(var client=client(server.getPort(),"actor")){
+            var reply=client.call(CellRpcServer.Operation.RESERVE,command("c002"),Duration.ofSeconds(2)).toCompletableFuture().get(3,TimeUnit.SECONDS);
+            assertThat(reply.getAckCommitted()).isFalse();assertThat(reply.getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
+        }finally{server.shutdownNow().awaitTermination(2,TimeUnit.SECONDS);}
+    }
+    @Test void clientRejectsDeliveryReceiptWhoseEventIdentityDoesNotMatchTheOriginal()throws Exception{
+        var unsafe=new CellIngressGrpc.CellIngressImplBase(){
+            @Override public void deliverControlEvent(ControlEvent event,io.grpc.stub.StreamObserver<InternalReply> reply){
+                reply.onNext(InternalReply.newBuilder().setOperationId(UUID.randomUUID().toString()).setCallId(event.getCallId()).setStatus("WRITE_COMPLETED").build());reply.onCompleted();
+            }
+        };
+        var server=io.grpc.netty.NettyServerBuilder.forPort(0).sslContext(serverTls()).addService(unsafe).build().start();
+        try(var client=client(server.getPort(),"actor")){
+            var event=ControlEvent.newBuilder().setEventId(UUID.randomUUID().toString()).setCallId(CALL).build();
+            assertThat(client.deliver("c002",event,Duration.ofSeconds(2)).toCompletableFuture().get(3,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
+        }finally{server.shutdownNow().awaitTermination(2,TimeUnit.SECONDS);}
+    }
+
 }
