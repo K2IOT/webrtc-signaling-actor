@@ -10,20 +10,21 @@ public final class DbBoundary implements AutoCloseable {
     private final CompletableFuture<Void> drained=new CompletableFuture<>();
     private boolean accepting=true;
     private int physicalTasks;
+    private final java.util.Set<CompletableFuture<?>> activePhysical=new java.util.HashSet<>();
     public DbBoundary(DbAdmission admission) {this.admission=admission;deadlines.setRemoveOnCancelPolicy(true);}
     public <T> CompletionStage<T> submit(DbClass clazz,Duration budget,Callable<T> tx) {
         return submitTracked(clazz,budget,tx).logical();
     }
     public <T> DbOperation<T> submitTracked(DbClass clazz,Duration budget,Callable<T> tx) {
         if(budget==null||budget.isNegative()||budget.isZero())return rejected();
-        synchronized(this){if(!accepting||!admission.acquire(clazz))return rejected();physicalTasks++;}
         var result=new CompletableFuture<T>();
         var physical=new CompletableFuture<DbOperation.PhysicalCompletion>();
+        synchronized(this){if(!accepting||!admission.acquire(clazz))return rejected();physicalTasks++;activePhysical.add(physical);}
         ScheduledFuture<?> expiry;
         try{expiry=deadlines.schedule(()->result.completeExceptionally(new DbOutcomeUnknownException()),budget.toNanos(),TimeUnit.NANOSECONDS);}
-        catch(RuntimeException e){admission.release(clazz);retired();return rejected();}
-        try{tasks.execute(()->{try{if(!result.isDone()){T value=tx.call();validate(value,0);result.complete(value);}}catch(Throwable e){result.completeExceptionally(e);}finally{expiry.cancel(false);admission.release(clazz);physical.complete(DbOperation.PhysicalCompletion.FINISHED);retired();}});}
-        catch(RejectedExecutionException e){expiry.cancel(false);admission.release(clazz);result.completeExceptionally(new DbOverloadedException());physical.complete(DbOperation.PhysicalCompletion.NOT_STARTED);retired();}
+        catch(RuntimeException e){admission.release(clazz);physical.complete(DbOperation.PhysicalCompletion.NOT_STARTED);retired(physical);return rejected();}
+        try{tasks.execute(()->{try{if(!result.isDone()){T value=tx.call();validate(value,0);result.complete(value);}}catch(Throwable e){result.completeExceptionally(e);}finally{expiry.cancel(false);admission.release(clazz);physical.complete(DbOperation.PhysicalCompletion.FINISHED);retired(physical);}});}
+        catch(RejectedExecutionException e){expiry.cancel(false);admission.release(clazz);result.completeExceptionally(new DbOverloadedException());physical.complete(DbOperation.PhysicalCompletion.NOT_STARTED);retired(physical);}
         return new DbOperation<>(result.minimalCompletionStage(),physical.minimalCompletionStage());
     }
     private static <T> DbOperation<T> rejected(){return new DbOperation<>(CompletableFuture.<T>failedFuture(new DbOverloadedException()).minimalCompletionStage(),CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.NOT_STARTED).minimalCompletionStage());}
@@ -37,7 +38,8 @@ public final class DbBoundary implements AutoCloseable {
         if(value instanceof java.util.Optional<?> optional){validate(optional.orElse(null),depth+1);return;}
         throw new IllegalArgumentException("Only immutable native DTOs may leave database boundary");
     }
-    private synchronized void retired(){physicalTasks--;if(!accepting&&physicalTasks==0){deadlines.shutdown();drained.complete(null);}}
+    private synchronized void retired(CompletableFuture<?> physical){activePhysical.remove(physical);physicalTasks--;if(!accepting&&physicalTasks==0){deadlines.shutdown();drained.complete(null);}}
+    public synchronized CompletionStage<Void> settleAdmitted(){return CompletableFuture.allOf(activePhysical.toArray(CompletableFuture[]::new)).minimalCompletionStage();}
     /** Call after framework handoff and native root release, before closing either database pool. */
     public synchronized CompletionStage<Void> drain(){
         if(accepting){accepting=false;tasks.shutdown();if(physicalTasks==0){deadlines.shutdown();drained.complete(null);}}

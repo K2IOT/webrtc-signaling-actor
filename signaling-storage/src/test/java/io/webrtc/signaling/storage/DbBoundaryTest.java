@@ -6,6 +6,16 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 class DbBoundaryTest {
+    @Test void snapshotSettlesOriginalPhysicalWorkWhileLaterSafetyWorkRemainsAdmissible()throws Exception {
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var safetyEntered=new CountDownLatch(1);var safetyRelease=new CountDownLatch(1);
+        try(var db=new DbBoundary(new DbAdmission(Map.of(DbClass.CRITICAL,1,DbClass.RENEWAL,1)))){
+            db.submitTracked(DbClass.CRITICAL,Duration.ofMillis(50),()->{entered.countDown();release.await();return "OLD";});assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
+            var snapshot=db.settleAdmitted();assertThat(snapshot.toCompletableFuture()).isNotDone();
+            db.submitTracked(DbClass.RENEWAL,Duration.ofSeconds(2),()->{safetyEntered.countDown();safetyRelease.await();return "SAFETY";});assertThat(safetyEntered.await(1,TimeUnit.SECONDS)).isTrue();
+            release.countDown();snapshot.toCompletableFuture().get(1,TimeUnit.SECONDS);
+            var drain=db.drain();assertThat(drain.toCompletableFuture()).isNotDone();safetyRelease.countDown();drain.toCompletableFuture().get(1,TimeUnit.SECONDS);
+        }finally{release.countDown();safetyRelease.countDown();}
+    }
     @Test void drainRejectsNewWorkAndKeepsResourcesOpenThroughLogicalTimeoutUntilPhysicalSettlement() throws Exception {
         var admission=new DbAdmission(Map.of(DbClass.CRITICAL,1,DbClass.RENEWAL,1));
         var entered=new CountDownLatch(1);var release=new CountDownLatch(1);

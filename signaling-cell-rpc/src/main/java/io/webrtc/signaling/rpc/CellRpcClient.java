@@ -146,6 +146,7 @@ public final class CellRpcClient implements AutoCloseable {
         return flight.operation();
     }
     /** Permanently stop new streams. Existing bounded streams keep their credit until terminal callbacks. */
+    public synchronized CompletionStage<Void> settleAdmitted(){return CompletableFuture.allOf(active.stream().map(f->f.physical).toArray(CompletableFuture[]::new)).minimalCompletionStage();}
     public synchronized CompletionStage<Void> drain() {
         if (!closed) {
             closed = true;

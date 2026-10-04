@@ -60,6 +60,11 @@ class NativeActorCompositionIT {
             var queryAction=new HomeParticipationService.AuthorizationIntent("QUERY",null,0,null,0,null,null);var now=Instant.now();
             var template=new HomeParticipationService.Request(caller.userId(),call,command.requestId().value(),command.intentHash(),1,HomeParticipationService.Phase.RINGING,new HomeParticipationService.Grant("c001",1,1,token.group(),token.epoch(),1,UUID.randomUUID(),now,now.plusSeconds(5),"UNSIGNED"));
             var grant=cell.ingress().grant(template,queryAction,"c001",Instant.now().plusSeconds(2),RpcBusinessHandler.encode(template).length).toCompletableFuture().join();assertThat(grant.code()).isEqualTo("GRANTED");assertThat(new ProofBindings(proofs,Clock.systemUTC()).homeVerifier("c001").verify(grant.signedRequest(),queryAction)).isTrue();
+            cell.ingress().settleAdmitted().toCompletableFuture().get(3,TimeUnit.SECONDS);
+            cell.ingress().drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
+            var anotherIngress=new ShardedActorIngress(cell.system(),Clock.systemUTC());
+            assertThatThrownBy(()->anotherIngress.grantTracked(template,queryAction,"c001",Instant.now().plusSeconds(2),100)).isInstanceOf(io.webrtc.signaling.actors.admission.EntityAdmission.Overloaded.class);
+
         }finally{for(var system:systems)system.terminate();for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);for(var composition:compositions)composition.drainRoots().toCompletableFuture().get(8,TimeUnit.SECONDS);f.close();}
     }
 }

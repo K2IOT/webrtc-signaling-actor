@@ -12,4 +12,11 @@ class RpcAdmissionDrainTest {
         relay.close();drain.toCompletableFuture().join();assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
         assertThatThrownBy(()->admission.acquire(RpcAdmission.Lane.RELAY,1)).isInstanceOf(RpcAdmission.Overloaded.class);
     }
+    @Test void snapshotDoesNotGateLaterSafetyTrafficAndOnlyWaitsItsOriginalTickets(){
+        var admission=new RpcAdmission(2,2048,2,2048);var original=admission.acquire(RpcAdmission.Lane.CONTROL,100);
+        var snapshot=admission.settleAdmitted();var later=admission.acquire(RpcAdmission.Lane.CONTROL,100);
+        assertThat(snapshot.toCompletableFuture()).isNotDone();original.close();snapshot.toCompletableFuture().join();
+        assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);var drain=admission.drain();assertThat(drain.toCompletableFuture()).isNotDone();later.close();drain.toCompletableFuture().join();
+    }
+
 }

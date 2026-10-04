@@ -61,6 +61,7 @@ public final class CellRpcServer implements AutoCloseable {
         @Override public void reserveUser(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RESERVE,c,r);}@Override public void claimAccept(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.CLAIM,c,r);}@Override public void releaseIfCallVersion(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RELEASE,c,r);}@Override public void executeCallCommand(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.EXECUTE,c,r);}@Override public void relayNegotiation(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.RELAY,c,r);}@Override public void syncCall(InternalCommand c,StreamObserver<InternalReply> r){execute(Operation.SYNC,c,r);}@Override public void deliverControlEvent(ControlEvent c,StreamObserver<InternalReply> r){deliver(c,r);}
     }
     /** Permanently unbind admission and wait for both native cleanup and actual transport termination. */
+    public CompletionStage<Void> settleAdmitted(){return admission.settleAdmitted();}
     public synchronized CompletionStage<Void> drain(){
         if(!draining){
             draining=true;if(server!=null)server.shutdown();

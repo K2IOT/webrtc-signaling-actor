@@ -30,8 +30,9 @@ class CellRpcPhysicalCompletionIT {
             var c=InternalCommand.newBuilder().setSchemaMajor(1).setDestinationCell("c002").setOperationId(UUID.randomUUID().toString()).setCallId("c001.e1."+UUID.randomUUID()).setRemainingBudgetMs(2000).setPayloadHash(com.google.protobuf.ByteString.copyFrom(new byte[32])).build();
             assertThat(client.call(CellRpcServer.Operation.RESERVE,c,Duration.ofSeconds(2)).toCompletableFuture().get(2,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
             assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+            var snapshot=server.settleAdmitted();assertThat(snapshot.toCompletableFuture()).isNotDone();
             var drain=server.drain();assertThat(drain.toCompletableFuture()).isNotDone();
-            physical.complete(null);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);
+            physical.complete(null);snapshot.toCompletableFuture().get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
         }finally{physical.complete(null);}
     }
@@ -56,12 +57,13 @@ class CellRpcPhysicalCompletionIT {
             assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
             assertThat(pending.physicalCompletion().toCompletableFuture()).isNotDone();
             assertThat(client.call(CellRpcServer.Operation.EXECUTE, c, Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("OVERLOADED");
+            var snapshot = client.settleAdmitted();assertThat(snapshot.toCompletableFuture()).isNotDone();
             var drain = client.drain();
             assertThat(drain.toCompletableFuture()).isNotDone();
             assertThat(client.call(CellRpcServer.Operation.EXECUTE, c, Duration.ofSeconds(1)).toCompletableFuture().join().getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
             held.get().onCompleted();
             pending.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
-            drain.toCompletableFuture().get(2, TimeUnit.SECONDS);
+            drain.toCompletableFuture().get(2, TimeUnit.SECONDS);snapshot.toCompletableFuture().get(2,TimeUnit.SECONDS);
             assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
         } finally { server.shutdownNow().awaitTermination(3, TimeUnit.SECONDS); }
     }
