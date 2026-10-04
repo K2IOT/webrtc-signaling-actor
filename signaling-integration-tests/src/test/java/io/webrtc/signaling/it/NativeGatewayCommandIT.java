@@ -25,6 +25,13 @@ class NativeGatewayCommandIT {
     static File cert(String name){return new File(Objects.requireNonNull(NativeGatewayCommandIT.class.getResource("/test-only-pki/session/"+name)).getFile());}
     @Test void gatewayObtainsNativeAuthProofAndOriginalInviteReplaysAfterGroupRelease()throws Exception{runControl(false);}
     @Test void nativeRemotePreparationStaysPendingWithoutManufacturingCommitAcknowledgment()throws Exception{runControl(true);}
+    static com.fasterxml.jackson.databind.JsonNode retryTransient(NativeGatewayServices gateway,CallCommand command,SessionRepository.Route route)throws Exception {
+        long end=System.nanoTime()+Duration.ofSeconds(5).toNanos();
+        while(true){var reply=JSON.readTree(gateway.command(command,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());
+            if(!Set.of("OVERLOADED","OUTCOME_UNKNOWN").contains(reply.path("error").path("code").asText())||System.nanoTime()>=end)return reply;
+            java.util.concurrent.locks.LockSupport.parkNanos(Duration.ofMillis(20).toNanos());
+        }
+    }
     void runControl(boolean remote)throws Exception{
         var kit=ActorTestKit.create();
         try(var f=new LocalInviteAtomicIT.Fixture()){
@@ -62,18 +69,25 @@ class NativeGatewayCommandIT {
                 policyMode.set(0);var denied=JSON.readTree(gateway.command(invite,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(denied.path("error").path("code").asText()).isEqualTo("FORBIDDEN");
                 policyMode.set(2);var unavailable=JSON.readTree(gateway.command(invite,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(unavailable.path("error").path("code").asText()).isEqualTo("FORBIDDEN");
                 policyMode.set(1);
-                var first=JSON.readTree(gateway.command(invite,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());
+                var first=retryTransient(gateway,invite,route);
                 if(remote){
                     assertThat(first.path("type").asText()).isEqualTo("COMMAND_RESULT");assertThat(first.path("ackCommitted").asBoolean()).isFalse();assertThat(first.path("result").path("status").asText()).isEqualTo("PENDING");
                     var read=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,request,null,CommandScope.invite(),null,null,null,"{}","b".repeat(64));
-                    var pending=JSON.readTree(gateway.command(read,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(pending.path("result").path("status").asText()).isEqualTo("PENDING");assertThat(pending.path("ackCommitted").asBoolean()).isFalse();
+                    var pending=retryTransient(gateway,read,route);assertThat(pending.path("result").path("status").asText()).as("native pending lookup: %s",pending).isEqualTo("PENDING");assertThat(pending.path("ackCommitted").asBoolean()).isFalse();
                     try(var c=f.connection();var q=c.createStatement();var r=q.executeQuery("SELECT count(*) FROM command_result WHERE status='FINAL'")){r.next();assertThat(r.getInt(1)).isZero();}return;
                 }
                 assertThat(first.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(first.path("callVersion").isTextual()).isTrue();
                 var call=new CallId(first.path("callId").asText());var releasedToken=f.token(call);
+                var cancel=new CallCommand(SignalEnvelope.Type.CANCEL,sender,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
+                var canceled=retryTransient(gateway,cancel,route);assertThat(canceled.path("type").asText()).as("native cancel: %s",canceled).isEqualTo("ACK_COMMITTED");
                 org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).pollInterval(Duration.ofMillis(20)).ignoreExceptionsMatching(error->error instanceof CompletionException&&error.getCause() instanceof AuthoritySql.RetryableConflict).until(()->CoordinatorGrantIT.done(f.groups.releaseTracked(releasedToken)));f.tokens.remove(HomeParticipationService.group(call));
+                var callLookup=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,cancel.requestId(),call,CommandScope.call(call),null,null,null,"{}","d".repeat(64));
+                var terminalResult=retryTransient(gateway,callLookup,route);
+                assertThat(terminalResult.path("type").asText()).as("native result: %s",terminalResult).isEqualTo("COMMAND_RESULT");assertThat(terminalResult.path("ackCommitted").asBoolean()).isFalse();assertThat(terminalResult.path("result").path("state").asText()).isEqualTo("TERMINAL");
+                var absent=new CallCommand(callLookup.type(),sender,new RequestId(UUID.randomUUID()),call,callLookup.scope(),null,null,null,"{}",callLookup.intentHash());
+                var missing=retryTransient(gateway,absent,route);assertThat(missing.path("error").path("code").asText()).isEqualTo("RESULT_EXPIRED");
                 var lookup=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,request,null,CommandScope.invite(),null,null,null,"{}","b".repeat(64));
-                var recovered=JSON.readTree(gateway.command(lookup,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());
+                var recovered=retryTransient(gateway,lookup,route);
                 assertThat(recovered.path("type").asText()).isEqualTo("COMMAND_RESULT");assertThat(recovered.path("callId").asText()).isEqualTo(call.value());assertThat(recovered.path("ackCommitted").asBoolean()).isFalse();
                 var newer=gateway.register(principal,"TEST_ONLY_ORIGINAL_TOKEN",UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();
                 var stale=JSON.readTree(gateway.command(invite,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(stale.path("type").asText()).isEqualTo("ERROR");
@@ -81,7 +95,7 @@ class NativeGatewayCommandIT {
                 assertThat(newer.connectionGeneration()).isEqualTo(2);
                 var rebound=new AuthenticatedSession(newer.user(),newer.key(),newer.incarnation(),newer.connectionGeneration(),newer.connectionId());
                 var retry=new CallCommand(invite.type(),rebound,request,null,CommandScope.invite(),callee.userId(),null,null,"{}",invite.intentHash());
-                var replayed=JSON.readTree(gateway.command(retry,newer,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(replayed.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(replayed.path("callId").asText()).isEqualTo(call.value());
+                var replayed=retryTransient(gateway,retry,newer);assertThat(replayed.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(replayed.path("callId").asText()).isEqualTo(call.value());
                 try(var c=f.connection();var q=c.createStatement();var r=q.executeQuery("SELECT count(*) FROM call_state")){r.next();assertThat(r.getInt(1)).isEqualTo(1);}
             }
         }finally{kit.shutdownTestKit();}

@@ -24,7 +24,7 @@ public final class CallCommandService {
     @FunctionalInterface public interface NegotiationVerifier {NegotiationEvidence verify(Connection c,CallCommand command,Snapshot snapshot,Authority authority)throws Exception;}
     private final NegotiationVerifier negotiationVerifier;
     private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
-    private final SqlTransactions sql;private final String cell;private final long epoch;
+    private final SqlTransactions sql;private final String cell;private final long epoch;private final long routingEpoch;
     private final Function<CallCommand,CompletionStage<Authority>> authority;private final ProofVerifier proofs;
     private final CommandResultRepository results=new CommandResultRepository();private final CallSnapshotRepository calls=new CallSnapshotRepository();private final SessionRepository sessions=new SessionRepository();private final OutboxRepository outbox;
     private final HomeParticipationService localHome;private final UserReservationService reservations;
@@ -32,7 +32,12 @@ public final class CallCommandService {
         this(sql,cell,epoch,authority,proofs,null);
     }
     public CallCommandService(SqlTransactions sql,String cell,long epoch,Function<CallCommand,CompletionStage<Authority>> authority,ProofVerifier proofs,NegotiationVerifier negotiationVerifier){
-        this.negotiationVerifier=negotiationVerifier;
+        this(sql,cell,epoch,epoch,authority,proofs,negotiationVerifier);
+    }
+    /** Routing allocation is independently configured; storage promotion never rewrites call IDs. */
+    public CallCommandService(SqlTransactions sql,String cell,long epoch,long routingEpoch,Function<CallCommand,CompletionStage<Authority>> authority,ProofVerifier proofs,NegotiationVerifier negotiationVerifier){
+        if(epoch<1||routingEpoch<1)throw new IllegalArgumentException("Invalid authority epochs");
+        this.routingEpoch=routingEpoch;this.negotiationVerifier=negotiationVerifier;
         this.sql=sql;this.cell=cell;this.epoch=epoch;this.authority=Objects.requireNonNull(authority);this.proofs=Objects.requireNonNull(proofs);outbox=new OutboxRepository(sql,cell,epoch);
         // Used only by the local native transaction after its full primary group/session checks.
         // Remote calls must use the independently supplied request-bound verifier.
@@ -50,7 +55,7 @@ public final class CallCommandService {
     }
     private Outcome execute(Connection c,CallCommand command,Authority context)throws Exception {
         boolean invite=command.type()==SignalEnvelope.Type.INVITE;
-        if(!command.scope().equals(invite?CommandScope.invite():CommandScope.call(command.callId()))||!context.callId().coordinatorCell().equals(cell)||context.callId().routingEpoch()!=epoch||!context.group().cell().equals(cell)||context.group().storageEpoch()!=epoch||context.group().group()!=HomeParticipationService.group(context.callId())||!invite&&!context.callId().equals(command.callId()))throw new AuthorizationRejected();
+        if(!command.scope().equals(invite?CommandScope.invite():CommandScope.call(command.callId()))||!context.callId().coordinatorCell().equals(cell)||invite&&context.callId().routingEpoch()!=routingEpoch||!context.group().cell().equals(cell)||context.group().storageEpoch()!=epoch||context.group().group()!=HomeParticipationService.group(context.callId())||!invite&&!context.callId().equals(command.callId()))throw new AuthorizationRejected();
         int bucket;
         if(invite)bucket=SessionRegistryService.bucket(command.sender().userId());
         else {Snapshot hint=calls.find(c,context.callId());if(hint==null)throw new AuthorizationRejected();bucket=hint.bucket();}
@@ -227,7 +232,7 @@ public final class CallCommandService {
     private Snapshot authorizedRead(Connection c,CallCommand read,String proof)throws Exception {
         AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,read.callId());if(hint==null||!cell.equals(read.callId().coordinatorCell()))throw new AuthorizationRejected();
         AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));AuthoritySql.callReadBarrier(c,read.callId().value());
-        Snapshot snapshot=calls.find(c,read.callId());if(snapshot==null||snapshot.terminalAt()==null&&snapshot.callId().routingEpoch()!=epoch||!proofs.verify(read,snapshot,proof))throw new AuthorizationRejected();requirePrincipal(read.sender(),snapshot);return snapshot;
+        Snapshot snapshot=calls.find(c,read.callId());if(snapshot==null||!proofs.verify(read,snapshot,proof))throw new AuthorizationRejected();requirePrincipal(read.sender(),snapshot);return snapshot;
     }
     private static long localBucketEpoch(Connection c,int bucket)throws SQLException {try(var s=c.prepareStatement("SELECT directory_epoch FROM bucket_authority WHERE bucket_id=?")){s.setInt(1,bucket);try(var r=s.executeQuery()){if(!r.next())throw new AuthoritySql.FencedException();return r.getLong(1);}}}
     public static final class AuthorizationRejected extends RuntimeException {public AuthorizationRejected(){super("Operation authorization rejected");}}

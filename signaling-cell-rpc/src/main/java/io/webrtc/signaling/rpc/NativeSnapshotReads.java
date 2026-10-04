@@ -12,4 +12,8 @@ public final class NativeSnapshotReads implements RpcBusinessHandler.SnapshotRea
         var command=new CallCommand(SignalEnvelope.Type.SYNC_CALL,request.sender(),request.request(),request.call(),CommandScope.call(request.call()),null,null,null,"{}",request.intentHash());
         var operation=commands.loadCallSnapshotAuthorized(command,request.proof(),budget);return new RpcOperation<>(operation.logical(),operation.physicalCompletion());
     }
+    public RpcOperation<java.util.Optional<CallCommandService.Outcome>> result(CallCommand request,String proof,Duration budget){
+        var operation=commands.getCommandResultAuthorized(request,proof,budget);return new RpcOperation<>(operation.logical(),operation.physicalCompletion());
+    }
+
 }

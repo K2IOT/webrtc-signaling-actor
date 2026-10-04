@@ -28,8 +28,9 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
     private final NativeSessionHandler.GatewayIdentity gateway;
     private final Function<UserId,ProofBindings.TrustedHome> homes;
     private final Network network;
-    private final Clock clock;
-    public NativeGatewayCommands(NativeSessionHandler.GatewayIdentity gateway,Function<UserId,ProofBindings.TrustedHome> homes,Network network,Clock clock){this.gateway=Objects.requireNonNull(gateway);this.homes=Objects.requireNonNull(homes);this.network=Objects.requireNonNull(network);this.clock=Objects.requireNonNull(clock);}
+    private final Clock clock;private final long routingEpoch;
+    public NativeGatewayCommands(NativeSessionHandler.GatewayIdentity gateway,Function<UserId,ProofBindings.TrustedHome> homes,Network network,Clock clock){this(gateway,homes,network,clock,gateway.storageEpoch());}
+    public NativeGatewayCommands(NativeSessionHandler.GatewayIdentity gateway,Function<UserId,ProofBindings.TrustedHome> homes,Network network,Clock clock,long routingEpoch){if(routingEpoch<1)throw new IllegalArgumentException("Invalid routing epoch");this.routingEpoch=routingEpoch;this.gateway=Objects.requireNonNull(gateway);this.homes=Objects.requireNonNull(homes);this.network=Objects.requireNonNull(network);this.clock=Objects.requireNonNull(clock);}
     @Override public CompletionStage<String> execute(CallCommand original,SessionRepository.Route route,String token,Duration budget){
         try{
             if(budget==null||budget.isNegative()||budget.isZero())return CompletableFuture.completedFuture(error(original,"OUTCOME_UNKNOWN"));
@@ -38,7 +39,7 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
             boolean invite=original.type()==SignalEnvelope.Type.INVITE;
             boolean lookup=original.type()==SignalEnvelope.Type.GET_COMMAND_RESULT&&original.callId()==null;
             if((invite||lookup)&&!original.scope().equals(CommandScope.invite()))return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
-            var call=invite?CallId.create(home.cell(),home.storageEpoch()):original.callId();
+            var call=invite?CallId.create(home.cell(),routingEpoch):original.callId();
             if(!lookup&&call==null)return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
             var command=invite?new CallCommand(original.type(),original.sender(),original.requestId(),call,original.scope(),original.target(),original.negotiationId(),original.iceGeneration(),original.payloadJson(),original.intentHash()):original;
             long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());
@@ -55,6 +56,10 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                         if(!result.getOperationId().equals(wire.getOperationId())||!result.getCallId().equals(wire.getCallId())||!result.getErrorCode().isEmpty()&&!(result.getStatus().equals("PENDING")&&result.getErrorCode().equals("WORKFLOW_PENDING")))return error(original,result.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":result.getErrorCode());
                         try{
                             if(command.type()==SignalEnvelope.Type.SYNC_CALL){if(result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");return snapshot(original,JSON.readValue(result.getResult().toByteArray(),CallSnapshotRepository.Snapshot.class));}
+                            if(command.type()==SignalEnvelope.Type.GET_COMMAND_RESULT){
+                                if(result.getAckCommitted()||!result.getStatus().equals("READ"))return error(original,"OUTCOME_UNKNOWN");
+                                var read=JSON.readTree(result.getResult().toByteArray());return read.isNull()?error(original,"RESULT_EXPIRED"):outcome(original,JSON.treeToValue(read,CallCommandService.Outcome.class),false);
+                            }
                             var value=JSON.readValue(result.getResult().toByteArray(),CallCommandService.Outcome.class);
                             if(!result.getAckCommitted()&&result.getStatus().equals("PENDING")&&value.status().equals("PENDING")&&value.code().equals("WORKFLOW_PENDING"))return outcome(original,value,false);
                             if(!result.getAckCommitted()||!result.getStatus().equals("COMMITTED")||!value.status().equals("FINAL"))return error(original,"OUTCOME_UNKNOWN");

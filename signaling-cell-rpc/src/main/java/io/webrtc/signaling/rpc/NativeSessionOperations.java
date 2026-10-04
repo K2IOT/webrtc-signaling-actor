@@ -31,7 +31,7 @@ public final class NativeSessionOperations implements NativeSessionHandler.Opera
                         if(proofs==null||!trustedClock.getAsBoolean())throw new AuthoritySql.FencedException();
                         var read=registry.readCurrentSessionTracked(request.route(),principal,request.directoryEpoch(),Duration.ofNanos(left));
                         read.physicalCompletion().whenComplete((done,error)->physical.complete(null));
-                        read.logical().whenComplete((view,error)->{if(error!=null){logical.complete(error(request,"UNAUTHORIZED"));return;}try{if(!trustedClock.getAsBoolean()||!view.proofUntil().isAfter(clock.instant()))throw new AuthoritySql.FencedException();Instant until=view.proofUntil().isBefore(prepared.permissionUntil())?view.proofUntil():prepared.permissionUntil();if(!until.isAfter(clock.instant()))throw new AuthoritySql.FencedException();
+                        read.logical().whenComplete((view,error)->{if(error!=null){logical.complete(error(request,classify(error)));return;}try{if(!trustedClock.getAsBoolean()||!view.proofUntil().isAfter(clock.instant()))throw new AuthoritySql.FencedException();Instant until=view.proofUntil().isBefore(prepared.permissionUntil())?view.proofUntil():prepared.permissionUntil();if(!until.isAfter(clock.instant()))throw new AuthoritySql.FencedException();
                             var capped=new SessionRegistryService.SessionProofView(view.route(),view.checkedAt(),until,view.sourceCell(),view.sourceStorageEpoch(),view.directoryEpoch());String sealed=proofs.issue(capped,request.proofCommand());logical.complete(SessionReply.newBuilder().setOperationId(request.operation().toString()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(sealed))).build());}catch(RuntimeException invalid){logical.complete(error(request,"UNAUTHORIZED"));}});
                     }else if(request.type().equals("REGISTER")){
                         var identity=request.gateway();var boot=new GatewayLeaseRepository.Boot(identity.gatewayId(),identity.bootId(),identity.storageEpoch(),identity.region(),identity.cell(),0,Instant.EPOCH,request.operation());
@@ -56,11 +56,17 @@ public final class NativeSessionOperations implements NativeSessionHandler.Opera
     }
     private static <T> void readReply(NativeSessionHandler.Request request,DbOperation<T> operation,CompletableFuture<SessionReply> logical,CompletableFuture<Void> physical){
         operation.physicalCompletion().whenComplete((done,failure)->physical.complete(null));
-        operation.logical().whenComplete((value,failure)->{if(failure!=null){logical.complete(error(request,"UNAUTHORIZED"));return;}try{logical.complete(SessionReply.newBuilder().setOperationId(request.operation().toString()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(value))).build());}catch(RuntimeException invalid){logical.complete(error(request,"OUTCOME_UNKNOWN"));}});
+        operation.logical().whenComplete((value,failure)->{if(failure!=null){logical.complete(error(request,classify(failure)));return;}try{logical.complete(SessionReply.newBuilder().setOperationId(request.operation().toString()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(value))).build());}catch(RuntimeException invalid){logical.complete(error(request,"OUTCOME_UNKNOWN"));}});
     }
     private static <T> void bridge(NativeSessionHandler.Request request,DbOperation<T> operation,CompletableFuture<SessionReply> logical,CompletableFuture<Void> physical){
         operation.physicalCompletion().whenComplete((done,failure)->physical.complete(null));
-        operation.logical().whenComplete((value,failure)->{if(failure!=null){logical.complete(error(request,"OUTCOME_UNKNOWN"));return;}try{logical.complete(SessionReply.newBuilder().setOperationId(request.operation().toString()).setAckCommitted(true).setStatus("COMMITTED").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(value))).build());}catch(RuntimeException invalid){logical.complete(error(request,"OUTCOME_UNKNOWN"));}});
+        operation.logical().whenComplete((value,failure)->{if(failure!=null){logical.complete(error(request,classify(failure)));return;}try{logical.complete(SessionReply.newBuilder().setOperationId(request.operation().toString()).setAckCommitted(true).setStatus("COMMITTED").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(value))).build());}catch(RuntimeException invalid){logical.complete(error(request,"OUTCOME_UNKNOWN"));}});
+    }
+    private static String classify(Throwable failure){
+        while(failure instanceof CompletionException&&failure.getCause()!=null)failure=failure.getCause();
+        if(failure instanceof DbOverloadedException||failure instanceof AuthoritySql.RetryableConflict)return "OVERLOADED";
+        if(failure instanceof AuthoritySql.FencedException||failure instanceof SessionRepository.BindingRejected)return "UNAUTHORIZED";
+        return "OUTCOME_UNKNOWN";
     }
     private static SessionReply error(NativeSessionHandler.Request request,String error){return SessionReply.newBuilder().setOperationId(request.operation().toString()).setStatus("REJECTED").setErrorCode(error).build();}
 }

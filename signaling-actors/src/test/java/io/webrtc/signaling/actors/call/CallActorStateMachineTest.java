@@ -81,4 +81,13 @@ class CallActorStateMachineTest {
         var result=results.receiveMessage();assertThat(result.code()).isEqualTo("UNKNOWN");assertThat(result.issued()).isNull();
     }
 
+    @Test void promotedNativeRootHydratesOldRoutingIdentityAndProcessesExistingCall()throws Exception {
+        var promoted=new AuthoritySql.GroupToken(TOKEN.cell(),2,TOKEN.hashVersion(),TOKEN.group(),3,TOKEN.node(),TOKEN.incarnation());
+        var actor=kit.spawn(CallActor.create(CALL,backend,()->Optional.of(promoted),Clock.fixed(NOW,ZoneOffset.UTC)));
+        backend.hydration.done(Optional.of(snapshot("PREPARING",1)));
+        var observer=kit.<Optional<Snapshot>>createTestProbe();actor.tell(new CallActor.GetSnapshot(observer.ref()));assertThat(observer.receiveMessage()).contains(snapshot("PREPARING",1));
+        var original=ring(1);var transition=new CallWorkflowService.Transition(CALL,promoted,1,1,original.operation(),original.step(),original.winner(),original.offered(),original.activationId(),original.proofExpiresAt(),original.participantUntil(),original.proof(),original.reason());
+        actor.tell(new CallActor.Progress(transition,replies.ref(),NOW.plusSeconds(2),1024));var work=backend.next();work.done(new CallWorkflowService.Outcome("RINGING",snapshot("RINGING",2),List.of()));assertThat(replies.receiveMessage().code()).isEqualTo("RINGING");kit.stop(actor);
+    }
+
 }

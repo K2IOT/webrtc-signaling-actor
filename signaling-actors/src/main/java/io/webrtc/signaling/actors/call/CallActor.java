@@ -43,7 +43,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         var token=current();if(token.isEmpty()){unknown=true;ready=true;return;}pending=new Pending(null,token.get());submit(()->backend.loadCold(call,pending.token,Duration.ofSeconds(2)));
     }
     @Override public Receive<CallMessage> createReceive(){return newReceiveBuilder().onMessage(GrantToHome.class,this::enqueue).onMessage(Progress.class,this::enqueue).onMessage(Execute.class,this::enqueue).onMessage(WakeCall.class,this::enqueue).onMessage(GetSnapshot.class,this::observe).onMessage(Completed.class,this::completed).onMessage(Cleaned.class,this::cleaned).onMessage(Expire.class,this::expire).onMessage(Retire.class,r->retire()).onMessage(Stop.class,r->stop()).build();}
-    private Optional<AuthoritySql.GroupToken> current(){return gate.get().filter(t->call.coordinatorCell().equals(t.cell())&&call.routingEpoch()==t.storageEpoch()&&t.hashVersion()==1&&t.group()==HomeParticipationService.group(call));}
+    private Optional<AuthoritySql.GroupToken> current(){return gate.get().filter(t->call.coordinatorCell().equals(t.cell())&&t.hashVersion()==1&&t.group()==HomeParticipationService.group(call));}
     private Behavior<CallMessage> enqueue(CallMessage request){
         if(current().isEmpty()){reject(request,"FENCED");return this;}if(stopping||passivating||unknown){reject(request,"UNAVAILABLE");return this;}
         if(!deadline(request).isAfter(clock.instant())){reject(request,"EXPIRED");return this;}

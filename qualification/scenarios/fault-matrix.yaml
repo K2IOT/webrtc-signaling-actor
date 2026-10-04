@@ -52,6 +52,14 @@ faults:
     scope: LOCAL_AND_EXTERNAL
     tests: [RevocationSecurityIT, MaintenanceWorkersIT]
     invariant: fresh ordered high-water required; duplicate old page does not refresh security freshness
+  - id: admitted-storage-epoch-transition
+    scope: LOCAL_NATIVE_POSTGRES
+    tests: [DatabaseFailoverIT, CallActorStateMachineTest]
+    invariant: independently configured routing epoch; signed HA permit and native100 transition preserve unexpired reservations, winner and calls while rejecting old roots
+  - id: auth-contention-and-result-recovery
+    scope: LOCAL_NATIVE_POSTGRES_AND_MTLS
+    tests: [RevocationSecurityIT, NativeGatewayCommandIT]
+    invariant: transient guarded contention is overload, stale route stays unauthorized, original scoped result reads need no live root
   - id: postgres-primary-failure
     scope: EXTERNAL_THREE_AZ
     tests: [DatabaseFailoverIT]

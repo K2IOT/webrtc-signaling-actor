@@ -22,8 +22,12 @@ public final class HomeParticipationService {
     @FunctionalInterface public interface GrantVerifier { boolean verify(Request request);default boolean verify(Request request,AuthorizationIntent action){return verify(request);} }
     public record Winner(SessionKey key,SessionIncarnation incarnation,long generation) {}
     public record Participation(CallId call,UserId user,UUID acquireOperation,String payloadHash,String phase,UUID reservationId,long version,Instant leaseUntil,Winner winner,long highestGroupEpoch) {public boolean terminal(){return phase.equals("RELEASED")||phase.equals("EXPIRED");}}
+    /** Cached authenticated promotion/migration approval; must never perform network I/O under SQL guards. */
+    @FunctionalInterface public interface EpochAdoptionVerifier {boolean permits(String coordinatorCell,long previousEpoch,long nextEpoch);}
+    private final EpochAdoptionVerifier epochAdoption;
     private final SqlTransactions sql;private final String cell;private final long epoch;private final GrantVerifier verifier;
-    public HomeParticipationService(SqlTransactions sql,String cell,long epoch,GrantVerifier verifier){this.sql=Objects.requireNonNull(sql);this.cell=cell;this.epoch=epoch;this.verifier=Objects.requireNonNull(verifier);}
+    public HomeParticipationService(SqlTransactions sql,String cell,long epoch,GrantVerifier verifier){this(sql,cell,epoch,verifier,(source,previous,next)->false);}
+    public HomeParticipationService(SqlTransactions sql,String cell,long epoch,GrantVerifier verifier,EpochAdoptionVerifier epochAdoption){this.sql=Objects.requireNonNull(sql);this.cell=cell;this.epoch=epoch;this.verifier=Objects.requireNonNull(verifier);this.epochAdoption=Objects.requireNonNull(epochAdoption);}
     <T> CompletionStage<T> submit(Request r,DbClass clazz,SqlTransactions.Work<T> work){return submitTracked(r,clazz,Duration.ofSeconds(2),work).logical();}
     <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,SqlTransactions.Work<T> work){return submitTracked(r,clazz,budget,new AuthorizationIntent("QUERY",null,0,null,0,null,null),work);}
     <T> DbOperation<T> submitTracked(Request r,DbClass clazz,Duration budget,AuthorizationIntent action,SqlTransactions.Work<T> work){return sql.submitTracked(clazz,budget,c->{guard(c,List.of(r),action);return work.apply(c);});}
@@ -34,15 +38,18 @@ public final class HomeParticipationService {
         for(Request r:requests)validateGrant(c,r,action);
     }
     private void validateGrant(Connection c,Request r,AuthorizationIntent action)throws SQLException {
-        var g=r.grant();if(!verifier.verify(r,action)||!r.call().coordinatorCell().equals(g.cell())||r.call().routingEpoch()!=g.storageEpoch()||g.hashVersion()!=1||g.group()!=group(r.call()))throw new AuthoritySql.FencedException();
+        var g=r.grant();if(!verifier.verify(r,action)||!r.call().coordinatorCell().equals(g.cell())||g.hashVersion()!=1||g.group()!=group(r.call()))throw new AuthoritySql.FencedException();
         try(var s=c.prepareStatement("SELECT clock_timestamp()" );var result=s.executeQuery()){result.next();Instant now=result.getTimestamp(1).toInstant();
             if(!g.expiresAt().isAfter(now)||g.issuedAt().isAfter(now.plusSeconds(1))||g.issuedAt().isAfter(g.expiresAt())||Duration.between(g.issuedAt(),g.expiresAt()).compareTo(Duration.ofSeconds(5))>0)throw new AuthoritySql.FencedException();}
     }
-    public CompletionStage<Participation> queryParticipation(Request r){return submit(r,DbClass.CRITICAL,c->find(c,r));}
-    Participation find(Connection c,Request request)throws SQLException {
-        try(var s=c.prepareStatement("SELECT h.acquire_operation_id,h.payload_hash,h.phase,h.reservation_id,COALESCE(r.reservation_version,0),r.lease_until,h.winner_issuer,h.winner_jti,h.winner_incarnation,h.winner_generation,h.highest_group_epoch,h.coordinator_cell,h.coordinator_storage_epoch,h.ownership_hash_version,h.ownership_group_id FROM home_participation h LEFT JOIN user_reservation r ON r.call_id=h.call_id AND r.user_id=h.user_id AND r.reservation_id=h.reservation_id WHERE h.call_id=? AND h.user_id=?")){
+    public CompletionStage<Participation> queryParticipation(Request r){return submit(r,DbClass.CRITICAL,c->find(c,r,true));}
+    Participation find(Connection c,Request request)throws SQLException {return find(c,request,false);}
+    Participation find(Connection c,Request request,boolean allowAdoption)throws SQLException {
+        try(var s=c.prepareStatement("SELECT h.acquire_operation_id,h.payload_hash,h.phase,h.reservation_id,COALESCE(r.reservation_version,0),r.lease_until,h.winner_issuer,h.winner_jti,h.winner_incarnation,h.winner_generation,h.highest_group_epoch,h.coordinator_cell,h.coordinator_storage_epoch,h.ownership_hash_version,h.ownership_group_id,r.lease_until>clock_timestamp() FROM home_participation h LEFT JOIN user_reservation r ON r.call_id=h.call_id AND r.user_id=h.user_id AND r.reservation_id=h.reservation_id WHERE h.call_id=? AND h.user_id=?")){
             s.setString(1,request.call().value());s.setString(2,request.user().value());try(var r=s.executeQuery()){if(!r.next())return null;
-                if(!request.acquireOperation().equals(r.getObject(1,UUID.class))||!request.payloadHash().equals(HexFormat.of().formatHex(r.getBytes(2)))||!request.grant().cell().equals(r.getString(12))||request.grant().storageEpoch()!=r.getLong(13)||request.grant().hashVersion()!=r.getLong(14)||request.grant().group()!=r.getInt(15))throw new IntentConflict();
+                if(!request.acquireOperation().equals(r.getObject(1,UUID.class))||!request.payloadHash().equals(HexFormat.of().formatHex(r.getBytes(2)))||!request.grant().cell().equals(r.getString(12))||request.grant().hashVersion()!=r.getLong(14)||request.grant().group()!=r.getInt(15))throw new IntentConflict();
+                long previous=r.getLong(13),next=request.grant().storageEpoch();
+                if(next<previous||next>previous&&(!allowAdoption||!r.getBoolean(16)||!epochAdoption.permits(request.grant().cell(),previous,next)))throw new AuthoritySql.FencedException();
                 Winner winner=r.getString(7)==null?null:new Winner(new SessionKey(r.getString(7),r.getString(8)),new SessionIncarnation(r.getObject(9,UUID.class)),r.getLong(10));
                 Timestamp expiry=r.getTimestamp(6);return new Participation(request.call(),request.user(),request.acquireOperation(),request.payloadHash(),r.getString(3),r.getObject(4,UUID.class),r.getLong(5),expiry==null?null:expiry.toInstant(),winner,r.getLong(11));}
         }
