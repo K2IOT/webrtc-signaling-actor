@@ -21,7 +21,7 @@ class CoordinatorGrantIT {
             var request=new HomeParticipationService.Request(caller.userId(),call,invite.requestId().value(),invite.intentHash(),1,HomeParticipationService.Phase.RINGING,new HomeParticipationService.Grant("c001",1,1,token.group(),token.epoch(),1,UUID.randomUUID(),now,now.plusSeconds(5),"UNSIGNED"));
             var release=new java.util.concurrent.CountDownLatch(1);var entered=new java.util.concurrent.CountDownLatch(8);var admitted=new ArrayList<DbOperation<Boolean>>();
             try{
-                for(int n=0;n<8;n++)admitted.add(f.runtime.sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),c->{entered.countDown();release.await();return true;}));
+                for(int n=0;n<8;n++)admitted.add(f.runtime.boundary.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),()->{entered.countDown();release.await();return true;}));
                 assertThat(entered.await(1,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
                 var issued=done(new CoordinatorGrantService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER").issue(request,new HomeParticipationService.AuthorizationIntent("RENEW",null,0,null,0,null,null),token,1,1,Duration.ofSeconds(1)));
                 assertThat(issued.snapshot().callId()).isEqualTo(call);
