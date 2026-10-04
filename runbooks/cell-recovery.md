@@ -1,0 +1,13 @@
+# Full cell recovery
+
+Keep the cell frozen and business readiness false. Join-only actor pods must not form a competing cluster automatically. Obtain approved recovery authorization from an enrolled external authority after proving old actors/gateways/writers physically fenced. Retain exact candidate/config, cell and recovery operation identity.
+
+For a database whose history is intact, preserve its native storage/group/operation history; use the controlled cell reformation policy after fencing, not a guessed epoch on every restart. For disaster restore or uncertain/lost acknowledged history, follow PITR recovery with a **new storage epoch above the external pre-disaster high-water**. Restored database counters alone are insufficient.
+
+Bring up bounded DB resources, then native clock/security/fencing sources, then ActorSystem/management/discovery and controlled six-member formation. Require matching Up membership, four reachable actors in at least two AZs, both regions initialized, correct fingerprint, valid cell/storage mode, usable safety pool and clock bounds. Do not eagerly acquire every group for readiness; each group still acquires native authority before entity placement.
+
+Native `RecoveryEpochService` requires a verified external permit. `begin` takes exclusive barrier100 and atomically journals the recovery operation, bumps epoch and leaves status `RECOVERING`. Each `abortBatch` uses the same exclusive barrier, at most **128 rows per category**, and independent tracked cleanup; do not start a replacement batch before physical completion. It terminalizes restored nonterminal calls/homes, removes restored reservations, closes old sessions/boots, quarantines pending/inflight historical outbox and finalizes pending call results. Existing FINAL results and immutable safety/winner history remain.
+
+A batch's `remaining` is an existence indicator; it is not a full-table count or a scale measurement. Refresh authenticated permits inside their original <=5s proof window, bound to the same recovery operation/epochs. Do not create a new operation after an uncertain result: replay `begin` with the original ID while recovery remains open.
+
+Reactivation requires independently verified security/privacy replay completion, matching cell/new epoch/recovery operation, current native source cursor and freshness, no pending privacy deletion, and **no recovered live work remaining**. Missing proof leaves `RECOVERING`. Refresh directory/trust snapshots to the new epoch before admission. Old call IDs remain terminal; clients must establish new calls if needed. Healthy P2P continuity is not promised after authority history loss.

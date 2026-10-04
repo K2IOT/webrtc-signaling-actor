@@ -1,0 +1,19 @@
+# Actor drain, N/N-1 upgrade and rollback
+
+Actor termination grace is **90s**. Application drain budget is **65s**, retaining >=10s SBR stability and >=10s removal margin plus headroom. Six actor pods/cell, at most one surge (**seven ingress producers**), PDB **minAvailable=4**, spread across three AZs. Do not change these numbers to accelerate a rollout.
+
+1. Before a canary, verify both image digests, pinned N/N-1 wire/schema window, shared ownership hash/version, cell fingerprint, PKI enrollment, native writer fencing/synchronous durability, capacity and real four-member/two-AZ reachable Up membership. `CompatibilityWindow` consumes authenticated current membership, not caller-provided peer descriptors. Minor N and N-1 may join only within the matching major/config contract.
+2. Disable new feature admission (`SESSION_S1`, `FULL_CONNECTION_ACTIVE`, `CAUSAL_ROUTE_LOSS`) until every reachable Up peer supports it. Enabling requires 4–7 distinct member identities and >=2 AZs. Do not rely on Kubernetes replica count or advertise support on behalf of an old binary. Retain additive fields and explicit old constructors while the adjacent-version window is open.
+3. Mark readiness off; shed INVITE/new ownership admission and stop new RPC streams. Existing bounded renewal/termination/reconciliation remains admitted. Await application/JDBC/RPC physical completion. Register application tasks in **application-owned CoordinatedShutdown phases**: readiness/shed before service unbind, settlement before sharding shutdown, DB close after framework sharding handoff/lease release and cluster departure. The framework owns its sharding/cluster phases; do not run competing handoff or cluster-leave operations inside those phases or block their dispatcher threads.
+4. Observe actual shard handoff and native lease releases; gate completions by the full tenure. Confirm release physical cleanup, then cluster leave, then close DB pools. Missing/UNKNOWN completion never becomes success. Keep pools alive if the 65s budget expires; native TTL/epoch fences remain authoritative. Kubernetes may enforce the outer 90s deadline.
+5. Roll one pod at a time through the approved candidate, and inspect native version/lease/queue/SLO evidence. Do not enable additive features while an unsupported peer can rejoin. Keep the predecessor image and schema available for rollback.
+
+```bash
+kubectl --context "$SIGNALING_KUBE_CONTEXT" -n "$SIGNALING_NAMESPACE" get pdb "$SIGNALING_RELEASE-actor"
+kubectl --context "$SIGNALING_KUBE_CONTEXT" -n "$SIGNALING_NAMESPACE" get pods -l 'app=webrtc-signaling,plane=actor' -o wide
+kubectl --context "$SIGNALING_KUBE_CONTEXT" -n "$SIGNALING_NAMESPACE" rollout status "deployment/$SIGNALING_RELEASE-actor" --timeout=10m
+```
+
+Expand-contract: migrate additive nullable columns/indexes first with bounded, qualified migration jobs; deploy dual-read compatible binaries; enable only qualified features; retain old data readers through rollback/retention. Never remove/rename authority columns, rewrite immutable identities or change hash assignment during the window. Contract only after no adjacent-version reader or retained safety record needs it, with a new migration and qualification.
+
+Forced rollback: disable feature admission first; drain incompatible **native durable work** and actual physical work; keep expand-contract schema. `rollbackAllowed` requires all three positive conditions. Only then use the approved predecessor digest via the reviewed Helm values and `helm upgrade --wait`; never blindly `rollout undo` into unsupported durable work. If incompatible state cannot be consumed safely, stop admission and repair forward; do not weaken proof/fencing checks. Retain actual mixed-version/rollback evidence for release. `rolling-upgrade.sh --dry-run` checks local ordering and feature gates only.

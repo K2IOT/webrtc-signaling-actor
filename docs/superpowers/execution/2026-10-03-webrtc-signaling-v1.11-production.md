@@ -21,7 +21,8 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 18 | Complete local verification | Native bounded workers, authenticated catch-up and opaque privacy deletion; storage reactor passes |
 | 19 | Complete local verification | Privacy-safe logs/traces, enum metrics, four recovery SLIs, validated dashboards / Prometheus rules |
 | 20 | Complete deployment contracts | Rendered Helm object semantics / unsafe overrides / lint; no deployed HA qualification |
-| 21–24 | In progress / pending | Lifecycle, complete native runtime composition and qualification |
+| 21 | Complete local lifecycle/restore verification | Ordered physical drain, actual Pekko shutdown graph, N/N-1 feature gates and native recovery epoch repair |
+| 22–24 | In progress / pending | Complete native runtime composition and qualification |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
@@ -87,3 +88,5 @@ Task 18 full clean storage reactor: **114 tests, zero failures/errors/skips**, i
 Task 19 clean app reactor: **63 tests, zero failures/errors/skips**. Seven telemetry contracts test redaction, production Logback formatting, enum dimensions, distinct recovery eligibility and real Prometheus control/relay histograms. Quantiles use aggregable histogram_quantile queries (Micrometer omits client-side summaries when histograms are enabled). Actual promtool3.6.0 validates the burn-rate/recovery/revocation rules. Runtime producer adapters and measured qualification remain Tasks20–24.
 
 Task 20 deployment contract passes with pinned Helm3.19 and actual resolved amd64 CNPG1.27/PG17.6 digests. Required cross-AZ synchronous durability, private discovery/management, quorum PDB, least-privilege RBAC and bounded JVM/native resources are rendered and validated. **Native producer/runtime composition remains open** and is carried into Task22 native end-to-end fault tests, which consume all modules; no application or HA release qualification is implied by chart validation.
+
+Task 21 full `./mvnw clean verify`: **293 tests, zero failures/errors/skips**. Actual Pekko application-phase shutdown retains DB until native release/final physical settlement, within a 63s graph; standalone gateway drain batches128/100ms within5min. Three PostgreSQL RecoveryEpochIT cases enforce external epoch high-water, bounded restore abortion, original recovery replay and native security/privacy reactivation checks. Six reviewed runbooks and executable local dry-run scripts exist. Genuine Kubernetes rolling/HA/PITR/privacy replay remains NOT_QUALIFIED; enrolled verifier/hooks and runtime startup/worker wiring stay open Task22 dependencies.

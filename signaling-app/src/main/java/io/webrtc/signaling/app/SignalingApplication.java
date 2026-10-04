@@ -10,7 +10,11 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 
-@SpringBootApplication
+@SpringBootApplication(exclude = {
+    org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class,
+    org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration.class,
+    org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration.class
+})
 @EnableConfigurationProperties(SignalingProperties.class)
 public class SignalingApplication {
     public enum Plane { GATEWAY, ACTOR, CONTROL }
