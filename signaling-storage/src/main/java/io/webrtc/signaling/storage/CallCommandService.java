@@ -210,6 +210,11 @@ public final class CallCommandService {
     private void requireLocalCurrent(Connection c,AuthenticatedSession sender)throws SQLException {
         var route=sessions.find(c,sender.key());if(route==null||!route.user().equals(sender.userId())||!route.incarnation().equals(sender.incarnation())||route.connectionGeneration()!=sender.connectionGeneration()||!Objects.equals(route.connectionId(),sender.connectionId()))throw new AuthorizationRejected();sessions.requireCurrent(c,route);
     }
+    private static void requireSnapshotParticipant(AuthenticatedSession sender,Snapshot snapshot){
+        var bound=snapshot.caller().samePrincipal(sender)?snapshot.caller():snapshot.winner()!=null&&snapshot.winner().samePrincipal(sender)?snapshot.winner():null;
+        if(bound==null){if(snapshot.winner()==null&&snapshot.callee().equals(sender.userId()))return;throw new AuthorizationRejected();}
+        if(snapshot.terminalAt()==null&&(!bound.incarnation().equals(sender.incarnation())||sender.connectionGeneration()<bound.generation()))throw new AuthorizationRejected();
+    }
     private static void requirePrincipal(AuthenticatedSession sender,Snapshot snapshot){if(snapshot==null||!snapshot.caller().samePrincipal(sender)&&(snapshot.winner()==null||!snapshot.winner().samePrincipal(sender))&&!snapshot.callee().equals(sender.userId()))throw new AuthorizationRejected();}
     private static void requireOperation(CallCommand command,Snapshot s)throws Exception {
         boolean caller=s.caller().sameBinding(command.sender()),winner=s.winner()!=null&&s.winner().sameBinding(command.sender());
@@ -231,7 +236,7 @@ public final class CallCommandService {
         var result=results.find(c,sender.key(),scope,request);return result==null?Optional.empty():Optional.of(outcome(result));
     });}
     public CompletionStage<Snapshot> loadCallSnapshot(AuthenticatedSession sender,CallId call){return sql.submit(DbClass.RECOVERY,Duration.ofSeconds(2),c->{
-        AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,call);if(hint==null)throw new AuthorizationRejected();AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));requireLocalCurrent(c,sender);Snapshot current=calls.find(c,call);requirePrincipal(sender,current);return current;
+        AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,call);if(hint==null)throw new AuthorizationRejected();AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));requireLocalCurrent(c,sender);Snapshot current=calls.find(c,call);requireSnapshotParticipant(sender,current);return current;
     });}
     public DbOperation<Snapshot> loadCallSnapshotAuthorized(CallCommand read,String proof,Duration budget){
         if(read.type()!=SignalEnvelope.Type.SYNC_CALL||read.callId()==null||!read.scope().equals(CommandScope.call(read.callId())))throw new IllegalArgumentException("Invalid native snapshot read");
@@ -267,7 +272,7 @@ public final class CallCommandService {
     private Snapshot authorizedRead(Connection c,CallCommand read,String proof)throws Exception {
         AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,read.callId());if(hint==null||!cell.equals(read.callId().coordinatorCell()))throw new AuthorizationRejected();
         AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));AuthoritySql.callReadBarrier(c,read.callId().value());
-        Snapshot snapshot=calls.find(c,read.callId());if(snapshot==null||!proofs.verify(read,snapshot,proof))throw new AuthorizationRejected();requirePrincipal(read.sender(),snapshot);return snapshot;
+        Snapshot snapshot=calls.find(c,read.callId());if(snapshot==null||!proofs.verify(read,snapshot,proof))throw new AuthorizationRejected();requirePrincipal(read.sender(),snapshot);if(read.type()==SignalEnvelope.Type.SYNC_CALL)requireSnapshotParticipant(read.sender(),snapshot);return snapshot;
     }
     private static long localBucketEpoch(Connection c,int bucket)throws SQLException {try(var s=c.prepareStatement("SELECT directory_epoch FROM bucket_authority WHERE bucket_id=?")){s.setInt(1,bucket);try(var r=s.executeQuery()){if(!r.next())throw new AuthoritySql.FencedException();return r.getLong(1);}}}
     public static final class AuthorizationRejected extends RuntimeException {public AuthorizationRejected(){super("Operation authorization rejected");}}

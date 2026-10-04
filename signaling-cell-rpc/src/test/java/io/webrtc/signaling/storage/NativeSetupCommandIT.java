@@ -5,6 +5,7 @@ import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.actors.call.CallActor;
 import io.webrtc.signaling.actors.user.*;
 import io.webrtc.signaling.protocol.*;
+import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.rpc.*;
 import java.security.*;
 import java.time.*;
@@ -44,6 +45,15 @@ class NativeSetupCommandIT {
 
             assertThat(result.status()).isEqualTo("FINAL");assertThat(result.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");assertThat(current.get().state()).isEqualTo("CONNECTING");assertThat(current.get().version()).isEqualTo(4);
             var retry=executor.execute(accept,signed,Duration.ofSeconds(2));assertThat(retry.logical().toCompletableFuture().get(3,TimeUnit.SECONDS)).isEqualTo(result);retry.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(current.get().version()).isEqualTo(4);
+            var losingSession=f.sender("setup-callee");
+            var read=new CallCommand(SignalEnvelope.Type.SYNC_CALL,losingSession,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
+            var losingRoute=SessionAuthReadIT.route(f,losingSession);
+            var losingCurrent=NativeProofSagaIT.done(new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true).readCurrentSessionTracked(losingRoute,SessionAuthReadIT.principal(losingRoute),1,Duration.ofSeconds(2)));
+            var losingProof=proofs.sessionProofs().issue(losingCurrent,read);
+            assertThatThrownBy(()->commands.loadCallSnapshotAuthorized(read,losingProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
+            var winningRead=new CallCommand(SignalEnvelope.Type.SYNC_CALL,callee,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","d".repeat(64));
+            var winningProof=proofs.sessionProofs().issue(nativeSession,winningRead);
+            assertThat(NativeProofSagaIT.done(commands.loadCallSnapshotAuthorized(winningRead,winningProof,Duration.ofSeconds(2))).winner().key()).isEqualTo(callee.key());
         }
     }
 }
