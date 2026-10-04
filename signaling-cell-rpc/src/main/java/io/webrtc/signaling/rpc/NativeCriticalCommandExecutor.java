@@ -24,21 +24,20 @@ public final class NativeCriticalCommandExecutor {
         if(command.callId()==null||!cell.equals(command.callId().coordinatorCell()))throw new CallCommandService.AuthorizationRejected();
         long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());
         var nativeRead=commands.criticalContextAuthorized(command,sessionProof,remaining(end));
-        var mutationPhysical=new java.util.concurrent.atomic.AtomicReference<CompletionStage<?>>(CompletableFuture.completedFuture(null));
-        var logical=nativeRead.logical().thenCompose(context->{
+        var scope=new PhysicalScope();
+        var logical=scope.track(new RpcOperation<>(nativeRead.logical(),nativeRead.physicalCompletion())).thenCompose(context->{
             var snapshot=context.snapshot();if(snapshot.terminalAt()!=null||snapshot.winner()==null||snapshot.activationId()==null)throw new AuthoritySql.FencedException();
             var callerHome=Objects.requireNonNull(directory.apply(snapshot.caller().user()));var winnerHome=Objects.requireNonNull(directory.apply(snapshot.winner().user()));
             var caller=template(command,context,snapshot.caller(),callerHome);var winner=template(command,context,snapshot.winner(),winnerHome);
-            return homes.proveCommand(caller,callerHome.cell(),command.sender().userId().equals(snapshot.caller().user())?command.sender():null,command,snapshot.caller(),remaining(end))
-                .thenCompose(a->homes.proveCommand(winner,winnerHome.cell(),command.sender().userId().equals(snapshot.winner().user())?command.sender():null,command,snapshot.winner(),remaining(end))
+            return scope.track(homes.proveCommandTracked(caller,callerHome.cell(),command.sender().userId().equals(snapshot.caller().user())?command.sender():null,command,snapshot.caller(),remaining(end)))
+                .thenCompose(a->scope.track(homes.proveCommandTracked(winner,winnerHome.cell(),command.sender().userId().equals(snapshot.winner().user())?command.sender():null,command,snapshot.winner(),remaining(end)))
                 .thenCompose(b->{
                     var sealed=new CriticalCommandProof(sessionProof,a.signed(),b.signed()).encode();
                     var mutation=actors.callTracked(command,sealed,clock.instant().plus(remaining(end)),RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,sealed)).length);
-                    mutationPhysical.set(mutation.physicalCompletion());return mutation.logical();
+                    return scope.track(mutation);
                 }));
         });
-        var physical=logical.handle((v,e)->null).thenCompose(done->nativeRead.physicalCompletion().handle((v,e)->null).thenCombine(mutationPhysical.get().handle((v,e)->null),(a,b)->null));
-        return new RpcOperation<>(logical,physical);
+        return scope.seal(logical);
     }
     private Request template(CallCommand command,CallCommandService.CriticalContext context,Participant participant,ProofBindings.TrustedHome home){
         var snapshot=context.snapshot();var now=clock.instant();

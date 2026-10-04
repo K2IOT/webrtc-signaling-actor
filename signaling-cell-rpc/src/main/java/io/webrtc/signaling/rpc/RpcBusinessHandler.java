@@ -33,6 +33,7 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
     public RpcBusinessHandler nativeReads(SnapshotReads reads){this.nativeReads=Objects.requireNonNull(reads);return this;}
     public boolean nativeReadsConfigured(){return nativeReads!=null;}
     public interface ActorIngress {
+        default RpcOperation<io.webrtc.signaling.actors.call.CallActor.GrantReply> grantTracked(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){var stage=grant(r,action,destination,deadline,bytes);return new RpcOperation<>(stage,stage);}
         default CompletionStage<io.webrtc.signaling.actors.call.CallActor.GrantReply> grant(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){return CompletableFuture.failedFuture(new IllegalStateException("Native shard grant ingress required"));}
         default RpcOperation<UserCommand.Result> userTracked(UserCommand.Operation operation,Instant deadline,int bytes){var stage=user(operation,deadline,bytes);return new RpcOperation<>(stage,stage);}
         default RpcOperation<CallCommandService.Outcome> callTracked(CallCommand command,String proof,Instant deadline,int bytes){var stage=call(command,proof,deadline,bytes);return new RpcOperation<>(stage,stage);}
