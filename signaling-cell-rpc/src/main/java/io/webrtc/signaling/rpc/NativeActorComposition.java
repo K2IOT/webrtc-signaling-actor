@@ -43,7 +43,7 @@ public final class NativeActorComposition {
         var home=new HomeParticipationService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),bindings.homeVerifier(inputs.cell()),inputs.epochAdoption());
         sessions=new SessionRegistryService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.sessionSecurity());
         users=new PostgresUserBackend(new UserSnapshotService(inputs.sql(),inputs.cell(),inputs.storageEpoch()),sessions,new UserReservationService(home),new AcceptWinnerService(home,inputs.routeSecurity()),new HomeActivationService(home),new HomeProofReadService(home,inputs.homeSecurity()));
-        commands=new CallCommandService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.routingEpoch(),c->{throw new IllegalStateException("Commands require hosting EntityRef authority");},bindings.commandVerifier(inputs.cell(),inputs.homes()),bindings.negotiationVerifier(inputs.cell(),inputs.homes()));
+        commands=new CallCommandService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.routingEpoch(),c->{throw new IllegalStateException("Commands require hosting EntityRef authority");},bindings.commandVerifier(inputs.cell(),inputs.homes()),bindings.negotiationVerifier(inputs.cell(),inputs.homes())).businessAdmission(readiness::businessReady);
         String owner=PostgresShardLeaseProvider.ownerNode(classic);
         workflow=new CallWorkflowService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),owner,bindings.workflowVerifier(inputs.cell(),inputs.homes()));
         grants=new CoordinatorGrantService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),owner);
@@ -64,7 +64,7 @@ public final class NativeActorComposition {
         },CallActor.Stop.INSTANCE,readiness);registered=true;return regions;
     }
     public RpcBusinessHandler backend(NativeSagaEffects.Network network,Function<RpcBusinessHandler.RelayRequest,CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply>> relay){
-        var handler=new RpcBusinessHandler(inputs.cell(),ingress,bindings,inputs.proofs(),inputs.homes(),read->{throw new IllegalStateException("Native reads are mandatory");},relay,inputs.clock(),issuer).nativeReads(new NativeSnapshotReads(commands));
+        var handler=new RpcBusinessHandler(inputs.cell(),ingress,bindings,inputs.proofs(),inputs.homes(),read->{throw new IllegalStateException("Native reads are mandatory");},relay,inputs.clock(),issuer).nativeReads(new NativeSnapshotReads(commands)).businessAdmission(readiness::businessReady);
         return handler.nativeCritical(new NativeCriticalCommandExecutor(commands,new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock()),ingress,inputs.homes(),inputs.cell(),inputs.storageEpoch(),inputs.clock()));
     }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.trustedClock(),inputs.callPolicy());}

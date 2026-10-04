@@ -22,6 +22,8 @@ public final class CallCommandService {
         public NegotiationEvidence{Objects.requireNonNull(recipient);Objects.requireNonNull(proofExpiresAt);Objects.requireNonNull(participantUntil);}
     }
     @FunctionalInterface public interface NegotiationVerifier {NegotiationEvidence verify(Connection c,CallCommand command,Snapshot snapshot,Authority authority)throws Exception;}
+    private volatile java.util.function.BooleanSupplier businessAdmission=()->false;private boolean businessConfigured;
+    public synchronized CallCommandService businessAdmission(java.util.function.BooleanSupplier gate){if(businessConfigured)throw new IllegalStateException("Business admission already configured");businessAdmission=Objects.requireNonNull(gate);businessConfigured=true;return this;}
     private final NegotiationVerifier negotiationVerifier;
     private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
     private final SqlTransactions sql;private final String cell;private final long epoch;private final long routingEpoch;
@@ -70,6 +72,7 @@ public final class CallCommandService {
         if(invite)requireLocalCurrent(c,command.sender());else requirePrincipal(command.sender(),snapshot);
         var stored=results.find(c,command.sender().key(),command.scope(),command.requestId());
         if(stored!=null){if(!stored.hash().equals(command.intentHash()))throw new CommandResultRepository.IntentConflict();return outcome(stored);}
+        if(invite&&!businessAdmission.getAsBoolean())throw new DbOverloadedException();
         if(!results.insertPending(c,command,context.callId(),bucket)){
             stored=results.find(c,command.sender().key(),command.scope(),command.requestId());if(stored==null)throw new AuthoritySql.RetryableConflict();if(!stored.hash().equals(command.intentHash()))throw new CommandResultRepository.IntentConflict();return outcome(stored);
         }

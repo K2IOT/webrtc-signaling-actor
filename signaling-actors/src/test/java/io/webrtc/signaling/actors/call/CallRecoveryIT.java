@@ -26,7 +26,7 @@ class CallRecoveryIT {
             try(var c=connection();var s=c.createStatement()){s.execute("INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023)n");}
             sessions=new SessionRegistryService(runtime.sql,"c001",1);boot=sessions.startGatewayBoot("call-recovery-test",UUID.randomUUID(),"TEST_ONLY",UUID.randomUUID()).toCompletableFuture().join();
             workflow=new CallWorkflowService(runtime.sql,"c001",1,"TEST_ONLY_OWNER",(transition,snapshot)->transition.proof().equals("TEST_ONLY_VERIFIED"));
-            commands=new CallCommandService(runtime.sql,"c001",1,c->{var call=c.callId();return CompletableFuture.completedFuture(new CallCommandService.Authority(call,tokens.get(call),1,"TEST_ONLY_VERIFIED"));},(c,s,p)->p.equals("TEST_ONLY_VERIFIED"));
+            commands=new CallCommandService(runtime.sql,"c001",1,c->{var call=c.callId();return CompletableFuture.completedFuture(new CallCommandService.Authority(call,tokens.get(call),1,"TEST_ONLY_VERIFIED"));},(c,s,p)->p.equals("TEST_ONLY_VERIFIED")).businessAdmission(()->true);
         }
         Connection connection()throws Exception{return DriverManager.getConnection(url,PgFixture.PG.getUsername(),PgFixture.PG.getPassword());}
         AuthenticatedSession sender(String prefix){var p=new AuthPrincipal(new UserId(prefix+UUID.randomUUID()),new SessionKey("TEST_ONLY",UUID.randomUUID().toString()),Instant.now().plusSeconds(600),Instant.now(),"test-key",1);var r=sessions.registerSession(p,boot,UUID.randomUUID(),1).toCompletableFuture().join();return new AuthenticatedSession(r.user(),r.key(),r.incarnation(),r.connectionGeneration(),r.connectionId());}

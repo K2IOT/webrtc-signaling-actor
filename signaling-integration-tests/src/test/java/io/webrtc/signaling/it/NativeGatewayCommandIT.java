@@ -44,7 +44,7 @@ class NativeGatewayCommandIT {
             CallAuthorizationPolicy policy=request->policyMode.get()==1?CallAuthorizationPolicy.openAuthenticated("TEST_ONLY_POLICY",Duration.ofSeconds(2)).authorize(request):policyMode.get()==0?CompletableFuture.completedFuture(AuthorizationDecision.denied()):CompletableFuture.failedFuture(new IllegalStateException("TEST_ONLY_DEPENDENCY_OUTAGE"));
             var operations=new NativeSessionOperations(registry,verifier,Clock.systemUTC(),proofs.sessionProofs(),()->true,policy);
             var sessionHandler=new NativeSessionHandler("c001",1,(peer,gateway)->gateway.gatewayId().equals("gw-1"),operations);
-            var commands=new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)));
+            var commands=new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1))).businessAdmission(()->true);
             var actors=new RpcBusinessHandler.ActorIngress(){
                 final Map<CallId,ActorRef<CallMessage>> running=new ConcurrentHashMap<>();
                 public void stopFixtureOwner(CallId call){kit.stop(running.get(call));org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->!running.containsKey(call));}
@@ -57,7 +57,7 @@ class NativeGatewayCommandIT {
                     return new RpcOperation<>(ask.logical(),ask.physicalCompletion());
                 }
             };
-            var backend=new RpcBusinessHandler("c001",actors,bindings,proofs,u->new ProofBindings.TrustedHome("c001",1,1),read->{throw new AssertionError();},relay->{throw new AssertionError();},Clock.systemUTC()).nativeReads(new NativeSnapshotReads(commands));
+            var backend=new RpcBusinessHandler("c001",actors,bindings,proofs,u->new ProofBindings.TrustedHome("c001",1,1),read->{throw new AssertionError();},relay->{throw new AssertionError();},Clock.systemUTC()).businessAdmission(()->true).nativeReads(new NativeSnapshotReads(commands));
             try(verifier;
                 var server=new CellRpcServer("c001","test",0,RpcTlsContexts.server("test","c001",cert("ca.crt"),cert("server.crt"),cert("server.key")),new RpcAdmission(16,1024*1024,16,1024*1024),backend,event->{throw new AssertionError();}).sessions(sessionHandler).start();
                 var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("gateway.crt"),cert("gateway.key")),new RpcAdmission(16,1024*1024,16,1024*1024));

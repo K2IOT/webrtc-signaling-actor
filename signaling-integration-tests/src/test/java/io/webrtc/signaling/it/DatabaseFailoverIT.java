@@ -44,7 +44,7 @@ class DatabaseFailoverIT {
             var callerRoute=sessions.registerSession(SessionAuthReadIT.principal(oldCaller),boot,UUID.randomUUID(),1).toCompletableFuture().join();sessions.registerSession(SessionAuthReadIT.principal(oldCallee),boot,UUID.randomUUID(),1).toCompletableFuture().join();
             var sender=new AuthenticatedSession(callerRoute.user(),callerRoute.key(),callerRoute.incarnation(),callerRoute.connectionGeneration(),callerRoute.connectionId());
             var call=CallId.create("c001",1);var roots=new GroupOwnerRepository(f.runtime.sql,"c001",2);var token=CoordinatorGrantIT.done(roots.acquireTracked(HomeParticipationService.group(call),"TEST_ONLY_NEW_ROUTING",UUID.randomUUID(),UUID.randomUUID())).orElseThrow().token();
-            var commands=new CallCommandService(f.runtime.sql,"c001",2,1,c->{throw new AssertionError();},(command,snapshot,proof)->proof.equals("TEST_ONLY"),null);
+            var commands=new CallCommandService(f.runtime.sql,"c001",2,1,c->{throw new AssertionError();},(command,snapshot,proof)->proof.equals("TEST_ONLY"),null).businessAdmission(()->true);
             var invite=new io.webrtc.signaling.protocol.CallCommand(io.webrtc.signaling.protocol.SignalEnvelope.Type.INVITE,sender,new RequestId(UUID.randomUUID()),call,CommandScope.invite(),callee.userId(),null,null,"{}","a".repeat(64));
             var outcome=CoordinatorGrantIT.done(commands.executeUnderAuthorityTracked(invite,new CallCommandService.Authority(call,token,1,"TEST_ONLY",0,new CallCommandService.TargetHome("c001",1)),Duration.ofSeconds(2)));
             assertThat(outcome.callId().routingEpoch()).isEqualTo(1);assertThat(outcome.status()).isEqualTo("FINAL");assertThat(outcome.state()).isEqualTo("RINGING");

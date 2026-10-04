@@ -15,7 +15,7 @@ class NegotiationGrantIT {
         for(var step:List.of(CallWorkflowService.Step.ACCEPT,CallWorkflowService.Step.ACTIVATE,CallWorkflowService.Step.READY))done(workflow.apply(new CallWorkflowService.Transition(call,group,1,version++,UUID.randomUUID(),step,winner,List.of(),activation,Instant.now().plusSeconds(5),Instant.now().plusSeconds(30),"TEST_ONLY",null),Duration.ofSeconds(2)));
         return call;
     }
-    static CallCommandService commands(LocalInviteAtomicIT.Fixture f,AuthenticatedSession recipient){return new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},(c,s,p)->p.equals("TEST_ONLY"),(c,command,s,p)->new CallCommandService.NegotiationEvidence(recipient,Instant.now().plusSeconds(4),Instant.now().plusSeconds(30)));}
+    static CallCommandService commands(LocalInviteAtomicIT.Fixture f,AuthenticatedSession recipient){return new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},(c,s,p)->p.equals("TEST_ONLY"),(c,command,s,p)->new CallCommandService.NegotiationEvidence(recipient,Instant.now().plusSeconds(4),Instant.now().plusSeconds(30))).businessAdmission(()->true);}
     @Test void firstRoundIsCallerOnlyAndCommittedMetadataHasNoSdpBody()throws Exception{
         try(var f=new LocalInviteAtomicIT.Fixture()){var caller=f.sender("neg-caller");var callee=f.sender("neg-callee");var call=ready(f,caller,callee);var context=new CallCommandService.Authority(call,f.token(call),1,"TEST_ONLY",4);
             assertThatThrownBy(()->done(commands(f,caller).executeUnderAuthorityTracked(request(callee,call),context,Duration.ofSeconds(2)))).hasCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
