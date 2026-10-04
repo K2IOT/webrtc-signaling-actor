@@ -1,0 +1,48 @@
+# Requested envelope; only observed evidence can qualify it.
+scenarioVersion: 1
+name: p2-skew-burst
+durationSeconds: 3600
+transport:
+  scheme: wss
+  tlsMinimum: TLSv1.3
+  jwtAlgorithm: RS256
+  hostnameVerification: true
+distributed:
+  uniqueSourceIps: true
+  deterministicRanges: true
+stages:
+- 10000
+- 100000
+- 200000
+- 1000000
+- 10000000
+targets:
+  distinctUsers: 8000000
+  sockets: 10000000
+  callAttemptsPerSecond: 10000
+  establishedCalls: 3000000
+  meanCallSeconds: 300
+  inboundSetupFramesPerSecond: 500000
+  registrationsPerSecond: 20000
+  crossCellRatio: 0.98
+  heartbeatSeconds: 30
+  refreshSeconds: 300
+measurements:
+  latencyClock: intendedArrivalMonotonic
+  percentiles:
+  - 50
+  - 95
+  - 99
+  - 99.9
+  generatorHeadroom:
+  - cpu
+  - nic
+  - fd
+  - eventLoop
+  - pendingOperations
+  - pendingBytes
+burst:
+  multiplier: 2
+  seconds: 60
+  hotDestinationMultiplier: 5
+  hotBucketMultiplier: 5

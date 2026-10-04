@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "candidateId": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{4}-[0-9a-f]{7}-[0-9a-f]{12}$"
+    },
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "imageDigests": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "configurationFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "compatibilityFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "testOnly": {
+      "type": "boolean"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workerIndex": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workerCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    },
+    "sourceIps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "localSocketLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200000
+    },
+    "eventLoops": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "maxPendingOperations": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "maxPendingBytes": {
+      "type": "integer",
+      "minimum": 81920,
+      "maximum": 268435456
+    },
+    "maxIdentityBytes": {
+      "type": "integer",
+      "minimum": 16384,
+      "maximum": 1073741824
+    },
+    "connectsPerSecond": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20000
+    },
+    "tlsCaFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1
+    },
+    "maximumJwtLifetimeSeconds": {
+      "type": "integer",
+      "minimum": 6,
+      "maximum": 86400
+    },
+    "publicKeys": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "identitiesFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "refreshIdentitiesFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cell": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,23}$"
+          },
+          "url": {
+            "type": "string",
+            "pattern": "^wss://"
+          }
+        },
+        "required": [
+          "cell",
+          "url"
+        ]
+      }
+    },
+    "userPrefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "generatorCpuLimit": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 0.8
+    },
+    "workerHostId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nicCapacityBytesPerSecond": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stageSockets": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000000
+    },
+    "directoryFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "directorySnapshotHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "offerSdpFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "answerSdpFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "iceCandidatesFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mediaMode": {
+      "type": "string",
+      "enum": [
+        "SIGNALING_EMULATED"
+      ]
+    },
+    "scheduledStartAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20
+    }
+  },
+  "required": [
+    "candidateId",
+    "gitCommit",
+    "imageDigests",
+    "configurationFingerprint",
+    "compatibilityFingerprint",
+    "testOnly",
+    "seed",
+    "workerIndex",
+    "workerCount",
+    "sourceIps",
+    "localSocketLimit",
+    "eventLoops",
+    "maxPendingOperations",
+    "maxPendingBytes",
+    "maxIdentityBytes",
+    "connectsPerSecond",
+    "tlsCaFile",
+    "issuer",
+    "audience",
+    "maximumJwtLifetimeSeconds",
+    "publicKeys",
+    "identitiesFile",
+    "refreshIdentitiesFile",
+    "endpoints",
+    "userPrefix",
+    "generatorCpuLimit",
+    "workerHostId",
+    "nicCapacityBytesPerSecond",
+    "stageSockets",
+    "directoryFile",
+    "directorySnapshotHash",
+    "offerSdpFile",
+    "answerSdpFile",
+    "iceCandidatesFile",
+    "mediaMode",
+    "scheduledStartAt"
+  ]
+}

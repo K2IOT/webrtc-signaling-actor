@@ -1,0 +1,43 @@
+# Requested envelope; only observed evidence can qualify it.
+scenarioVersion: 1
+name: p1-baseline
+durationSeconds: 3600
+transport:
+  scheme: wss
+  tlsMinimum: TLSv1.3
+  jwtAlgorithm: RS256
+  hostnameVerification: true
+distributed:
+  uniqueSourceIps: true
+  deterministicRanges: true
+stages:
+- 10000
+- 100000
+- 200000
+- 1000000
+- 10000000
+targets:
+  distinctUsers: 8000000
+  sockets: 10000000
+  callAttemptsPerSecond: 1000
+  establishedCalls: 300000
+  meanCallSeconds: 300
+  inboundSetupFramesPerSecond: 50000
+  registrationsPerSecond: 2000
+  crossCellRatio: 0.98
+  heartbeatSeconds: 30
+  refreshSeconds: 300
+measurements:
+  latencyClock: intendedArrivalMonotonic
+  percentiles:
+  - 50
+  - 95
+  - 99
+  - 99.9
+  generatorHeadroom:
+  - cpu
+  - nic
+  - fd
+  - eventLoop
+  - pendingOperations
+  - pendingBytes

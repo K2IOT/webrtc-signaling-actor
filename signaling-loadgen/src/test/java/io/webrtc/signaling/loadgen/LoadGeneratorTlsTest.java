@@ -1,0 +1,45 @@
+package io.webrtc.signaling.loadgen;
+
+import static org.assertj.core.api.Assertions.*;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.websocketx.*;
+import io.netty.handler.ssl.*;
+import io.webrtc.signaling.auth.*;
+import com.fasterxml.jackson.databind.*;
+import java.io.File;
+import java.net.*;
+import java.security.*;
+import java.security.interfaces.RSAPublicKey;
+import java.nio.charset.StandardCharsets;
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import org.junit.jupiter.api.Test;
+
+/** Real test-only TLS and signed issuer identities. This fixture is never release evidence. */
+class LoadGeneratorTlsTest {
+    static final ObjectMapper JSON=new ObjectMapper();
+    static File cert(String name)throws Exception{return new File(Objects.requireNonNull(LoadGeneratorTlsTest.class.getResource("/test-only-pki/"+name)).toURI());}
+    static String token(KeyPair keys)throws Exception {
+        var encode=Base64.getUrlEncoder().withoutPadding();long now=Instant.now().getEpochSecond();String header=encode.encodeToString("{\"alg\":\"RS256\",\"kid\":\"test\"}".getBytes(StandardCharsets.UTF_8));String body=encode.encodeToString(JSON.writeValueAsBytes(Map.of("iss","TEST_ONLY_ISSUER","aud","TEST_ONLY_AUDIENCE","userId","test-user","jti","test-jti","iat",now,"exp",now+600)));var signature=Signature.getInstance("SHA256withRSA");signature.initSign(keys.getPrivate());signature.update((header+"."+body).getBytes(StandardCharsets.US_ASCII));return header+"."+body+"."+encode.encodeToString(signature.sign());
+    }
+    @Test void genuineWssValidatesRs256AndMeasuresIntendedArrivalThenRejectsWrongHostname()throws Exception {
+        var keygen=KeyPairGenerator.getInstance("RSA");keygen.initialize(2048);var keys=keygen.generateKeyPair();String jwt=token(keys);
+        var verifier=new Rs256TokenVerifier(new IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofHours(1),Duration.ZERO,Duration.ofSeconds(4),Duration.ofSeconds(5),true,"TEST_ONLY_SOURCE"),new TrustedRsaKeys(Map.of("test",(RSAPublicKey)keys.getPublic()),null,Duration.ofSeconds(1)),8192);
+        var serverTls=SslContextBuilder.forServer(cert("server.crt"),cert("server.key")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();var clientTls=SslContextBuilder.forClient().trustManager(cert("ca.crt")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
+        var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);var sources=new NioEventLoopGroup(1);var calls=new AtomicInteger();var pings=new AtomicInteger();var evidence=new EvidenceWriter();var credits=new VirtualClient.Credits(4,327680);var clients=new ArrayList<VirtualClient>();Channel server=null;
+        try {
+            server=new ServerBootstrap().group(boss,children).channel(NioServerSocketChannel.class).childHandler(new ChannelInitializer<Channel>(){protected void initChannel(Channel c){c.pipeline().addLast(serverTls.newHandler(c.alloc()),new HttpServerCodec(),new HttpObjectAggregator(81920),new ChannelInboundHandlerAdapter(){@Override public void channelRead(ChannelHandlerContext ctx,Object frame){if(frame instanceof PingWebSocketFrame)pings.incrementAndGet();ctx.fireChannelRead(frame);}},new WebSocketServerProtocolHandler(WebSocketServerProtocolConfig.newBuilder().websocketPath("/ws").dropPongFrames(false).maxFramePayloadLength(81920).build()),new SimpleChannelInboundHandler<TextWebSocketFrame>(){protected void channelRead0(ChannelHandlerContext ctx,TextWebSocketFrame frame)throws Exception {var body=JSON.readTree(frame.text());if(body.path("type").asText().equals("AUTH")){assertThat(verifier.validate(body.path("payload").path("token").asText(),Instant.now()).userId().value()).isEqualTo("test-user");ctx.writeAndFlush(new TextWebSocketFrame("{\"v\":1,\"type\":\"AUTH_OK\",\"connectionGeneration\":\"1\"}"));}else{calls.incrementAndGet();ctx.writeAndFlush(new TextWebSocketFrame(JSON.createObjectNode().put("v",1).put("type","ACK_COMMITTED").put("requestId",body.path("requestId").asText()).put("ackCommitted",true).toString()));}}});}}).bind("127.0.0.1",0).sync().channel();int port=((InetSocketAddress)server.localAddress()).getPort();
+            var client=new VirtualClient(0,"test-user","c001",URI.create("wss://localhost:"+port+"/ws"),new InetSocketAddress("127.0.0.1",0),clientTls,sources,credits,evidence,()->jwt,(c,e)->{});clients.add(client);
+            assertThat(client.connect(System.nanoTime()).toCompletableFuture().get(6,TimeUnit.SECONDS).path("type").asText()).isEqualTo("AUTH_OK");assertThat(client.authenticated()).isTrue();
+            var request=JSON.createObjectNode().put("v",1).put("type","INVITE").put("requestId",UUID.randomUUID().toString());request.putObject("payload").put("targetUserId","test-callee");client.request(request,System.nanoTime()-100_000_000L,EvidenceWriter.Operation.INVITE).toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(calls).hasValue(1);assertThat(evidence.percentileMillis(99.9)).isGreaterThanOrEqualTo(100);client.heartbeat();for(int n=0;n<100&&pings.get()==0;n++)Thread.sleep(10);assertThat(pings).hasValue(1);
+            var wrong=new VirtualClient(1,"test-user","c001",URI.create("wss://127.0.0.1:"+port+"/ws"),new InetSocketAddress("127.0.0.1",0),clientTls,sources,credits,evidence,()->jwt,(c,e)->{});clients.add(wrong);assertThatThrownBy(()->wrong.connect(System.nanoTime()).toCompletableFuture().get(6,TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class);assertThat(wrong.authenticated()).isFalse();
+        }finally{for(var client:clients)client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();sources.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+        assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
+    }
+}

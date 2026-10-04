@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "candidateId": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{4}-[0-9a-f]{7}-[0-9a-f]{12}$"
+    },
+    "workerHostId": {
+      "type": "string"
+    },
+    "workerIndex": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workerCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "gitCommit": {
+      "type": "string"
+    },
+    "imageDigests": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "configurationFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "compatibilityFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "scenarioHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "configHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "testOnly": {
+      "type": "boolean"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "PASSED",
+        "FAILED",
+        "GENERATOR_LIMITED"
+      ]
+    },
+    "scenario": {
+      "type": "string"
+    },
+    "requestedTargets": {
+      "type": "object"
+    },
+    "observed": {
+      "type": "object"
+    },
+    "rawHistogram": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generatorSamples": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "socketRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ]
+    }
+  },
+  "required": [
+    "candidateId",
+    "workerHostId",
+    "workerIndex",
+    "workerCount",
+    "gitCommit",
+    "imageDigests",
+    "configurationFingerprint",
+    "compatibilityFingerprint",
+    "scenarioHash",
+    "configHash",
+    "seed",
+    "testOnly",
+    "startedAt",
+    "finishedAt",
+    "status",
+    "scenario",
+    "requestedTargets",
+    "observed",
+    "rawHistogram",
+    "generatorSamples",
+    "failures",
+    "socketRange"
+  ]
+}
