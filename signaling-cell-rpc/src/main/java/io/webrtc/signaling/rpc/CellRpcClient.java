@@ -15,9 +15,10 @@ public final class CellRpcClient implements AutoCloseable {
     private final ExecutorService callbacks=new ThreadPoolExecutor(4,4,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(256),Thread.ofPlatform().daemon().name("cell-rpc-client-",0).factory(),new ThreadPoolExecutor.AbortPolicy());
     /** Test-only raw context adapter; production supplies cell-bound handshake verification. */
     CellRpcClient(Map<String,Endpoint> destinations,SslContext tls,RpcAdmission admission){this("test",destinations,cell->tls,admission);}
-    public CellRpcClient(String environment,Map<String,Endpoint> destinations,RpcTlsContexts.ClientTls tls,RpcAdmission admission){if(environment==null||!environment.matches("[a-z0-9-]{1,32}")||destinations.isEmpty()||destinations.size()>50||destinations.keySet().stream().anyMatch(c->!c.matches("[a-z][a-z0-9-]{0,23}")))throw new IllegalArgumentException("Invalid bounded destination topology");this.environment=environment;this.destinations=Map.copyOf(destinations);this.tls=Objects.requireNonNull(tls);this.admission=Objects.requireNonNull(admission);}
+    public CellRpcClient(String environment,Map<String,Endpoint> destinations,RpcTlsContexts.ClientTls tls,RpcAdmission admission){if(environment==null||!environment.matches("[a-z0-9-]{1,32}")||destinations.isEmpty()||destinations.size()>50||destinations.keySet().stream().anyMatch(c->!c.matches("[a-z][a-z0-9-]{0,23}")))throw new IllegalArgumentException("Invalid bounded destination topology");this.environment=environment;this.destinations=Map.copyOf(destinations);this.tls=Objects.requireNonNull(tls);this.admission=Objects.requireNonNull(admission);retryTimers.setRemoveOnCancelPolicy(true);}
     public int channelCount(){return channels.size();}
     private synchronized ManagedChannel channel(String cell,RpcAdmission.Lane lane){if(closed)throw new IllegalStateException("RPC client draining");Endpoint endpoint=destinations.get(cell);if(endpoint==null)throw new IllegalArgumentException("Unknown destination");return channels.computeIfAbsent(new ChannelKey(cell,lane),key->NettyChannelBuilder.forAddress(endpoint.host(),endpoint.port()).overrideAuthority(endpoint.tlsAuthority()).sslContext(tls.context(cell)).disableRetry().maxInboundMessageSize(98304).executor(callbacks).intercept(new ClientInterceptor(){@Override public <Q,A> ClientCall<Q,A> interceptCall(MethodDescriptor<Q,A> method,CallOptions options,Channel next){var delegate=next.newCall(method,options);return new ForwardingClientCall.SimpleForwardingClientCall<>(delegate){@Override public void start(ClientCall.Listener<A> listener,Metadata headers){super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(listener){boolean rejected;@Override public void onHeaders(Metadata metadata){var peer=RpcTlsIdentity.extract(delegate.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION),environment);if(peer==null||!peer.cell().equals(cell)||!peer.role().equals("actor")){rejected=true;delegate.cancel("UNAUTHORIZED",null);}else super.onHeaders(metadata);}@Override public void onMessage(A message){if(!rejected)super.onMessage(message);}@Override public void onClose(Status status,Metadata trailers){super.onClose(rejected?Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"):status,trailers);}},headers);}};}}).build());}
+    private final ScheduledThreadPoolExecutor retryTimers=new ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("cell-rpc-retry").factory());
     private final Set<Flight<?>> active = new HashSet<>();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private final class Flight<T> {
@@ -84,10 +85,18 @@ public final class CellRpcClient implements AutoCloseable {
                 if (!terminal.compareAndSet(false, true)) return;
                 try {
                     var code = Status.fromThrowable(failure).getCode();
-                    if (!received && code == Status.Code.UNAVAILABLE && attempt < 2 && end - System.nanoTime() > 0) {
-                        try { CellRpcClient.this.attempt(op, original, end, attempt + 1, lane, flight); }
-                        catch (RuntimeException rejected) { flight.logical.complete(error(original, "OUTCOME_UNKNOWN")); }
-                    } else flight.logical.complete(error(original, code == Status.Code.PERMISSION_DENIED || code == Status.Code.UNAUTHENTICATED ? "UNAUTHORIZED" : "OUTCOME_UNKNOWN"));
+                    var delay=!received&&code==Status.Code.UNAVAILABLE&&!closed
+                        ?RpcRetryBackoff.delayNanos(attempt,ThreadLocalRandom.current().nextDouble(),end-System.nanoTime()):OptionalLong.empty();
+                    if(delay.isPresent()){
+                        // Retain the original ticket across the delayed dispatch as well as every transport stream.
+                        flight.opened();
+                        try{retryTimers.schedule(()->{
+                            try{CellRpcClient.this.attempt(op,original,end,attempt+1,lane,flight);}
+                            catch(RuntimeException rejected){flight.logical.complete(error(original,"OUTCOME_UNKNOWN"));}
+                            finally{flight.ended();}
+                        },delay.getAsLong(),TimeUnit.NANOSECONDS);}
+                        catch(RejectedExecutionException notStarted){flight.logical.complete(error(original,"OUTCOME_UNKNOWN"));flight.ended();}
+                    }else flight.logical.complete(error(original,code==Status.Code.PERMISSION_DENIED||code==Status.Code.UNAUTHENTICATED?"UNAUTHORIZED":"OUTCOME_UNKNOWN"));
                 } finally { flight.ended(); }
             }
         };
@@ -151,7 +160,7 @@ public final class CellRpcClient implements AutoCloseable {
         if (!closed) {
             closed = true;
             channels.values().forEach(ManagedChannel::shutdown);
-            drained.whenComplete((v, e) -> callbacks.shutdown());
+            drained.whenComplete((v,e)->{callbacks.shutdown();retryTimers.shutdown();});
             if (active.isEmpty()) drained.complete(null);
         }
         return drained.minimalCompletionStage();

@@ -86,6 +86,15 @@ class NativeGatewayCommandIT {
                 var callLookup=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,cancel.requestId(),call,CommandScope.call(call),null,null,null,"{}","d".repeat(64));
                 var terminalResult=retryTransient(gateway,callLookup,route);
                 assertThat(terminalResult.path("type").asText()).as("native result: %s",terminalResult).isEqualTo("COMMAND_RESULT");assertThat(terminalResult.path("ackCommitted").asBoolean()).isFalse();assertThat(terminalResult.path("result").path("state").asText()).isEqualTo("TERMINAL");
+                var syncCommand=new CallCommand(SignalEnvelope.Type.SYNC_CALL,sender,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","e".repeat(64));
+                var snapshot=retryTransient(gateway,syncCommand,route);
+                assertThat(snapshot.path("type").asText()).as("native snapshot: %s",snapshot).isEqualTo("CALL_SNAPSHOT");
+                assertThat(snapshot.path("result").path("deadlines").isObject()).isTrue();
+                assertThat(snapshot.path("result").path("caller").path("jti").asText()).isEqualTo(sender.key().jti());
+                assertThat(snapshot.path("result").path("caller").path("connectionGeneration").asText()).isEqualTo("1");
+                assertThat(snapshot.path("result").path("code").asText()).isEqualTo("TERMINAL");
+                assertThat(snapshot.path("iceGeneration").asText()).isEqualTo("0");
+                assertThat(snapshot.path("result").path("resetPeerConnection").asBoolean()).isFalse();
                 var absent=new CallCommand(callLookup.type(),sender,new RequestId(UUID.randomUUID()),call,callLookup.scope(),null,null,null,"{}",callLookup.intentHash());
                 var missing=retryTransient(gateway,absent,route);assertThat(missing.path("error").path("code").asText()).isEqualTo("RESULT_EXPIRED");
                 var lookup=new CallCommand(SignalEnvelope.Type.GET_COMMAND_RESULT,sender,request,null,CommandScope.invite(),null,null,null,"{}","b".repeat(64));

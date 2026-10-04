@@ -31,6 +31,13 @@ class LoadGeneratorContractTest {
     @Test void lateCloseOfOldSocketCannotSubtractAReauthenticatedConnection(){
         var gauge=new ScenarioRunner.SocketGauge();gauge.authenticated(1,1);gauge.authenticated(1,1);assertThat(gauge.live()).isEqualTo(1);gauge.closed(1,1);assertThat(gauge.live()).isZero();gauge.authenticated(1,2);gauge.closed(1,1);assertThat(gauge.live()).isEqualTo(1);assertThat(gauge.peak()).isEqualTo(1);gauge.closed(1,2);assertThat(gauge.live()).isZero();
     }
+    @Test void syncUsesTypedNativeRoundIdsWithoutSearchingSerializedDeadlineMetadata()throws Exception {
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        var reply=json.readTree("{\"negotiationId\":\"7\",\"iceGeneration\":\"9\",\"result\":{\"deadlines\":{\"negotiationUntil\":\"2026-10-04T00:00:20Z\"}}}");
+        var ids=ScenarioRunner.roundIds(reply).orElseThrow();assertThat(ids.negotiation()).isEqualTo("7");assertThat(ids.ice()).isEqualTo("9");
+        assertThat(ScenarioRunner.roundIds(json.readTree("{\"negotiationId\":\"0\",\"iceGeneration\":\"0\"}"))).isEmpty();
+        assertThatThrownBy(()->ScenarioRunner.roundIds(json.readTree("{\"negotiationId\":\"1\",\"iceGeneration\":\"0\"}"))).isInstanceOf(IllegalArgumentException.class);
+    }
     @Test void creditBoundCountsBytesAndRetainsExactlyOneCompletionOwner(){
         var credits=new VirtualClient.Credits(2,100);var first=credits.acquire(70);assertThat(first).isNotNull();assertThat(credits.acquire(31)).isNull();var second=credits.acquire(30);assertThat(second).isNotNull();assertThat(credits.acquire(1)).isNull();first.close();first.close();assertThat(credits.count()).isEqualTo(1);assertThat(credits.bytes()).isEqualTo(30);second.close();assertThat(credits.bytes()).isZero();
     }
