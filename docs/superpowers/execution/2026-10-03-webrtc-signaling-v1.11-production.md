@@ -20,7 +20,8 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 17 | Complete local verification | Native reconnect/media deadlines, current-session proofs and terminal reads; 242 reactor tests pass |
 | 18 | Complete local verification | Native bounded workers, authenticated catch-up and opaque privacy deletion; storage reactor passes |
 | 19 | Complete local verification | Privacy-safe logs/traces, enum metrics, four recovery SLIs, validated dashboards / Prometheus rules |
-| 20–24 | In progress / pending | Production runtime/deployment and qualification |
+| 20 | Complete deployment contracts | Rendered Helm object semantics / unsafe overrides / lint; no deployed HA qualification |
+| 21–24 | In progress / pending | Lifecycle, complete native runtime composition and qualification |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
@@ -84,3 +85,5 @@ Task 17 full clean selected reactor: **242 tests, zero failures/errors/skips**. 
 Task 18 full clean storage reactor: **114 tests, zero failures/errors/skips**, including ten MaintenanceWorkersIT cases. Lost hints and expired claims recover from the native outbox; verified application receipt is distinct from WRITE_COMPLETED. Worker chains wait for real cleanup before replacing SQL work. Bounded index pagination, live-origin / 24h retention, authenticated security high-water, existing-session key retirement, native route-loss reads and HMAC privacy detachment pass. Production schedulers, authenticated source adapters and private negative-proof consumers remain explicit Task 20 composition.
 
 Task 19 clean app reactor: **63 tests, zero failures/errors/skips**. Seven telemetry contracts test redaction, production Logback formatting, enum dimensions, distinct recovery eligibility and real Prometheus control/relay histograms. Quantiles use aggregable histogram_quantile queries (Micrometer omits client-side summaries when histograms are enabled). Actual promtool3.6.0 validates the burn-rate/recovery/revocation rules. Runtime producer adapters and measured qualification remain Tasks20–24.
+
+Task 20 deployment contract passes with pinned Helm3.19 and actual resolved amd64 CNPG1.27/PG17.6 digests. Required cross-AZ synchronous durability, private discovery/management, quorum PDB, least-privilege RBAC and bounded JVM/native resources are rendered and validated. **Native producer/runtime composition remains open** and is carried into Task22 native end-to-end fault tests, which consume all modules; no application or HA release qualification is implied by chart validation.
