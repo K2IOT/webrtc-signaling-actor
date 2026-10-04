@@ -1,0 +1,33 @@
+# Apply in the dedicated directory namespace. Only explicitly enrolled control-plane namespaces can connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: signaling-directory-authority
+spec:
+  podSelector:
+    matchLabels: {cnpg.io/cluster: signaling-directory-authority}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: signaling-directory-authority}
+        - namespaceSelector:
+            matchLabels: {signaling.directory-client: 'true'}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: webrtc-signaling, app.kubernetes.io/component: control}
+      ports: [{protocol: TCP, port: 5432}]
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: cnpg-system}
+      ports: [{protocol: TCP, port: 8000}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: signaling-directory-authority}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

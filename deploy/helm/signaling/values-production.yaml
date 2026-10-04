@@ -1,0 +1,36 @@
+cell: ''
+configurationFingerprint: ''
+image:
+  repository: ''
+  digest: ''
+runtime:
+  secretName: ''
+  identityIssuer: ''
+  identityAudience: ''
+actor:
+  replicas: 6
+  terminationGraceSeconds: 90
+  minAvailable: 4
+  maxSurge: 1
+  formationProfile: join-only
+gateway:
+  replicas: 6
+  terminationGraceSeconds: 300
+  minAvailable: 4
+  maxSurge: 1
+control:
+  replicas: 3
+  terminationGraceSeconds: 90
+  minAvailable: 2
+  maxSurge: 1
+resources:
+  requests: {cpu: '2', memory: 4Gi}
+  limits: {cpu: '2', memory: 4Gi}
+javaOptions: '-Xms1536m -Xmx1536m -XX:MaxDirectMemorySize=1024m -XX:+ExitOnOutOfMemoryError'
+network:
+  kubernetesApiCidr: ''
+  authorityCidrs: []
+  platformCidrs: []
+  peerActorCidrs: []
+  edgeNamespace: ''
+  monitoringNamespace: ''

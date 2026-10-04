@@ -1,0 +1,17 @@
+# TEST_ONLY rendering input. This is not an image, PKI or infrastructure qualification.
+image:
+  repository: example.invalid/test-only-signaling
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+cell: c001
+configurationFingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+runtime:
+  secretName: test-only-runtime-contract
+  identityIssuer: https://identity.example.invalid
+  identityAudience: test-only-signaling
+network:
+  kubernetesApiCidr: 192.0.2.10/32
+  authorityCidrs: [192.0.2.16/28]
+  platformCidrs: [198.51.100.16/28]
+  peerActorCidrs: [203.0.113.16/28]
+  edgeNamespace: test-only-edge
+  monitoringNamespace: test-only-monitoring

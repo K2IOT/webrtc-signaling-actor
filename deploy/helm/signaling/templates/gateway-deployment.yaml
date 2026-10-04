@@ -1,0 +1,2 @@
+{{- include "signaling.validate" . -}}
+{{ include "signaling.deployment" (dict "root" . "component" "gateway") }}

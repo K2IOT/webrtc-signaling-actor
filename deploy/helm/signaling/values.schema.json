@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "properties": {
+    "resources": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "const": "2"
+            },
+            "memory": {
+              "const": "4Gi"
+            }
+          },
+          "required": [
+            "cpu",
+            "memory"
+          ],
+          "additionalProperties": false
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "const": "2"
+            },
+            "memory": {
+              "const": "4Gi"
+            }
+          },
+          "required": [
+            "cpu",
+            "memory"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "requests",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "javaOptions": {
+      "const": "-Xms1536m -Xmx1536m -XX:MaxDirectMemorySize=1024m -XX:+ExitOnOutOfMemoryError"
+    }
+  }
+}

@@ -21,8 +21,8 @@ testcontainers: 1.21.3
 toxiproxy: 2.12.0
 containers:
   javaBase: eclipse-temurin:21.0.8_9-jre-jammy
-  postgres: ghcr.io/cloudnative-pg/postgresql:17.6
-  cloudNativePg: ghcr.io/cloudnative-pg/cloudnative-pg:1.27.0
+  postgres: ghcr.io/cloudnative-pg/postgresql:17.6@sha256:b6b76792061813539ff3c082a41e5e9e8e526b64c495119b7e2d92c80999a7f3
+  cloudNativePg: ghcr.io/cloudnative-pg/cloudnative-pg:1.27.0@sha256:3d9da468ac1df63e38ce8def562f8cfb7f4d703e2e41782991d45c7acd33fd5a
 kubernetes: 1.33.5
 helm: 3.19.0
 publicProtocol: webrtc-signaling.v1
@@ -33,3 +33,7 @@ ownershipHashVersion: 1
 observabilityValidation:
   prometheus: 3.6.0
   prometheusImage: prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
+
+deploymentValidation:
+  helmImage: alpine/helm@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9
+  imageArchitecture: linux/amd64

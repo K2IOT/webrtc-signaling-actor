@@ -1,0 +1,58 @@
+# Candidate topology; capacity and failover are NOT_QUALIFIED. Install the pinned operator first.
+# External TLS/credentials must already exist. Annotation is a requirement, not fencing evidence.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: signaling-directory-authority
+  annotations:
+    signaling.operator-version: 1.27.0
+    signaling.authority-gate: physical-fencing-and-acknowledged-wal-required
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.6@sha256:b6b76792061813539ff3c082a41e5e9e8e526b64c495119b7e2d92c80999a7f3
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: supervised
+  primaryUpdateMethod: switchover
+  failoverDelay: 30
+  postgresql:
+    parameters:
+      synchronous_commit: 'on'
+      max_connections: '300'
+      log_statement: none
+      log_min_error_statement: panic
+      log_parameter_max_length: '0'
+      log_parameter_max_length_on_error: '0'
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
+    syncReplicaElectionConstraint:
+      enabled: true
+      nodeLabelsAntiAffinity:
+      - topology.kubernetes.io/zone
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: topology.kubernetes.io/zone
+    nodeSelector:
+      kubernetes.io/arch: amd64
+  bootstrap:
+    initdb:
+      database: directory
+      owner: directory
+      secret:
+        name: signaling-directory-authority-credentials
+  certificates:
+    serverTLSSecret: signaling-directory-authority-server-tls
+    serverCASecret: signaling-directory-authority-server-ca
+    clientCASecret: signaling-directory-authority-client-ca
+    replicationTLSSecret: signaling-directory-authority-replication-tls
+  storage:
+    size: 256Gi
+  resources:
+    requests:
+      cpu: '4'
+      memory: 16Gi
+    limits:
+      cpu: '4'
+      memory: 16Gi

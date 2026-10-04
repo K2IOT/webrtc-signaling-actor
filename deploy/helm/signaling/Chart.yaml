@@ -1,0 +1,7 @@
+apiVersion: v2
+name: signaling
+version: 0.1.0
+appVersion: 0.1.0
+kubeVersion: '>=1.33.0-0 <1.34.0-0'
+description: Private, three-AZ native signaling cell; deployment requires an immutable candidate and external trust contract.
+type: application

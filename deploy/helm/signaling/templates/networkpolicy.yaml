@@ -1,0 +1,114 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+{{- range list "actor" "gateway" "control" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ . }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "signaling.labels" (dict "root" $ "component" .) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.network.monitoringNamespace }}}
+      ports: [{protocol: TCP, port: 8559}]
+    {{- if eq . "gateway" }}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.network.edgeNamespace }}}
+      ports: [{protocol: TCP, port: 8443}]
+    {{- else }}
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, signaling.cell: {{ $.Values.cell }}}
+        {{- if eq . "actor" }}
+        {{- range $.Values.network.peerActorCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+        {{- end }}
+      ports: [{protocol: TCP, port: 8443}]
+    {{- end }}
+    {{- if eq . "actor" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" $ "component" "actor") | nindent 14 }}
+      ports: [{protocol: TCP, port: 25520}, {protocol: TCP, port: 8558}]
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        {{- range $.Values.network.authorityCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        {{- range $.Values.network.platformCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}]
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" $ "component" "actor") | nindent 14 }}
+        {{- range $.Values.network.peerActorCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 8443}]
+    {{- if eq . "actor" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" $ "component" "actor") | nindent 14 }}
+      ports: [{protocol: TCP, port: 25520}, {protocol: TCP, port: 8558}]
+    - to:
+        - ipBlock: {cidr: {{ $.Values.network.kubernetesApiCidr }}}
+      ports: [{protocol: TCP, port: 443}]
+    {{- end }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-cell-authority
+spec:
+  podSelector:
+    matchLabels: {cnpg.io/cluster: signaling-cell-authority}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: signaling-cell-authority}
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" . "component" "actor") | nindent 14 }}
+      ports: [{protocol: TCP, port: 5432}]
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: cnpg-system}
+      ports: [{protocol: TCP, port: 8000}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: signaling-cell-authority}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
