@@ -171,4 +171,34 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         self.assertIn('WORKER_SOURCE_BINDING_MISMATCH',errors)
         self.assertIn('WORKER_RAW_SAMPLE_COUNT_MISMATCH',errors)
 
+    def test_worker_samples_reject_duplicate_json_keys(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        line=json.dumps(sample).replace('"cpu": 0.1','"cpu": 0.99, "cpu": 0.1')
+        (self.root/'worker'/'generator.jsonl').write_text(line+'\n')
+        self.assertIn('INVALID_OR_MISSING_WORKER_ARTIFACT',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_samples_cannot_hide_an_unobserved_interval(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        summary['observed']['durationSeconds']=100
+        (self.root/'worker'/'summary.json').write_text(json.dumps(summary))
+        last={**sample,'elapsedNanos':100000000000}
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n'+json.dumps(last)+'\n')
+        self.assertIn('WORKER_RESOURCE_COVERAGE_INCOMPLETE',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_samples_cannot_start_at_the_end_of_the_run(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        summary['observed']['durationSeconds']=100;sample['elapsedNanos']=100000000000
+        (self.root/'worker'/'summary.json').write_text(json.dumps(summary))
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        self.assertIn('WORKER_RESOURCE_COVERAGE_INCOMPLETE',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_elapsed_gap_must_match_the_measured_sample_interval(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        summary['observed']['durationSeconds']=3
+        (self.root/'worker'/'summary.json').write_text(json.dumps(summary))
+        last={**sample,'elapsedNanos':2800000000,'sampleIntervalNanos':100000000}
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n'+json.dumps(last)+'\n')
+        self.assertIn('WORKER_RESOURCE_COVERAGE_INCOMPLETE',verifier.worker_errors(self.root,worker,context,records))
+
 if __name__=='__main__':unittest.main()

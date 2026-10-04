@@ -175,14 +175,17 @@ def hdr_metrics(path):
         return {'count':histogram.get_total_count(),**{name:histogram.get_value_at_percentile(percentile)/1000.0 for name,percentile in (('p50',50),('p95',95),('p99',99),('p999',99.9))}}
     except Exception as invalid:raise ValueError('Raw HDR unavailable or invalid') from None
 
-def _json(path,limit=1048576):
+def _json_value(value):
     def unique(pairs):
         result={}
         for key,value in pairs:
             if key in result:raise ValueError('Duplicate JSON key')
             result[key]=value
         return result
-    return json.loads(_read(path,limit),object_pairs_hook=unique,parse_constant=lambda value:(_ for _ in ()).throw(ValueError('Nonfinite JSON')))
+    return json.loads(value,object_pairs_hook=unique,parse_constant=lambda value:(_ for _ in ()).throw(ValueError('Nonfinite JSON')))
+
+def _json(path,limit=1048576):
+    return _json_value(_read(path,limit))
 
 def resource_headroom(sample):
     if not isinstance(sample,dict):return False
@@ -227,9 +230,13 @@ def worker_errors(root,worker,manifest,records):
                 while line:=stream.readline(8193):
                     count+=1
                     if len(line)>8192 or count>100000:raise ValueError('Worker sample bounds')
-                    sample=json.loads(line,parse_constant=lambda value:(_ for _ in ()).throw(ValueError('Nonfinite sample')))
+                    sample=_json_value(line)
                     elapsed=sample.get('elapsedNanos')
-                    if not resource_headroom(sample) or type(elapsed) is not int or elapsed<previous:errors.append('WORKER_RESOURCE_HEADROOM_NOT_PROVEN')
+                    if not resource_headroom(sample) or type(elapsed) is not int or elapsed<0 or elapsed<previous:errors.append('WORKER_RESOURCE_HEADROOM_NOT_PROVEN')
+                    if type(elapsed) is not int:raise ValueError('Invalid sample clock')
+                    interval=sample.get('sampleIntervalNanos')
+                    gap=elapsed-max(0,previous)
+                    if gap>2250000000 or not number(interval,1,2000000000) or gap>interval+250000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
                     previous=elapsed;last=elapsed
             if count==0 or not number(observed.get('durationSeconds'),1) or last<max(0,observed['durationSeconds']-1)*1000000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
     except Exception:errors.append('INVALID_OR_MISSING_WORKER_ARTIFACT')

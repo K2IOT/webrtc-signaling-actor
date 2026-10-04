@@ -43,4 +43,30 @@ class LoadGeneratorTlsTest {
         assertThat(evidence.attempts()-evidence.successes()).isGreaterThanOrEqualTo(1);
         assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
     }
+    @Test void delayedOldSocketCallbacksCannotCompleteOrFailRequestsOnNewSocket()throws Exception {
+        var serverTls=SslContextBuilder.forServer(cert("server.crt"),cert("server.key")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
+        var clientTls=SslContextBuilder.forClient().trustManager(cert("ca.crt")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
+        var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);var sources=new NioEventLoopGroup(1);
+        var requestSeen=new CountDownLatch(1);var currentPeer=new AtomicReference<Channel>();var closedEvents=new AtomicInteger();
+        var credits=new VirtualClient.Credits(4,327680);VirtualClient client=null;Channel server=null;
+        try {
+            server=new ServerBootstrap().group(boss,children).channel(NioServerSocketChannel.class).childHandler(new ChannelInitializer<Channel>(){protected void initChannel(Channel c){c.pipeline().addLast(serverTls.newHandler(c.alloc()),new HttpServerCodec(),new HttpObjectAggregator(81920),new WebSocketServerProtocolHandler("/ws"),new SimpleChannelInboundHandler<TextWebSocketFrame>(){protected void channelRead0(ChannelHandlerContext ctx,TextWebSocketFrame frame)throws Exception {var body=JSON.readTree(frame.text());if(body.path("type").asText().equals("AUTH")){currentPeer.set(ctx.channel());ctx.writeAndFlush(new TextWebSocketFrame("{\"v\":1,\"type\":\"AUTH_OK\",\"connectionGeneration\":\"1\"}"));}else requestSeen.countDown();}});}}).bind("127.0.0.1",0).sync().channel();
+            int port=((InetSocketAddress)server.localAddress()).getPort();
+            client=new VirtualClient(0,"test-user","c001",URI.create("wss://localhost:"+port+"/ws"),new InetSocketAddress("127.0.0.1",0),clientTls,sources,credits,new EvidenceWriter(),()->"TEST_ONLY",(c,event)->{if(event.path("type").asText().equals("SOCKET_CLOSED"))closedEvents.incrementAndGet();});
+            client.connect(System.nanoTime()).toCompletableFuture().get(6,TimeUnit.SECONDS);
+            var channelField=VirtualClient.class.getDeclaredField("channel");channelField.setAccessible(true);
+            var old=(Channel)channelField.get(client);var context=old.pipeline().lastContext();var handler=(ChannelInboundHandler)context.handler();
+            client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);old.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);
+            client.connect(System.nanoTime()).toCompletableFuture().get(6,TimeUnit.SECONDS);
+            String id=UUID.randomUUID().toString();var request=JSON.createObjectNode().put("v",1).put("type","SYNC_CALL").put("requestId",id);request.putObject("payload");var reply=client.request(request,System.nanoTime(),EvidenceWriter.Operation.SYNC).toCompletableFuture();
+            assertThat(requestSeen.await(3,TimeUnit.SECONDS)).isTrue();int eventsBefore=closedEvents.get();
+            var delayed=new TextWebSocketFrame(JSON.createObjectNode().put("type","ACK_COMMITTED").put("requestId",id).toString());
+            old.eventLoop().submit(()->{try{handler.channelRead(context,delayed);handler.channelInactive(context);}catch(Exception e){throw new RuntimeException(e);}}).get(3,TimeUnit.SECONDS);
+            assertThat(reply).isNotDone();assertThat(client.authenticated()).isTrue();assertThat(closedEvents.get()).isEqualTo(eventsBefore);assertThat(credits.count()).isEqualTo(1);
+            currentPeer.get().writeAndFlush(new TextWebSocketFrame(JSON.createObjectNode().put("type","SNAPSHOT").put("requestId",id).toString())).sync();
+            assertThat(reply.get(3,TimeUnit.SECONDS).path("type").asText()).isEqualTo("SNAPSHOT");
+        }finally{if(client!=null)client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();sources.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+        assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
+    }
+
 }
