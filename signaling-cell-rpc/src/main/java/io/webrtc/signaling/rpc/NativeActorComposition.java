@@ -65,7 +65,9 @@ public final class NativeActorComposition {
     }
     public RpcBusinessHandler backend(NativeSagaEffects.Network network,Function<RpcBusinessHandler.RelayRequest,CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply>> relay){
         var handler=new RpcBusinessHandler(inputs.cell(),ingress,bindings,inputs.proofs(),inputs.homes(),read->{throw new IllegalStateException("Native reads are mandatory");},relay,inputs.clock(),issuer).nativeReads(new NativeSnapshotReads(commands)).businessAdmission(readiness::businessReady);
-        return handler.nativeCritical(new NativeCriticalCommandExecutor(commands,new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock()),ingress,inputs.homes(),inputs.cell(),inputs.storageEpoch(),inputs.clock()));
+        var homeProofs=new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock());
+        return handler.nativeSetup(new NativeSetupCommandExecutor(commands,homeProofs,ingress,network,inputs.homes(),inputs.cell(),inputs.storageEpoch(),inputs.clock()))
+            .nativeCritical(new NativeCriticalCommandExecutor(commands,homeProofs,ingress,inputs.homes(),inputs.cell(),inputs.storageEpoch(),inputs.clock()));
     }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}

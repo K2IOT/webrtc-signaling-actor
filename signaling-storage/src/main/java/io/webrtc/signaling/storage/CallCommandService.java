@@ -241,6 +241,18 @@ public final class CallCommandService {
         if(read.type()!=SignalEnvelope.Type.GET_COMMAND_RESULT||read.callId()==null||!read.scope().equals(CommandScope.call(read.callId())))throw new IllegalArgumentException("Invalid native command result read");
         return sql.submitTracked(DbClass.RECOVERY,budget,c->{authorizedRead(c,read,proof);var stored=results.find(c,read.sender().key(),read.scope(),read.requestId());return stored==null?Optional.empty():Optional.of(outcome(stored));});
     }
+    public record SetupContext(Snapshot snapshot,String originalInviteHash,Outcome durableOutcome) {}
+    /** Authenticated reconciliation read of the original durable setup intent; no live root is needed. */
+    public DbOperation<SetupContext> setupContextAuthorized(CallCommand command,String proof,Duration budget){
+        if(!Set.of(SignalEnvelope.Type.INVITE,SignalEnvelope.Type.ACCEPT).contains(command.type())||command.callId()==null)throw new IllegalArgumentException("Invalid setup intent");
+        return sql.submitTracked(DbClass.RECOVERY,budget,c->{
+            var snapshot=authorizedRead(c,command,proof);
+            var original=results.find(c,snapshot.caller().key(),CommandScope.invite(),snapshot.inviteRequest());
+            var result=results.find(c,command.sender().key(),command.scope(),command.requestId());
+            if(original==null||result==null||!snapshot.callId().equals(original.callId())||!snapshot.callId().equals(result.callId())||!result.hash().equals(command.intentHash()))throw new AuthorizationRejected();
+            return new SetupContext(snapshot,original.hash(),outcome(result));
+        });
+    }
     public record CriticalContext(Snapshot snapshot,String originalInviteHash) {}
     /** Internal auth-only projection. Original acquisition identity comes from guarded durable history. */
     public DbOperation<CriticalContext> criticalContextAuthorized(CallCommand command,String proof,Duration budget){

@@ -22,7 +22,7 @@ class NativeSagaEffectsTest {
         };
         var effects=new NativeSagaEffects(actors,(operation,c,budget)->{throw new AssertionError("No sealed native grant, no network effect");},phase->new NativeSagaEffects.HomeStep("c002",new UserCommand.Reserve(request),null),Clock.systemUTC());
         assertThat(effects.apply(CrossCellSaga.Phase.RESERVE_HOME,op,Duration.ofSeconds(2)).toCompletableFuture().join()).isEqualTo("UNKNOWN");assertThat(seen).hasValue(1);
-        assertThatThrownBy(()->effects.apply(CrossCellSaga.Phase.RESERVE_HOME,UUID.randomUUID(),Duration.ofSeconds(2))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->effects.apply(CrossCellSaga.Phase.RESERVE_HOME,UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join()).hasCauseInstanceOf(IllegalArgumentException.class);
     }
     @Test void homeRenewalAndActivationUseTheirExecuteRpcInsteadOfReserve(){
         Instant now=Instant.now();var call=new CallId(CrossCellSagaIT.CALL);UUID op=UUID.randomUUID();var request=new Request(new UserId("bob"),call,UUID.randomUUID(),"a".repeat(64),1,Phase.RINGING,new Grant("c001",1,1,685,2,1,op,now,now.plusSeconds(5),"TEST_ONLY_SEALED"));var token=new AuthoritySql.GroupToken("c001",1,1,685,2,"TEST_ONLY_OWNER",UUID.randomUUID());
