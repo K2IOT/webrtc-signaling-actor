@@ -14,8 +14,8 @@ public final class CommandResultRepository {
     }
     public boolean insertPending(Connection c,CallCommand command,CallId call,int bucket)throws SQLException {
         if(!command.intentHash().matches("[0-9a-f]{64}"))throw new IllegalArgumentException("Invalid normalized command hash");
-        try(var s=c.prepareStatement("INSERT INTO command_result(issuer,jti,command_scope,request_id,authority_bucket_id,payload_hash,status,call_id) VALUES(?,?,?,?,?,?,'PENDING',?) ON CONFLICT DO NOTHING")){
-            s.setString(1,command.sender().key().issuer());s.setString(2,command.sender().key().jti());s.setString(3,command.scope().value());s.setObject(4,command.requestId().value());s.setInt(5,bucket);s.setBytes(6,HexFormat.of().parseHex(command.intentHash()));s.setString(7,call.value());return s.executeUpdate()==1;
+        try(var s=c.prepareStatement("INSERT INTO command_result(issuer,jti,command_scope,request_id,authority_bucket_id,payload_hash,status,call_id,command_type) VALUES(?,?,?,?,?,?,'PENDING',?,?) ON CONFLICT DO NOTHING")){
+            s.setString(1,command.sender().key().issuer());s.setString(2,command.sender().key().jti());s.setString(3,command.scope().value());s.setObject(4,command.requestId().value());s.setInt(5,bucket);s.setBytes(6,HexFormat.of().parseHex(command.intentHash()));s.setString(7,call.value());s.setString(8,command.type().name());return s.executeUpdate()==1;
         }
     }
     public void finalizeResult(Connection c,SessionKey key,CommandScope scope,RequestId request,CallCommandService.Outcome outcome)throws Exception {

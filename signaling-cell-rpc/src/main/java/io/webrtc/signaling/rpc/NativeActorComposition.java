@@ -21,11 +21,11 @@ public final class NativeActorComposition {
             HomeAuthorizationProof proofs,Function<UserId,ProofBindings.TrustedHome> homes,
             SessionRegistryService.NativeSecurityPolicy sessionSecurity,HomeProofReadService.SecurityPolicy homeSecurity,
             HomeParticipationService.EpochAdoptionVerifier epochAdoption,BoundedTokenVerifier tokenVerifier,
-            CallAuthorizationPolicy callPolicy,Clock clock,BooleanSupplier trustedClock){
+            CallAuthorizationPolicy callPolicy,Clock clock,BooleanSupplier trustedClock,AcceptWinnerService.RouteSecurityPolicy routeSecurity){
         public Inputs {
             if(cell==null||!cell.matches("[a-z][a-z0-9-]{0,23}")||storageEpoch<1||routingEpoch<1)throw new IllegalArgumentException("Invalid native actor identity");
             Objects.requireNonNull(sql);Objects.requireNonNull(podUid);Objects.requireNonNull(proofs);Objects.requireNonNull(homes);
-            Objects.requireNonNull(sessionSecurity);Objects.requireNonNull(homeSecurity);Objects.requireNonNull(epochAdoption);
+            Objects.requireNonNull(routeSecurity);Objects.requireNonNull(sessionSecurity);Objects.requireNonNull(homeSecurity);Objects.requireNonNull(epochAdoption);
             Objects.requireNonNull(tokenVerifier);Objects.requireNonNull(callPolicy);Objects.requireNonNull(clock);Objects.requireNonNull(trustedClock);
             if(!cell.equals(proofs.sourceCell()))throw new IllegalArgumentException("Signer cell differs from native authority");
         }
@@ -42,7 +42,7 @@ public final class NativeActorComposition {
         bindings=new ProofBindings(inputs.proofs(),inputs.clock());ingress=new ShardedActorIngress(system,inputs.clock());
         var home=new HomeParticipationService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),bindings.homeVerifier(inputs.cell()),inputs.epochAdoption());
         sessions=new SessionRegistryService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.sessionSecurity());
-        users=new PostgresUserBackend(new UserSnapshotService(inputs.sql(),inputs.cell(),inputs.storageEpoch()),sessions,new UserReservationService(home),new AcceptWinnerService(home),new HomeActivationService(home),new HomeProofReadService(home,inputs.homeSecurity()));
+        users=new PostgresUserBackend(new UserSnapshotService(inputs.sql(),inputs.cell(),inputs.storageEpoch()),sessions,new UserReservationService(home),new AcceptWinnerService(home,inputs.routeSecurity()),new HomeActivationService(home),new HomeProofReadService(home,inputs.homeSecurity()));
         commands=new CallCommandService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.routingEpoch(),c->{throw new IllegalStateException("Commands require hosting EntityRef authority");},bindings.commandVerifier(inputs.cell(),inputs.homes()),bindings.negotiationVerifier(inputs.cell(),inputs.homes()));
         String owner=PostgresShardLeaseProvider.ownerNode(classic);
         workflow=new CallWorkflowService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),owner,bindings.workflowVerifier(inputs.cell(),inputs.homes()));

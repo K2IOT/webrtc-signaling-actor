@@ -13,7 +13,7 @@ class PostgresUserBackendIT {
         try(var runtime=new DbTestRuntime()){
             var sessions=new SessionRegistryService(runtime.sql,"c001",1);var snapshots=new UserSnapshotService(runtime.sql,"c001",1);
             // This verifier is explicitly a local SQL test fixture, never a runtime authorization bean.
-            var home=new HomeParticipationService(runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"));var backend=new PostgresUserBackend(snapshots,sessions,new UserReservationService(home),new AcceptWinnerService(home));
+            var home=new HomeParticipationService(runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"));var backend=new PostgresUserBackend(snapshots,sessions,new UserReservationService(home),new AcceptWinnerService(home,(c,r)->true));
             var user=new UserId("user-backend-"+UUID.randomUUID());var principal=new AuthPrincipal(user,new SessionKey("TEST_ONLY","jti-"+UUID.randomUUID()),Instant.now().plusSeconds(600),Instant.now(),"test-key",1);
             var boot=sessions.startGatewayBoot("backend-gateway",UUID.randomUUID(),"TEST_ONLY",UUID.randomUUID()).toCompletableFuture().join();assertThat(finish(backend.load(user,1,Duration.ofSeconds(2))).routes()).isEmpty();
             var registered=finish(backend.execute(new UserCommand.Register(principal,boot,UUID.randomUUID(),1),Duration.ofSeconds(2)));assertThat(registered.code()).isEqualTo(UserCommand.Code.REGISTERED);var route=registered.route();assertThat(finish(backend.load(user,1,Duration.ofSeconds(2))).routes()).containsExactly(route);

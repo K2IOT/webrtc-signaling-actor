@@ -5,11 +5,13 @@ import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 public final class AcceptWinnerService {
     public record Claim(String outcome,Winner winner,UUID reservation,long version,java.time.Instant validUntil) {}
-    private final HomeParticipationService home;private final SessionRepository sessions=new SessionRepository();
-    public AcceptWinnerService(HomeParticipationService home){this.home=home;}
+    @FunctionalInterface public interface RouteSecurityPolicy {boolean allowed(Connection c,SessionRepository.Route route)throws Exception;}
+    private final RouteSecurityPolicy security;private final HomeParticipationService home;private final SessionRepository sessions=new SessionRepository();
+    public AcceptWinnerService(HomeParticipationService home){this(home,(c,r)->false);}
+    public AcceptWinnerService(HomeParticipationService home,RouteSecurityPolicy security){this.home=java.util.Objects.requireNonNull(home);this.security=java.util.Objects.requireNonNull(security);}
     public CompletionStage<Claim> claimAccept(Request r,UUID reservation,SessionRepository.Route route){return claimAcceptTracked(r,reservation,route,java.time.Duration.ofSeconds(2)).logical();}
     public DbOperation<Claim> claimAcceptTracked(Request r,UUID reservation,SessionRepository.Route route,java.time.Duration budget){return home.submitTracked(r,DbClass.CRITICAL,budget,new AuthorizationIntent("CLAIM",reservation,0,null,0,null,route),c->{
-        if(!r.user().equals(route.user()))throw new SessionRepository.BindingRejected();sessions.requireCurrent(c,route);
+        if(!r.user().equals(route.user()))throw new SessionRepository.BindingRejected();sessions.requireCurrent(c,route);if(!security.allowed(c,route))throw new AuthoritySql.FencedException();
         Participation current=home.find(c,r);if(current==null||current.terminal())return new Claim("TERMINAL",current==null?null:current.winner(),reservation,0,null);
         if(!reservation.equals(current.reservationId())||current.leaseUntil()==null||r.grant().groupEpoch()<current.highestGroupEpoch())throw new AuthoritySql.FencedException();
         try(var s=c.prepareStatement("SELECT lease_until>clock_timestamp() FROM user_reservation WHERE user_id=? AND call_id=? AND reservation_id=?")){s.setString(1,r.user().value());s.setString(2,r.call().value());s.setObject(3,reservation);try(var result=s.executeQuery()){if(!result.next()||!result.getBoolean(1))throw new AuthoritySql.FencedException();}}

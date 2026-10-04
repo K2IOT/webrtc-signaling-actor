@@ -42,7 +42,7 @@ class NativeActorCompositionIT {
             for(var zone:List.of("a","a","b","c")){
                 var system=ActorSystem.<Void>create(Behaviors.empty(),"native-composition-c001",config(zone));systems.add(system);
                 var readiness=new ClusterReadiness();readiness.update(new ClusterReadiness.Snapshot(false,false,true,true,true,true,0,0,false));
-                var inputs=new NativeActorComposition.Inputs(f.runtime.sql,"c001",1,1,UUID.randomUUID(),proofs,u->new ProofBindings.TrustedHome("c001",1,1),(c,p)->true,(c,u)->true,(c,from,to)->false,verifier,CallAuthorizationPolicy.denyAll(),Clock.systemUTC(),()->true);
+                var inputs=new NativeActorComposition.Inputs(f.runtime.sql,"c001",1,1,UUID.randomUUID(),proofs,u->new ProofBindings.TrustedHome("c001",1,1),(c,p)->true,(c,u)->true,(c,from,to)->false,verifier,CallAuthorizationPolicy.denyAll(),Clock.systemUTC(),()->true,(c,r)->true);
                 compositions.add(new NativeActorComposition(system,inputs,readiness));
             }
             var seed=Cluster.get(systems.getFirst()).selfMember().address();for(var system:systems)Cluster.get(system).manager().tell(new JoinSeedNodes(List.of(seed)));

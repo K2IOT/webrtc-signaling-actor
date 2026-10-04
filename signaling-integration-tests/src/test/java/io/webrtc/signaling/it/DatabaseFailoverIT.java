@@ -66,7 +66,7 @@ class DatabaseFailoverIT {
             var sender=f.sender("adoption-user");var old=remoteCoordinatorRequest(sender.userId().value());
             var home=new HomeParticipationService(f.runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"),(cell,from,to)->cell.equals("c002")&&from==1&&to==2);
             var reservations=new UserReservationService(home);var first=reservations.reserveUser(old).toCompletableFuture().join();
-            var claimed=new AcceptWinnerService(home).claimAccept(old,first.reservationId(),SessionAuthReadIT.route(f,sender)).toCompletableFuture().join();
+            var claimed=new AcceptWinnerService(home,(c,r)->true).claimAccept(old,first.reservationId(),SessionAuthReadIT.route(f,sender)).toCompletableFuture().join();
             var next=promoted(old,2,2,1);
             var closed=new UserReservationService(new HomeParticipationService(f.runtime.sql,"c001",1,r->true));
             assertThatThrownBy(()->closed.renewReservation(next,first.reservationId(),claimed.version()).toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
