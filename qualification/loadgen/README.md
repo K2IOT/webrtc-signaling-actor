@@ -4,7 +4,8 @@ Profiles describe requested load. They never establish measured capacity or rele
 Start with 10k, then 100k, 200k per cell and multiple cells before attempting P0/P2 10M.
 Each source worker runs the same immutable candidate, scenario, seed, worker count and
 ordered source-IP list. Worker index selects a disjoint half-open socket range; user
-index is global socket index modulo the scenario's distinct-user count. Every session
+index equals the socket index for the first distinct-user range. Additional sockets
+map into the callee half of that range for genuine multi-session fanout. Every session
 must have its own genuine `(issuer,jti)` and signed RS256 token supplied by the approved
 issuer. Multiple sessions per user are intentional. Tokens and signing private keys
 must never enter evidence, command-line arguments or logs.
@@ -14,7 +15,7 @@ configuration, compatibility, identity-contract, topology and hardware fingerpri
 the local machine; WSS endpoints require TLS1.3, trusted CA and hostname validation.
 Supply pinned RSA public keys and original/refresh JSONL inventories containing
 `socketIndex`, `token`. Inventory records must match the deterministic user ID
-`userPrefix + (socketIndex % distinctUsers)` and have distinct session keys.
+`userPrefix + userIndex(socketIndex, distinctUsers)` as implemented by the coordinator and have distinct session keys.
 Same-jti refresh inventory is atomically replaced by the issuer workflow, not fabricated
 by the generator. The worker validates issuer, audience, signature, lifetime and refresh
 identity before sending. Paths to token inventories are configuration, tokens are secrets.
@@ -38,7 +39,11 @@ FD headroom uses the operating system process soft limit. CPU, NIC and FD requir
 least 20% headroom; event-loop lag must remain <=5ms, and pending count/bytes are also
 checked against 80% of their configured bounds. Missing measurements fail closed.
 Generator saturation invalidates capacity evidence even if the server appears healthy.
-Requested sockets, established calls and throughput are distinct from observed values.
+Call arrivals use seeded, globally permuted slots for disjoint primary caller/callee
+pairs. Secondary callee sessions never contribute an additional caller stream. A busy
+pair retains its original intended arrival as a failed INVITE sample. Cross-cell
+counts use the actual candidate directory. Requested sockets, established calls and
+throughput are distinct from observed values.
 
 A smoke using local test PKI/identity is explicitly TEST_ONLY and cannot qualify a release.
 10k/100k production smoke stages require approved WSS endpoints, issuer inventories,

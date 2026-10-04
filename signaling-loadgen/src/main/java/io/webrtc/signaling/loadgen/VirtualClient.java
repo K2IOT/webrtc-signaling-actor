@@ -59,8 +59,8 @@ public final class VirtualClient {
     public CompletionStage<JsonNode> request(JsonNode envelope,long intended,EvidenceWriter.Operation operation){return send(envelope,intended,operation,false);}
     private CompletionStage<JsonNode> send(JsonNode envelope,long intended,EvidenceWriter.Operation operation,boolean authentication){
         String encoded=envelope.toString();int bytes=encoded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;var c=channel;
-        if(bytes>81920||c==null||!c.isActive()||!c.isWritable()||!authentication&&!authenticated||pending.size()>=8){evidence.missed(intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator/client admission unavailable"));}
-        var ticket=credits.acquire(bytes);if(ticket==null){evidence.missed(intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator credit exhausted"));}
+        if(bytes>81920||c==null||!c.isActive()||!c.isWritable()||!authentication&&!authenticated||pending.size()>=8){evidence.missed(operation,intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator/client admission unavailable"));}
+        var ticket=credits.acquire(bytes);if(ticket==null){evidence.missed(operation,intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator credit exhausted"));}
         String id=authentication?"AUTH":envelope.path("requestId").asText();if(id.isEmpty()){ticket.close();throw new IllegalArgumentException("Request ID missing");}
         var p=new Pending(id,intended,operation,ticket);if(pending.putIfAbsent(id,p)!=null){ticket.close();throw new IllegalArgumentException("Duplicate in-flight ID");}if(authentication)auth=p;
         p.timeout=c.eventLoop().schedule(()->p.reply.completeExceptionally(new TimeoutException("Original WSS command deadline")),authentication?5:2,TimeUnit.SECONDS);

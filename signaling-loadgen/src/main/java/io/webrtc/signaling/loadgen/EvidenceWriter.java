@@ -17,7 +17,8 @@ public final class EvidenceWriter {
     public EvidenceWriter(){for(var operation:Operation.values())phases.put(operation,new ConcurrentHistogram(MAX_MICROS,3));}
     public void record(long intended,long finished,boolean success){record(Operation.CONTROL,intended,finished,success);}
     public void record(Operation operation,long intended,long finished,boolean success){long elapsed=finished-intended;if(elapsed<0||elapsed/1000>MAX_MICROS)throw new IllegalArgumentException("Latency outside measured monotonic range");long micros=Math.max(1,elapsed/1000);latency.recordValue(micros);phases.get(operation).recordValue(micros);attempts.incrementAndGet();if(success)successes.incrementAndGet();}
-    public void missed(long intended,long finished){missed.incrementAndGet();record(intended,finished,false);}
+    public void missed(long intended,long finished){missed(Operation.CONTROL,intended,finished);}
+    public void missed(Operation phase,long intended,long finished){missed.incrementAndGet();record(phase,intended,finished,false);}
     public void dispatched(long intended,long actual){if(actual-intended>5_000_000)lateDispatch.incrementAndGet();}
     public long attempts(){return attempts.get();}
     public long successes(){return successes.get();}

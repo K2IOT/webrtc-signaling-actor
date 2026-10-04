@@ -9,6 +9,11 @@ import java.util.*;
 /** Same deterministic partition on every source machine; start one bounded worker per approved source IP. */
 public final class DistributedLoadGenerator {
     public record Range(long start,long end){public long size(){return end-start;}}
+    public static long userIndex(long socket,long users){
+        if(socket<0||users<1||users>10000000)throw new IllegalArgumentException("Invalid identity range");
+        if(socket<users)return socket;
+        long half=users/2;return half==0?0:half+Math.floorMod(socket-users,users-half);
+    }
     public static Range partition(long total,int index,int workers){
         if(total<0||workers<1||workers>4096||index<0||index>=workers)throw new IllegalArgumentException("Invalid worker partition");
         long quotient=total/workers,remainder=total%workers;long start=Math.addExact(Math.multiplyExact(quotient,index),Math.min(index,remainder));return new Range(start,Math.addExact(start,quotient+(index<remainder?1:0)));
