@@ -17,12 +17,22 @@ public final class CallCommandService {
     }
     @FunctionalInterface public interface ProofVerifier {boolean verify(CallCommand command,Snapshot snapshot,String proof);}
     public record Outcome(String status,String code,CallId callId,long version,String state,List<UUID> eventIds) implements io.webrtc.signaling.protocol.ApplicationSerializable {public Outcome{eventIds=List.copyOf(eventIds);}}
-    private static final ObjectMapper JSON=new ObjectMapper();
+    /** Two-home evidence must be independently verified under the native coordinator fence. */
+    public record NegotiationEvidence(AuthenticatedSession recipient,Instant proofExpiresAt,Instant participantUntil) {
+        public NegotiationEvidence{Objects.requireNonNull(recipient);Objects.requireNonNull(proofExpiresAt);Objects.requireNonNull(participantUntil);}
+    }
+    @FunctionalInterface public interface NegotiationVerifier {NegotiationEvidence verify(Connection c,CallCommand command,Snapshot snapshot,String proof)throws Exception;}
+    private final NegotiationVerifier negotiationVerifier;
+    private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
     private final SqlTransactions sql;private final String cell;private final long epoch;
     private final Function<CallCommand,CompletionStage<Authority>> authority;private final ProofVerifier proofs;
     private final CommandResultRepository results=new CommandResultRepository();private final CallSnapshotRepository calls=new CallSnapshotRepository();private final SessionRepository sessions=new SessionRepository();private final OutboxRepository outbox;
     private final HomeParticipationService localHome;private final UserReservationService reservations;
     public CallCommandService(SqlTransactions sql,String cell,long epoch,Function<CallCommand,CompletionStage<Authority>> authority,ProofVerifier proofs){
+        this(sql,cell,epoch,authority,proofs,null);
+    }
+    public CallCommandService(SqlTransactions sql,String cell,long epoch,Function<CallCommand,CompletionStage<Authority>> authority,ProofVerifier proofs,NegotiationVerifier negotiationVerifier){
+        this.negotiationVerifier=negotiationVerifier;
         this.sql=sql;this.cell=cell;this.epoch=epoch;this.authority=Objects.requireNonNull(authority);this.proofs=Objects.requireNonNull(proofs);outbox=new OutboxRepository(sql,cell,epoch);
         // Used only by the local native transaction after its full primary group/session checks.
         // Remote calls must use the independently supplied request-bound verifier.
@@ -67,6 +77,7 @@ public final class CallCommandService {
         return switch(command.type()) {
             case CANCEL,HANGUP,DECLINE_ALL -> terminal(c,command,context,snapshot);
             case ACCEPT -> pending(snapshot.callId());
+            case NEGOTIATE_REQUEST -> negotiate(c,command,context,snapshot);
             default -> throw new IllegalArgumentException("Command requires its typed actor transition or volatile relay path");
         };
     }
@@ -84,6 +95,36 @@ public final class CallCommandService {
         }
         if(!local)return pending(context.callId());var recipients=new ArrayList<Participant>();recipients.add(new Participant(command.sender().userId(),command.sender().key(),command.sender().incarnation(),command.sender().connectionGeneration()));recipients.addAll(offered);var events=new ArrayList<UUID>();for(var recipient:recipients){String destination=JSON.writeValueAsString(Map.of("userId",recipient.user().value(),"issuer",recipient.key().issuer(),"jti",recipient.key().jti()));String payload=JSON.writeValueAsString(Map.of("type","RINGING","callId",context.callId().value(),"callVersion","1","callerUserId",command.sender().userId().value(),"calleeUserId",command.target().value()));events.add(outbox.insert(c,bucket,context.callId(),1,destination,payload));}
         return finish(c,command,new Outcome("FINAL","RINGING",context.callId(),1,"RINGING",List.copyOf(events)));
+    }
+    private Outcome negotiate(Connection c,CallCommand command,Authority context,Snapshot previous)throws Exception {
+        if(negotiationVerifier==null||previous.activationId()==null||previous.winner()==null)throw new AuthorizationRejected();
+        Instant now;try(var q=c.createStatement();var r=q.executeQuery("SELECT clock_timestamp()")){r.next();now=r.getTimestamp(1).toInstant();}
+        var evidence=negotiationVerifier.verify(c,command,previous,context.proof());
+        var peer=previous.caller().sameBinding(command.sender())?previous.winner():previous.caller();
+        if(evidence==null||!peer.sameBinding(evidence.recipient())||!evidence.proofExpiresAt().isAfter(now)
+                ||evidence.proofExpiresAt().isAfter(now.plusSeconds(5))||!evidence.participantUntil().isAfter(now.plusSeconds(5)))throw new AuthorizationRejected();
+        try(var q=c.prepareStatement("SELECT lease_until>clock_timestamp()+interval '5 seconds' FROM user_reservation WHERE user_id=? AND call_id=?")){
+            q.setString(1,previous.caller().user().value());q.setString(2,previous.callId().value());try(var r=q.executeQuery()){if(!r.next()||!r.getBoolean(1))throw new AuthoritySql.FencedException();}
+        }
+        if(previous.negotiationId()==0&&!previous.caller().sameBinding(command.sender()))throw new AuthorizationRejected();
+        var metadata=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.readTree(previous.deadlines());
+        Instant previousUntil=metadata.has("negotiationUntil")?Instant.parse(metadata.get("negotiationUntil").asText()):null;
+        if(previous.negotiationId()>0&&!"COMPLETE".equals(metadata.path("negotiationState").asText())
+                &&previousUntil!=null&&previousUntil.isAfter(now))return finish(c,command,new Outcome("FINAL","NEGOTIATION_BUSY",previous.callId(),previous.version(),previous.state(),List.of()));
+        if(previous.state().equals("CONNECTING")&&previousUntil!=null&&!previousUntil.isAfter(now))throw new AuthoritySql.FencedException();
+        long round=Math.addExact(previous.negotiationId(),1),ice=Math.addExact(Long.parseLong(metadata.path("iceGeneration").asText("0")),1),version=Math.addExact(previous.version(),1);
+        Instant until=now.plusSeconds(20);if(previous.state().equals("CONNECTING")&&previousUntil!=null&&previousUntil.isBefore(until))until=previousUntil;
+        metadata.put("iceGeneration",Long.toString(ice));metadata.put("negotiationUntil",until.toString());metadata.put("negotiationState","OFFER_GRANTED");
+        metadata.set("offerer",JSON.valueToTree(command.sender()));metadata.set("answerer",JSON.valueToTree(evidence.recipient()));metadata.put("negotiationRequest",command.requestId().value().toString());
+        try(var q=c.prepareStatement("UPDATE call_state SET negotiation_id=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")){
+            q.setLong(1,round);q.setLong(2,version);q.setString(3,JSON.writeValueAsString(metadata));q.setLong(4,context.group().epoch());q.setString(5,previous.callId().value());q.setLong(6,previous.version());if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();
+        }
+        var events=new ArrayList<UUID>();for(var recipient:List.of(command.sender(),evidence.recipient())){
+            String destination=JSON.writeValueAsString(Map.of("userId",recipient.userId().value(),"issuer",recipient.key().issuer(),"jti",recipient.key().jti()));
+            String payload=JSON.writeValueAsString(Map.of("type","NEGOTIATION_GRANTED","callId",previous.callId().value(),"callVersion",Long.toString(version),"negotiationId",Long.toString(round),"iceGeneration",Long.toString(ice),"offerer",command.sender().userId().value(),"negotiationUntil",until.toString()));
+            events.add(outbox.insert(c,previous.bucket(),previous.callId(),version,destination,payload));
+        }
+        return finish(c,command,new Outcome("FINAL","NEGOTIATION_GRANTED",previous.callId(),version,previous.state(),events));
     }
     private Outcome terminal(Connection c,CallCommand command,Authority context,Snapshot previous)throws Exception {
         long version=Math.addExact(previous.version(),1);String reason=command.type().name();
@@ -110,6 +151,7 @@ public final class CallCommandService {
             case CANCEL -> caller&&Set.of("PREPARING","RINGING","ACCEPTED","ACTIVATING").contains(s.state());
             case HANGUP -> (caller||winner)&&Set.of("ACCEPTED","ACTIVATING","CONNECTING","ESTABLISHED").contains(s.state());
             case ACCEPT,REJECT -> offered&&s.callee().equals(command.sender().userId())&&s.state().equals("RINGING");
+            case NEGOTIATE_REQUEST -> (caller||winner)&&Set.of("CONNECTING","ESTABLISHED").contains(s.state());
             case DECLINE_ALL -> s.callee().equals(command.sender().userId())&&s.state().equals("RINGING");
             default -> false;
         };if(!allowed)throw new AuthorizationRejected();
