@@ -6,6 +6,23 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 class DbBoundaryTest {
+    @Test void drainRejectsNewWorkAndKeepsResourcesOpenThroughLogicalTimeoutUntilPhysicalSettlement() throws Exception {
+        var admission=new DbAdmission(Map.of(DbClass.CRITICAL,1,DbClass.RENEWAL,1));
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var db=new DbBoundary(admission)) {
+            var pending=db.submitTracked(DbClass.CRITICAL,Duration.ofMillis(50),()->{entered.countDown();release.await();return "late-native-completion";});
+            assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(()->pending.logical().toCompletableFuture().join()).hasCauseInstanceOf(DbOutcomeUnknownException.class);
+            var drain=db.drain();assertThat(drain.toCompletableFuture()).isNotDone();
+            assertThat(admission.running(DbClass.CRITICAL)).isEqualTo(1);
+            var rejected=db.submitTracked(DbClass.RENEWAL,Duration.ofSeconds(1),()->{throw new AssertionError("No SQL may start after drain");});
+            assertThatThrownBy(()->rejected.logical().toCompletableFuture().join()).hasCauseInstanceOf(DbOverloadedException.class);
+            assertThat(rejected.physicalCompletion().toCompletableFuture().join()).isEqualTo(DbOperation.PhysicalCompletion.NOT_STARTED);
+            release.countDown();pending.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+            drain.toCompletableFuture().get(1,TimeUnit.SECONDS);assertThat(admission.running(DbClass.CRITICAL)).isZero();
+            assertThatThrownBy(()->db.submit(DbClass.CRITICAL,Duration.ofSeconds(1),()->"never").toCompletableFuture().join()).hasCauseInstanceOf(DbOverloadedException.class);
+        } finally {release.countDown();}
+    }
     @Test void trackedPhysicalCompletionSurvivesTimeoutAndClientCancellation()throws Exception {
         var admission=new DbAdmission(Map.of(DbClass.RECOVERY,1));var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
         try(var db=new DbBoundary(admission)){
