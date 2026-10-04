@@ -16,7 +16,9 @@ public final class OutboxRepository {
     }
     public CompletionStage<List<Claim>> claimOutboxBatch(String worker,UUID incarnation,int limit){
         if(limit<1||limit>128)throw new IllegalArgumentException("Invalid outbox claim bound");
-        return sql.submit(DbClass.OUTBOX,Duration.ofSeconds(2),c->{
+        return claimOutboxBatchTracked(worker,incarnation,limit).logical();
+    }
+    public DbOperation<List<Claim>> claimOutboxBatchTracked(String worker,UUID incarnation,int limit){if(limit<1||limit>128)throw new IllegalArgumentException("Invalid outbox claim bound");return sql.submitTracked(DbClass.OUTBOX,Duration.ofSeconds(2),c->{
             AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);
             var hints=new LinkedHashMap<UUID,Integer>();
             try(var s=c.prepareStatement("SELECT event_id,authority_bucket_id FROM control_outbox WHERE delivery_state='PENDING' AND quarantined=false AND next_attempt<=clock_timestamp() AND expires_at>clock_timestamp() ORDER BY next_attempt,event_id LIMIT ?")){s.setInt(1,limit);try(var r=s.executeQuery()){while(r.next())hints.put(r.getObject(1,UUID.class),r.getInt(2));}}
@@ -29,10 +31,13 @@ public final class OutboxRepository {
             }finally{array.free();}return List.copyOf(result);
         });
     }
-    public CompletionStage<Boolean> complete(Claim claim,String worker,UUID incarnation){return sql.submit(DbClass.OUTBOX,Duration.ofSeconds(2),c->{
+    public CompletionStage<Boolean> complete(Claim claim,String worker,UUID incarnation){return completeTracked(claim,worker,incarnation).logical();}
+    public DbOperation<Boolean> completeTracked(Claim claim,String worker,UUID incarnation){return sql.submitTracked(DbClass.OUTBOX,Duration.ofSeconds(2),c->{
         queueAuthority(c,claim.bucket());try(var s=c.prepareStatement("UPDATE control_outbox SET delivery_state='DELIVERED' WHERE event_id=? AND authority_bucket_id=? AND delivery_state='INFLIGHT' AND dispatch_owner=? AND dispatch_incarnation=? AND dispatch_generation=? AND dispatch_until>clock_timestamp()")){
             s.setObject(1,claim.eventId());s.setInt(2,claim.bucket());s.setString(3,worker);s.setObject(4,incarnation);s.setLong(5,claim.generation());return s.executeUpdate()==1;
         }
     });}
+    public DbOperation<Integer> reclaimExpired(int limit){if(limit<1||limit>128)throw new IllegalArgumentException("Invalid outbox recovery bound");return sql.submitTracked(DbClass.OUTBOX,Duration.ofSeconds(2),c->{AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);var buckets=new TreeSet<Integer>();try(var q=c.prepareStatement("SELECT DISTINCT o.authority_bucket_id FROM control_outbox o JOIN bucket_authority b ON b.bucket_id=o.authority_bucket_id AND b.status='ACTIVE' WHERE (o.delivery_state='INFLIGHT' AND o.dispatch_until<=clock_timestamp()) OR (o.expires_at<=clock_timestamp() AND o.quarantined=false) ORDER BY o.authority_bucket_id LIMIT ?")){q.setInt(1,limit);try(var r=q.executeQuery()){while(r.next())buckets.add(r.getInt(1));}}int changed=0;for(int bucket:buckets){queueAuthority(c,bucket);try(var q=c.prepareStatement("WITH due AS (SELECT event_id FROM control_outbox WHERE authority_bucket_id=? AND ((delivery_state='INFLIGHT' AND dispatch_until<=clock_timestamp()) OR (expires_at<=clock_timestamp() AND quarantined=false)) ORDER BY event_id LIMIT ? FOR UPDATE SKIP LOCKED) UPDATE control_outbox o SET delivery_state='PENDING',dispatch_until=NULL,next_attempt=clock_timestamp(),quarantined=(o.expires_at<=clock_timestamp()),terminal_reason=CASE WHEN o.expires_at<=clock_timestamp() THEN 'EXPIRED_UNDELIVERABLE' ELSE NULL END FROM due d WHERE o.event_id=d.event_id")){q.setInt(1,bucket);q.setInt(2,limit-changed);changed+=q.executeUpdate();}if(changed>=limit)break;}return changed;});}
+    public DbOperation<Boolean> defer(Claim claim,String worker,UUID incarnation,boolean poison){return sql.submitTracked(DbClass.OUTBOX,Duration.ofSeconds(2),c->{queueAuthority(c,claim.bucket());try(var q=c.prepareStatement("UPDATE control_outbox SET delivery_state='PENDING',dispatch_until=NULL,next_attempt=clock_timestamp()+interval '1 second',quarantined=?,terminal_reason=CASE WHEN ? THEN 'MALFORMED_EVENT' ELSE NULL END WHERE event_id=? AND dispatch_owner=? AND dispatch_incarnation=? AND dispatch_generation=? AND delivery_state='INFLIGHT' AND dispatch_until>clock_timestamp()")){q.setBoolean(1,poison);q.setBoolean(2,poison);q.setObject(3,claim.eventId());q.setString(4,worker);q.setObject(5,incarnation);q.setLong(6,claim.generation());return q.executeUpdate()==1;}});}
     void queueAuthority(Connection c,int bucket)throws SQLException {AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);AuthoritySql.bucketBarrier(c,bucket,false);try(var s=c.prepareStatement("SELECT status FROM bucket_authority WHERE bucket_id=?")){s.setInt(1,bucket);try(var r=s.executeQuery()){if(!r.next()||!"ACTIVE".equals(r.getString(1)))throw new AuthoritySql.FencedException();}}}
 }
