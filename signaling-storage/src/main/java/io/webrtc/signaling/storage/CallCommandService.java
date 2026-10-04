@@ -229,6 +229,17 @@ public final class CallCommandService {
         if(read.type()!=SignalEnvelope.Type.GET_COMMAND_RESULT||read.callId()==null||!read.scope().equals(CommandScope.call(read.callId())))throw new IllegalArgumentException("Invalid native command result read");
         return sql.submitTracked(DbClass.RECOVERY,budget,c->{authorizedRead(c,read,proof);var stored=results.find(c,read.sender().key(),read.scope(),read.requestId());return stored==null?Optional.empty():Optional.of(outcome(stored));});
     }
+    public record CriticalContext(Snapshot snapshot,String originalInviteHash) {}
+    /** Internal auth-only projection. Original acquisition identity comes from guarded durable history. */
+    public DbOperation<CriticalContext> criticalContextAuthorized(CallCommand command,String proof,Duration budget){
+        if(!Set.of(SignalEnvelope.Type.NEGOTIATE_REQUEST,SignalEnvelope.Type.MEDIA_CONNECTED).contains(command.type())||command.callId()==null||!command.scope().equals(CommandScope.call(command.callId())))throw new IllegalArgumentException("Invalid critical command context");
+        return sql.submitTracked(DbClass.RECOVERY,budget,c->{
+            var snapshot=authorizedRead(c,command,proof);
+            var original=results.find(c,snapshot.caller().key(),CommandScope.invite(),snapshot.inviteRequest());
+            if(original==null||!snapshot.callId().equals(original.callId()))throw new AuthorizationRejected();
+            return new CriticalContext(snapshot,original.hash());
+        });
+    }
     private Snapshot authorizedRead(Connection c,CallCommand read,String proof)throws Exception {
         AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,read.callId());if(hint==null||!cell.equals(read.callId().coordinatorCell()))throw new AuthorizationRejected();
         AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));AuthoritySql.callReadBarrier(c,read.callId().value());
