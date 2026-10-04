@@ -33,7 +33,10 @@ is used to hide missed intended arrivals. Keep compressed raw HDR histograms and
 resource snapshots, including CPU, NIC, FD, event-loop lag and pending count/bytes.
 All workers share `scheduledStartAt`; authenticated warmup must finish before that
 common instant. ICE traces seal once at their actual last admitted sequence; the worker
-never echoes a peer END or sends a later candidate for a sealed trace.
+never echoes a peer END or sends a later candidate for a sealed trace. Live traces
+occupy a bounded index rather than sampling idle sockets. On reconnect, the worker
+waits for a committed RESUME before reading SYNC; a superseded socket cannot start
+that read or complete a current request.
 NIC rates use only the interface owning the assigned source IP, with actual sample intervals.
 FD headroom uses the operating system process soft limit. CPU, NIC and FD require at
 least 20% headroom; event-loop lag must remain <=5ms, and pending count/bytes are also

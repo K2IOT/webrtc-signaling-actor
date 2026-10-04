@@ -47,6 +47,7 @@ public final class ScenarioRunner {
         public long live(){return live.get();}public long peak(){return peak.get();}
     }
     private final SocketGauge socketGauge=new SocketGauge();
+    private final ActiveTracePool<Long,Round> activeTraces=new ActiveTracePool<>(200000);
     private long planned(long start,long ordinal,long rate){return scenario.has("burst")?burstArrivalNanos(start,ordinal,rate,scenario.path("burst").path("multiplier").asLong(),scenario.path("burst").path("seconds").asLong()):arrivalNanos(start,ordinal,rate);}
     private final EvidenceWriter evidence=new EvidenceWriter();
     private final ConcurrentHashMap<Long,State> states=new ConcurrentHashMap<>();
@@ -101,7 +102,7 @@ public final class ScenarioRunner {
     private String user(long index){return config.path("userPrefix").asText()+index;}
     private String home(String user){try{byte[] hash=MessageDigest.getInstance("SHA-256").digest(user.getBytes(StandardCharsets.UTF_8));return buckets[(hash[6]&63)<<8|(hash[7]&255)];}catch(NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
     private State choose(SplittableRandom random){if(range.size()==0)return null;return states.get(range.start()+random.nextLong(range.size()));}
-    private void connect(State state,long intended){var connecting=state.client.connect(intended);long generation=state.client.generation();connecting.whenComplete((value,error)->{if(error!=null){state.client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});return;}socketGauge.authenticated(state.client.index(),generation);registrations.incrementAndGet();state.nextHeartbeat=System.nanoTime()+30_000_000_000L;state.nextRefresh=System.nanoTime()+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();if(state.call!=null){send(state,"RESUME",null,null,JSON.createObjectNode(),System.nanoTime(),EvidenceWriter.Operation.RECONNECT);sync(state,System.nanoTime());}else if(state.invite!=null){var lookup=JSON.createObjectNode().put("v",1).put("type","GET_COMMAND_RESULT").put("requestId",state.invite.toString());lookup.putObject("payload");state.client.request(lookup,System.nanoTime(),EvidenceWriter.Operation.SYNC);}});}
+    private void connect(State state,long intended){var connecting=state.client.connect(intended);long generation=state.client.generation();connecting.whenComplete((value,error)->{if(state.client.generation()!=generation)return;if(error!=null){state.client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});return;}socketGauge.authenticated(state.client.index(),generation);registrations.incrementAndGet();state.nextHeartbeat=System.nanoTime()+30_000_000_000L;state.nextRefresh=System.nanoTime()+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();if(state.call!=null){ReconnectFlow.afterResume(send(state,"RESUME",null,null,JSON.createObjectNode(),System.nanoTime(),EvidenceWriter.Operation.RECONNECT),()->state.client.generation()==generation&&state.client.authenticated(),()->sync(state,System.nanoTime())).whenComplete((v,e)->{if(e!=null&&state.client.generation()==generation)fail("RESUME_NOT_COMMITTED");});}else if(state.invite!=null){var lookup=JSON.createObjectNode().put("v",1).put("type","GET_COMMAND_RESULT").put("requestId",state.invite.toString());lookup.putObject("payload");state.client.request(lookup,System.nanoTime(),EvidenceWriter.Operation.SYNC);}});}
     private void invite(CallSchedule.Assignment assignment){
         var state=states.get(assignment.callerSocket());long intended=assignment.intendedNanos();String target=user(assignment.targetUser());
         if(state==null){evidence.missed(EvidenceWriter.Operation.INVITE,intended,System.nanoTime());return;}
@@ -114,38 +115,38 @@ public final class ScenarioRunner {
         }
     }
     private void relay(SplittableRandom random,long ordinal,long intended){
-        State state=null;for(int i=0;i<128;i++){var candidate=choose(random);if(candidate!=null&&candidate.client.writable()&&candidate.round!=null){state=candidate;break;}}
-        if(state==null){evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
+        var selected=activeTraces.next();if(selected.isEmpty()){evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
+        var entry=selected.get();var state=states.get(entry.key());
         synchronized(state){
-            var round=state.round;if(round==null){evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
-            var sequence=round.trace().nextCandidate(System.nanoTime());if(sequence.isEmpty()){evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
+            var round=state.round;if(round!=entry.value()||!state.client.writable()){evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
+            var sequence=round.trace().nextCandidate(System.nanoTime());if(sequence.isEmpty()){activeTraces.remove(state.client.index(),round);evidence.missed(EvidenceWriter.Operation.RELAY,intended,System.nanoTime());return;}
             var body=JSON.createObjectNode().put("startSequence",Integer.toString(sequence.getAsInt()));body.putArray("candidates").add(candidates.get((sequence.getAsInt()-1)%candidates.size()));
             send(state,"ICE_CANDIDATES",round.negotiation(),round.ice(),body,intended,EvidenceWriter.Operation.RELAY);relayFrames.incrementAndGet();
         }
     }
     private void finishTrace(State state,long now){
-        synchronized(state){var round=state.round;if(round==null)return;var terminal=round.trace().seal(now);if(terminal.isEmpty())return;
+        synchronized(state){var round=state.round;if(round==null)return;var terminal=round.trace().seal(now);if(terminal.isEmpty())return;activeTraces.remove(state.client.index(),round);
             send(state,"END_OF_CANDIDATES",round.negotiation(),round.ice(),JSON.createObjectNode().put("terminalSequence",Integer.toString(terminal.getAsInt())),now,EvidenceWriter.Operation.RELAY)
                 .whenComplete((reply,error)->{if(error==null&&!reply.path("type").asText().equals("ERROR")&&state.round==round)
                     send(state,"MEDIA_CONNECTED",round.negotiation(),round.ice(),JSON.createObjectNode().put("senderSequence","1"),System.nanoTime(),EvidenceWriter.Operation.MEDIA);});
         }
     }
     private void frame(VirtualClient client,JsonNode frame){var state=states.get(client.index());if(state==null)return;String type=frame.path("type").asText();long now=System.nanoTime();switch(type){
-        case "SOCKET_CLOSED"->{socketGauge.closed(client.index(),frame.path("socketGeneration").asLong());state.round=null;client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});}
+        case "SOCKET_CLOSED"->{if(frame.path("socketGeneration").asLong()!=client.generation())return;socketGauge.closed(client.index(),frame.path("socketGeneration").asLong());activeTraces.remove(client.index(),state.round);state.round=null;client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});}
         case "RINGING"->{if(!state.outgoing){state.call=frame.path("callId").asText();send(state,"ACCEPT",null,null,JSON.createObjectNode(),now,EvidenceWriter.Operation.ACCEPT);}}
         case "CALL_READY"->{state.call=frame.path("callId").asText();if(state.outgoing){var body=JSON.createObjectNode().put("iceRestart",false);send(state,"NEGOTIATE_REQUEST",null,null,body,now,EvidenceWriter.Operation.NEGOTIATE).whenComplete((r,e)->{if(e==null)sync(state,System.nanoTime());});}}
-        case "OFFER"->{String negotiation=frame.path("negotiationId").asText(),ice=frame.path("iceGeneration").asText();if(!negotiation.matches("[1-9][0-9]{0,18}")||!ice.matches("[1-9][0-9]{0,18}")){fail("NEGOTIATION_WIRE_CONTRACT_MISSING");return;}state.round=new Round(frame.path("callId").asText(),negotiation,ice);state.round.trace().answerObserved();send(state,"ANSWER",negotiation,null,JSON.createObjectNode().put("sdp",answer),now,EvidenceWriter.Operation.RELAY);}
+        case "OFFER"->{String negotiation=frame.path("negotiationId").asText(),ice=frame.path("iceGeneration").asText();if(!negotiation.matches("[1-9][0-9]{0,18}")||!ice.matches("[1-9][0-9]{0,18}")){fail("NEGOTIATION_WIRE_CONTRACT_MISSING");return;}state.round=new Round(frame.path("callId").asText(),negotiation,ice);activeTraces.put(client.index(),state.round);state.round.trace().answerObserved();send(state,"ANSWER",negotiation,null,JSON.createObjectNode().put("sdp",answer),now,EvidenceWriter.Operation.RELAY);}
         case "ANSWER"->{synchronized(state){if(state.round!=null)state.round.trace().answerObserved();}}
         case "END_OF_CANDIDATES"->{} // The peer's terminal sequence never reopens or echoes our local trace.
         case "ESTABLISHED"->{if(state.outgoing&&!state.established){state.established=true;long count=established.incrementAndGet();peakEstablished.accumulateAndGet(count,Math::max);state.hangupAt=now+Duration.ofSeconds(targets.path("meanCallSeconds").asLong()).toNanos();}}
-        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.call=null;state.invite=null;state.round=null;state.outgoing=false;}
+        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.call=null;state.invite=null;activeTraces.remove(client.index(),state.round);state.round=null;state.outgoing=false;}
         case "AUTH_EXPIRING"->client.refresh(now);
         case "RECONNECT"->client.close();
         default->{}
     }if(frame.has("eventId")&&state.call!=null)send(state,"EVENT_RECEIVED",null,null,JSON.createObjectNode().put("eventId",frame.path("eventId").asText()),now,EvidenceWriter.Operation.CONTROL);}
     private void sync(State state,long intended){send(state,"SYNC_CALL",null,null,JSON.createObjectNode(),intended,EvidenceWriter.Operation.SYNC).whenComplete((reply,error)->{
         if(error!=null||reply.path("type").asText().equals("ERROR"))return;
-        try{var ids=roundIds(reply);if(ids.isEmpty())return;var round=ids.get();synchronized(state){state.round=new Round(state.call,round.negotiation(),round.ice());if(state.outgoing)send(state,"OFFER",round.negotiation(),null,JSON.createObjectNode().put("sdp",offer),System.nanoTime(),EvidenceWriter.Operation.RELAY);}}
+        try{var ids=roundIds(reply);if(ids.isEmpty())return;var round=ids.get();synchronized(state){state.round=new Round(state.call,round.negotiation(),round.ice());activeTraces.put(state.client.index(),state.round);if(state.outgoing)send(state,"OFFER",round.negotiation(),null,JSON.createObjectNode().put("sdp",offer),System.nanoTime(),EvidenceWriter.Operation.RELAY);}}
         catch(RuntimeException invalid){fail("SYNC_WIRE_CONTRACT_INVALID");}
     });}
     private CompletionStage<JsonNode> send(State state,String type,String negotiation,String ice,ObjectNode payload,long intended,EvidenceWriter.Operation operation){var body=JSON.createObjectNode().put("v",1).put("type",type).put("requestId",DistributedLoadGenerator.operation(seed,state.client.index(),type,state.operations.incrementAndGet()).toString());if(state.call!=null)body.put("callId",state.call);if(negotiation!=null)body.put("negotiationId",negotiation);if(ice!=null)body.put("iceGeneration",ice);body.set("payload",payload);return state.client.request(body,intended,operation);}
