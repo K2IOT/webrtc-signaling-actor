@@ -113,4 +113,62 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         self.assertIn('INVALID_PERCENTILE_ORDER:p2:control',errors)
         self.assertIn('MISSING_RAW_PERCENTILES:p2:relay',errors)
 
+    def envelope(self,sockets=10000000):
+        return {'name':'TEST_ONLY_UNIT_ENVELOPE','sockets':sockets,'distinctUsers':int(sockets*.8),'establishedCalls':int(sockets*.3),'callAttemptsPerSecond':int(sockets/1000),'meanCallSeconds':300,'inboundSetupFramesPerSecond':int(sockets/20),'registrationsPerSecond':int(sockets/500),'crossCellRatio':.98}
+    def test_lower_measured_envelope_requires_indexed_capacity_adr_and_never_claims_10m(self):
+        manifest={'declaredEnvelope':self.envelope(1000000)}
+        errors,decision=verifier.envelope_decision(manifest,{})
+        self.assertIn('LOWER_ENVELOPE_REQUIRES_CAPACITY_ADR',errors)
+        manifest['capacityAdrArtifact']='approved-capacity-adr.md'
+        errors,decision=verifier.envelope_decision(manifest,{'approved-capacity-adr.md':{}})
+        self.assertEqual(errors,[])
+        self.assertEqual(decision,'PRODUCTION_QUALIFIED:TEST_ONLY_UNIT_ENVELOPE')
+        self.assertEqual(verifier.required_stages(manifest),('10k','100k','200k-per-cell','multi-cell','p0-envelope','p2','p2-n-minus-one','soak-24h'))
+    def test_ten_million_label_requires_exact_spec_p2_envelope(self):
+        manifest={'declaredEnvelope':self.envelope()}
+        self.assertEqual(verifier.envelope_decision(manifest,{})[0],[])
+        manifest['declaredEnvelope']['establishedCalls']=1
+        self.assertIn('TEN_MILLION_ENVELOPE_MISMATCH:establishedCalls',verifier.envelope_decision(manifest,{})[0])
+    def test_invalid_declared_envelope_numbers_never_qualify(self):
+        for value in (float('nan'),True,-1,'10000'):
+            manifest={'declaredEnvelope':self.envelope()};manifest['declaredEnvelope']['callAttemptsPerSecond']=value
+            self.assertTrue(verifier.envelope_decision(manifest,{})[0])
+
+    def test_java_hdr_fixture_is_decoded_in_microseconds_with_all_actual_samples(self):
+        path=MODULE.parent/'tests'/'fixtures'/'TEST_ONLY_latency.hdr'
+        decoded=verifier.hdr_metrics(path)
+        self.assertEqual(decoded['count'],4)
+        self.assertEqual(decoded['p50'],2.0)
+        self.assertEqual(decoded['p95'],20.015)
+        self.assertEqual(decoded['p99'],20.015)
+        self.assertEqual(decoded['p999'],20.015)
+    def test_malformed_raw_hdr_never_becomes_a_percentile_measurement(self):
+        malformed=self.root/'not-a-histogram.hdr';malformed.write_bytes(b'not a histogram')
+        with self.assertRaises(ValueError):verifier.hdr_metrics(malformed)
+
+    def worker_fixture(self):
+        import json,shutil
+        context,_=self.gate('capacity');directory=self.root/'worker';directory.mkdir()
+        histogram=MODULE.parent/'tests'/'fixtures'/'TEST_ONLY_latency.hdr';shutil.copyfile(histogram,directory/'latency.hdr');shutil.copyfile(histogram,directory/'control.hdr')
+        summary={**context,'status':'PASSED','testOnly':False,'workerIndex':0,'workerCount':1,'workerHostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketRange':{'start':0,'end':4},'rawHistogram':'latency.hdr','generatorSamples':'generator.jsonl','failures':[],'observed':{'attempts':4,'successes':4,'failures':0,'missedIntendedArrivals':0,'lateDispatches':0,'peakAuthenticatedSockets':4,'durationSeconds':1,'latencies':{'CONTROL':{'samples':4,'p50Ms':2.0,'p95Ms':20.015,'p99Ms':20.015,'p999Ms':20.015}}}}
+        sample={'elapsedNanos':1000000000,'sampleIntervalNanos':1000000000,'cpu':.1,'nicReceiveBytesPerSecond':1,'nicTransmitBytesPerSecond':1,'nicCapacityBytesPerSecond':1000,'fd':1,'fdSoftLimit':100,'eventLoopLagNanos':0,'pendingOperations':0,'maxPendingOperations':100,'pendingBytes':0,'maxPendingBytes':1000,'headroom':{key:True for key in ('cpu','nic','fd','eventLoop','pendingOperations','pendingBytes')}}
+        (directory/'summary.json').write_text(json.dumps(summary));(directory/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        descriptor={'workerIndex':0,'workerCount':1,'hostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketStart':0,'socketEnd':4,'summaryArtifact':'worker/summary.json','rawHistogramArtifact':'worker/latency.hdr','generatorSamplesArtifact':'worker/generator.jsonl','phaseArtifacts':{'CONTROL':'worker/control.hdr'}}
+        records={name:{} for name in ('worker/summary.json','worker/latency.hdr','worker/generator.jsonl','worker/control.hdr')}
+        return context,descriptor,records,summary,sample
+    def test_worker_original_samples_override_a_declared_headroom_boolean(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        self.assertEqual(verifier.worker_errors(self.root,worker,context,records),[])
+        sample['cpu']=.99
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        self.assertIn('WORKER_RESOURCE_HEADROOM_NOT_PROVEN',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_summary_cannot_change_source_binding_or_raw_sample_count(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture();summary['sourceIp']='192.0.2.2';summary['observed']['attempts']=3;summary['observed']['successes']=3
+        (self.root/'worker'/'summary.json').write_text(json.dumps(summary))
+        errors=verifier.worker_errors(self.root,worker,context,records)
+        self.assertIn('WORKER_SOURCE_BINDING_MISMATCH',errors)
+        self.assertIn('WORKER_RAW_SAMPLE_COUNT_MISMATCH',errors)
+
 if __name__=='__main__':unittest.main()

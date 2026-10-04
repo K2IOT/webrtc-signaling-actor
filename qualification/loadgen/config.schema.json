@@ -192,6 +192,18 @@
       "type": "string",
       "format": "date-time",
       "minLength": 20
+    },
+    "identityContractFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "topologyFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hardwareFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "required": [
@@ -230,6 +242,9 @@
     "answerSdpFile",
     "iceCandidatesFile",
     "mediaMode",
-    "scheduledStartAt"
+    "scheduledStartAt",
+    "identityContractFingerprint",
+    "topologyFingerprint",
+    "hardwareFingerprint"
   ]
 }

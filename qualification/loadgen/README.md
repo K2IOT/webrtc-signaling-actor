@@ -9,7 +9,8 @@ must have its own genuine `(issuer,jti)` and signed RS256 token supplied by the 
 issuer. Multiple sessions per user are intentional. Tokens and signing private keys
 must never enter evidence, command-line arguments or logs.
 
-The worker config conforms to `config.schema.json`. Its source IP must be assigned to
+The worker config conforms to `config.schema.json` and requires all five candidate
+configuration, compatibility, identity-contract, topology and hardware fingerprints. Its source IP must be assigned to
 the local machine; WSS endpoints require TLS1.3, trusted CA and hostname validation.
 Supply pinned RSA public keys and original/refresh JSONL inventories containing
 `socketIndex`, `token`. Inventory records must match the deterministic user ID
@@ -34,8 +35,8 @@ common instant. ICE traces seal once at their actual last admitted sequence; the
 never echoes a peer END or sends a later candidate for a sealed trace.
 NIC rates use only the interface owning the assigned source IP, with actual sample intervals.
 FD headroom uses the operating system process soft limit. CPU, NIC and FD require at
-least20% headroom; event-loop lag must remain<=5ms, and pending count/bytes are also
-checked against80% of their configured bounds. Missing measurements fail closed.
+least 20% headroom; event-loop lag must remain <=5ms, and pending count/bytes are also
+checked against 80% of their configured bounds. Missing measurements fail closed.
 Generator saturation invalidates capacity evidence even if the server appears healthy.
 Requested sockets, established calls and throughput are distinct from observed values.
 

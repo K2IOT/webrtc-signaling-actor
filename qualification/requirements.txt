@@ -1,0 +1,4 @@
+PyYAML==6.0.3
+cryptography==50.0.0
+hdrhistogram==0.10.3
+pbr==7.0.3

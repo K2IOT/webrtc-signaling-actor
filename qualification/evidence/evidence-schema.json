@@ -107,6 +107,22 @@
         "start",
         "end"
       ]
+    },
+    "identityContractFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "topologyFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hardwareFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sourceIp": {
+      "type": "string",
+      "minLength": 1
     }
   },
   "required": [
@@ -131,6 +147,10 @@
     "rawHistogram",
     "generatorSamples",
     "failures",
-    "socketRange"
+    "socketRange",
+    "identityContractFingerprint",
+    "topologyFingerprint",
+    "hardwareFingerprint",
+    "sourceIp"
   ]
 }

@@ -12,8 +12,13 @@ A trusted external collector signs the canonical manifest using its approved Ed2
 key. Verify against an external trust file; a public key supplied by the evidence bundle
 cannot authorize itself. Test-only roots and test-only evidence cannot qualify a release.
 
-Staged capacity evidence is mandatory:10k,100k,200k/cell,multi-cell,P010M,P2,P2+N-1
-and at least24h retained-data soak. Source worker saturation or missing CPU/NIC/FD/
+For the full 10M envelope, staged capacity evidence is mandatory: 10k, 100k,
+200k/cell, multi-cell, P0 10M, P2, P2+N-1 and at least 24h retained-data soak.
+A smaller measured envelope requires an indexed approved capacity ADR and its
+applicable staged tests, P0/P2, N-1 and 24h soak; it can produce only
+`PRODUCTION_QUALIFIED:<envelope>`. All 12 gates remain mandatory at either scale.
+The declared envelope must include sockets, distinct users, established calls, call
+attempts/s, mean call duration, setup frames/s, registrations/s and cross-cell ratio. Source worker saturation or missing CPU/NIC/FD/
 event-loop measurements blocks a capacity claim. Safety violations always block release.
 Signaling emulation does not prove real media recovery/preservation. Reports and averages
 cannot substitute for original measurements or independent fencing/WAL/restore receipts.
@@ -23,3 +28,21 @@ and authenticated measurement receipts exist, status remains NOT_QUALIFIED. This
 repository's local PostgreSQL/Pekko/TLS tests are correctness evidence and never replace
 those production inputs. The verifier and its unit fixtures must not be confused with
 a completed production qualification run.
+
+Create an isolated Python environment and install `qualification/requirements.txt`.
+Run the verifier with `QUALIFICATION_PYTHON=/path/to/venv/bin/python bash
+qualification/scenarios/verify-evidence.sh /approved/candidate --trust-file
+/approved/external-collector-trust.json`. Run unit tests with that same Python using
+`python -m unittest discover -s qualification/scenarios/tests`.
+
+The verifier decodes original bounded Java HDR V2 compressed files in microseconds
+and compares all declared sample counts and p50/p95/p99/p99.9 values. Each worker
+needs indexed summary, aggregate HDR, nonempty phase HDR and generator JSONL artifacts.
+`phaseArtifacts` maps each nonempty phase name to its indexed original HDR file.
+Worker summaries bind the exact candidate, images, all five fingerprints, source IP,
+host and disjoint socket range. The verifier recomputes CPU/NIC/FD/queue headroom
+from original samples; a declared `headroom: true` cannot override a failed measurement.
+Unmeasured intervals and missing decoder dependencies block qualification.
+
+`tests/fixtures/TEST_ONLY_latency.hdr` is a four-sample Java-generated unit fixture.
+It is never release evidence and contains no credentials or production measurements.

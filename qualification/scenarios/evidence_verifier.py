@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import re
+import struct
+import zlib
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import yaml
@@ -130,11 +132,114 @@ def _signature(root,manifest,trust_file,now):
         return []
     except Exception:return ['INVALID_COLLECTOR_SIGNATURE_OR_ROOT']
 
+P2_ENVELOPE={'sockets':10000000,'distinctUsers':8000000,'establishedCalls':3000000,'callAttemptsPerSecond':10000,'meanCallSeconds':300,'inboundSetupFramesPerSecond':500000,'registrationsPerSecond':20000,'crossCellRatio':.98}
+
+def envelope_decision(manifest,records):
+    envelope=mapping(manifest.get('declaredEnvelope'));errors=[];name=envelope.get('name')
+    if not isinstance(name,str) or not re.fullmatch('[A-Z0-9_:-]{1,96}',name):errors.append('INVALID_ENVELOPE_NAME')
+    for key in P2_ENVELOPE:
+        value=envelope.get(key)
+        if key=='crossCellRatio':
+            if not number(value,0,1):errors.append('INVALID_ENVELOPE:'+key)
+        elif type(value) is not int or value<1:errors.append('INVALID_ENVELOPE:'+key)
+    if errors:return errors,'NOT_QUALIFIED'
+    if envelope['sockets']>10000000 or envelope['distinctUsers']>envelope['sockets'] or envelope['establishedCalls']*2>envelope['distinctUsers']:errors.append('INCONSISTENT_DECLARED_ENVELOPE')
+    if envelope['sockets']==10000000:
+        for key,expected in P2_ENVELOPE.items():
+            if envelope[key]!=expected:errors.append('TEN_MILLION_ENVELOPE_MISMATCH:'+key)
+        decision='10M_QUALIFIED:'+name
+    else:
+        if not isinstance(manifest.get('capacityAdrArtifact'),str) or manifest['capacityAdrArtifact'] not in records:errors.append('LOWER_ENVELOPE_REQUIRES_CAPACITY_ADR')
+        decision='PRODUCTION_QUALIFIED:'+name
+    return errors,decision if not errors else 'NOT_QUALIFIED'
+
+def required_stages(manifest):
+    sockets=mapping(manifest.get('declaredEnvelope')).get('sockets',10000000)
+    if type(sockets) is not int or sockets<1 or sockets>10000000:return STAGES
+    if sockets==10000000:return STAGES
+    preparatory=tuple(name for name,minimum in (('10k',10000),('100k',100000),('200k-per-cell',200000),('multi-cell',400000)) if sockets>=minimum)
+    return preparatory+('p0-envelope','p2','p2-n-minus-one','soak-24h')
+
+def hdr_metrics(path):
+    try:
+        from hdrh.histogram import HdrHistogram
+        raw=_read(Path(path),4194304)
+        if len(raw)<8:raise ValueError('Truncated HDR')
+        cookie,length=struct.unpack('>ii',raw[:8])
+        if cookie!=0x1c849314 or length!=len(raw)-8:raise ValueError('Unsupported bounded HDR encoding')
+        decompressor=zlib.decompressobj();payload=decompressor.decompress(raw[8:],16777217)
+        if len(payload)>16777216 or not decompressor.eof or decompressor.unconsumed_tail or decompressor.unused_data or len(payload)<40:raise ValueError('Invalid or oversized HDR payload')
+        encoding,size,offset,precision,lowest,highest,ratio=struct.unpack('>iiiiqqd',payload[:40])
+        if encoding!=0x1c849313 or size!=len(payload)-40 or offset!=0 or not 1<=precision<=3 or not 1<=lowest<=highest<=86400000000 or ratio!=1.0:raise ValueError('Unsupported HDR bounds or units')
+        histogram=HdrHistogram.decode(raw[8:],b64_wrap=False)
+        return {'count':histogram.get_total_count(),**{name:histogram.get_value_at_percentile(percentile)/1000.0 for name,percentile in (('p50',50),('p95',95),('p99',99),('p999',99.9))}}
+    except Exception as invalid:raise ValueError('Raw HDR unavailable or invalid') from None
+
+def _json(path,limit=1048576):
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError('Duplicate JSON key')
+            result[key]=value
+        return result
+    return json.loads(_read(path,limit),object_pairs_hook=unique,parse_constant=lambda value:(_ for _ in ()).throw(ValueError('Nonfinite JSON')))
+
+def resource_headroom(sample):
+    if not isinstance(sample,dict):return False
+    cpu,rx,tx,nic,fd,fd_limit,lag,pending,max_pending,queued,max_bytes=(sample.get(key) for key in ('cpu','nicReceiveBytesPerSecond','nicTransmitBytesPerSecond','nicCapacityBytesPerSecond','fd','fdSoftLimit','eventLoopLagNanos','pendingOperations','maxPendingOperations','pendingBytes','maxPendingBytes'))
+    return (number(cpu,0,.8) and number(nic,1) and number(rx,0,nic*.8) and number(tx,0,nic*.8)
+        and number(fd_limit,1) and number(fd,0,fd_limit*.8) and number(lag,0,5000000)
+        and number(max_pending,1) and number(pending,0,max_pending*.8) and number(max_bytes,1) and number(queued,0,max_bytes*.8)
+        and number(sample.get('sampleIntervalNanos'),1,2000000000))
+
+def worker_errors(root,worker,manifest,records):
+    errors=[]
+    try:
+        summary=_json(artifact_path(root,worker['summaryArtifact']))
+        if not isinstance(summary,dict):return ['INVALID_WORKER_SUMMARY']
+        if summary.get('status')!='PASSED' or summary.get('testOnly') is not False or summary.get('failures')!=[]:errors.append('WORKER_RUN_NOT_PASSED')
+        if any(summary.get(key)!=manifest.get(key) or key not in summary for key in IDENTITY_BINDINGS):errors.append('WORKER_CANDIDATE_BINDING_MISMATCH')
+        if summary.get('sourceIp')!=worker.get('sourceIp') or summary.get('workerHostId')!=worker.get('hostId') or summary.get('workerIndex')!=worker.get('workerIndex') or summary.get('workerCount')!=worker.get('workerCount'):errors.append('WORKER_SOURCE_BINDING_MISMATCH')
+        declared=mapping(summary.get('socketRange'));start,stop=worker.get('socketStart'),worker.get('socketEnd')
+        if type(start) is not int or type(stop) is not int or not 0<=stop-start<=200000 or declared!={'start':start,'end':stop}:errors.append('WORKER_RANGE_OR_LOCAL_BOUND_MISMATCH')
+        base=Path(worker['summaryArtifact']).parent
+        for field,target in (('rawHistogram','rawHistogramArtifact'),('generatorSamples','generatorSamplesArtifact')):
+            if not isinstance(summary.get(field),str) or str(base/summary[field])!=worker.get(target) or worker.get(target) not in records:errors.append('WORKER_ARTIFACT_BINDING_MISMATCH')
+        raw=hdr_metrics(artifact_path(root,worker['rawHistogramArtifact']));observed=mapping(summary.get('observed'));attempts=observed.get('attempts');successes=observed.get('successes');failures=observed.get('failures')
+        if not number(attempts,1) or attempts!=raw['count']:errors.append('WORKER_RAW_SAMPLE_COUNT_MISMATCH')
+        if not number(successes) or not number(failures) or successes+failures!=attempts or failures!=0 or observed.get('missedIntendedArrivals')!=0:errors.append('WORKER_FAILED_OR_MISSED_ARRIVALS')
+        if observed.get('peakAuthenticatedSockets')!=stop-start:errors.append('WORKER_SOCKET_TARGET_NOT_OBSERVED')
+        phases=mapping(observed.get('latencies'));phase_count=0
+        for name,phase in phases.items():
+            if not isinstance(phase,dict) or type(phase.get('samples')) is not int or phase['samples']<0:errors.append('INVALID_WORKER_PHASE');continue
+            phase_count+=phase['samples']
+            if phase['samples']==0:continue
+            path=mapping(worker.get('phaseArtifacts')).get(name)
+            if path not in records:errors.append('MISSING_WORKER_RAW_PHASE');continue
+            decoded=hdr_metrics(artifact_path(root,path))
+            if decoded['count']!=phase['samples'] or any(phase.get(key+'Ms')!=decoded[key] for key in ('p50','p95','p99','p999')):errors.append('WORKER_RAW_PHASE_MISMATCH')
+        if phase_count!=attempts:errors.append('WORKER_PHASE_ACCOUNTING_MISMATCH')
+        samples=artifact_path(root,worker['generatorSamplesArtifact'])
+        if samples.stat().st_size>134217728:errors.append('WORKER_SAMPLES_EXCEED_BOUND')
+        else:
+            count=0;previous=-1;last=0
+            with samples.open() as stream:
+                while line:=stream.readline(8193):
+                    count+=1
+                    if len(line)>8192 or count>100000:raise ValueError('Worker sample bounds')
+                    sample=json.loads(line,parse_constant=lambda value:(_ for _ in ()).throw(ValueError('Nonfinite sample')))
+                    elapsed=sample.get('elapsedNanos')
+                    if not resource_headroom(sample) or type(elapsed) is not int or elapsed<previous:errors.append('WORKER_RESOURCE_HEADROOM_NOT_PROVEN')
+                    previous=elapsed;last=elapsed
+            if count==0 or not number(observed.get('durationSeconds'),1) or last<max(0,observed['durationSeconds']-1)*1000000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
+    except Exception:errors.append('INVALID_OR_MISSING_WORKER_ARTIFACT')
+    return list(dict.fromkeys(errors))
+
 def _capacity(root,gate,manifest,records):
     errors=[];metrics=gate.get('metrics',{});stages=metrics.get('stages',{}) if isinstance(metrics,dict) else {}
-    if not isinstance(stages,dict) or set(stages)!=set(STAGES):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
+    if not isinstance(stages,dict) or set(stages)!=set(required_stages(manifest)):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
     previous=None
-    for name in STAGES:
+    for name in required_stages(manifest):
         stage=stages[name]
         if not isinstance(stage,dict):errors.append('INVALID_CAPACITY_STAGE:'+name);continue
         if stage.get('status')!='PASSED' or stage.get('testOnly') is not False or stage.get('generatorLimited') is not False:errors.append('CAPACITY_STAGE_NOT_VALID:'+name)
@@ -154,6 +259,10 @@ def _capacity(root,gate,manifest,records):
             elif kind=='relay' and (histogram['p95']>50 or histogram['p99']>150):errors.append('RELAY_LATENCY_TARGET_MISSED:'+name)
             elif kind=='activation' and (histogram['p95']>150 or histogram['p99']>500):errors.append('ACTIVATION_LATENCY_TARGET_MISSED:'+name)
             elif kind=='clientDelivery' and (histogram['p95']>500 or histogram['p99']>1000):errors.append('DELIVERY_LATENCY_TARGET_MISSED:'+name)
+            try:
+                decoded=hdr_metrics(artifact_path(root,histogram.get('rawArtifact')))
+                if any(histogram.get(key)!=decoded[key] for key in ('count','p50','p95','p99','p999')):errors.append('RAW_HISTOGRAM_MISMATCH:'+name+':'+kind)
+            except Exception:errors.append('INVALID_RAW_HISTOGRAM:'+name+':'+kind)
         resource=stage.get('resourceMeasurements',{})
         if not isinstance(resource,dict) or any(k not in resource or resource[k] is None for k in RESOURCE_METRICS):errors.append('MISSING_RESOURCE_MEASUREMENTS:'+name)
         workers=stage.get('workers',[])
@@ -162,6 +271,7 @@ def _capacity(root,gate,manifest,records):
             end=0;count=len(workers);ips=set();hosts=set()
             for index,worker in enumerate(workers):
                 if not isinstance(worker,dict) or worker.get('workerIndex')!=index or worker.get('workerCount')!=count or worker.get('testOnly') is not False or worker.get('summaryArtifact') not in records or worker.get('rawHistogramArtifact') not in records or worker.get('generatorSamplesArtifact') not in records:errors.append('INVALID_WORKER_EVIDENCE:'+name);continue
+                errors.extend(error+':'+name+':'+str(index) for error in worker_errors(root,worker,manifest,records))
                 start,stop=worker.get('socketStart'),worker.get('socketEnd')
                 if type(start) is not int or type(stop) is not int or start!=end or stop<start:errors.append('WORKER_RANGE_GAP_OR_OVERLAP:'+name)
                 else:end=stop
@@ -169,13 +279,15 @@ def _capacity(root,gate,manifest,records):
                 ips.add(worker.get('sourceIp'));hosts.add(worker.get('hostId'))
                 if worker.get('generatorLimited') is not False or any(mapping(worker.get('headroom')).get(k) is not True for k in ('cpu','nic','fd','eventLoop','pendingOperations','pendingBytes')):errors.append('GENERATOR_HEADROOM_NOT_PROVEN:'+name)
             if end!=stage.get('observedSockets'):errors.append('OBSERVED_SOCKETS_NOT_COVERED:'+name)
-        minimum={'10k':10000,'100k':100000,'200k-per-cell':200000,'multi-cell':400000,'p0-10m':10000000,'p2':10000000,'p2-n-minus-one':10000000,'soak-24h':10000000}[name]
+        envelope=mapping(manifest.get('declaredEnvelope')) or P2_ENVELOPE
+        minimum={'10k':10000,'100k':100000,'200k-per-cell':200000,'multi-cell':400000}.get(name,envelope.get('sockets',10000000))
         if not number(stage.get('observedSockets'),minimum):errors.append('STAGE_SOCKET_TARGET_MISSED:'+name)
         if name in ('p2','p2-n-minus-one','soak-24h'):
-            expected={'distinctUsers':8000000,'establishedCalls':3000000,'callAttemptsPerSecond':10000,'inboundSetupFramesPerSecond':500000,'registrationsPerSecond':20000}
+            expected={key:envelope.get(key,P2_ENVELOPE[key]) for key in ('distinctUsers','establishedCalls','callAttemptsPerSecond','inboundSetupFramesPerSecond','registrationsPerSecond')}
             for field,target in expected.items():
                 if not number(mapping(stage.get('observed')).get(field),target):errors.append('P2_TARGET_MISSED:'+name+':'+field)
-            if not number(mapping(stage.get('observed')).get('crossCellRatio'),.97,.99):errors.append('P2_CROSS_CELL_TARGET_MISSED:'+name)
+            ratio=envelope.get('crossCellRatio',.98)
+            if not number(mapping(stage.get('observed')).get('crossCellRatio'),max(0,ratio-.01),min(1,ratio+.01)):errors.append('P2_CROSS_CELL_TARGET_MISSED:'+name)
         if name=='soak-24h' and not number(stage.get('durationSeconds'),86400):errors.append('SOAK_DURATION_INSUFFICIENT')
     return errors
 
@@ -218,10 +330,9 @@ def _verify(root,trust_file=None,now=None):
         if name=='capacity':errors.extend(_capacity(root,gate,manifest,records))
     metadata=manifest.get('environment',{})
     if not isinstance(metadata,dict) or any(not metadata.get(k) for k in ('instanceTypes','kernel','jvm','podRequestsLimits','topology','dependencyVersions','datasetCardinalities','generatorModel','seedScenario','originalFaultTimelines')):errors.append('MISSING_ENVIRONMENT_METADATA')
-    envelope=manifest.get('declaredEnvelope',{})
-    if not isinstance(envelope,dict) or not isinstance(envelope.get('name'),str) or not re.fullmatch('[A-Z0-9_:-]{1,96}',envelope['name']) or envelope.get('sockets')!=10000000:errors.append('DECLARED_ENVELOPE_NOT_MEASURED_10M')
+    envelope_errors,decision=envelope_decision(manifest,records);errors.extend(envelope_errors)
     errors[:]=list(dict.fromkeys(errors))
-    if not errors:report['decision']='10M_QUALIFIED:'+envelope['name']
+    if not errors:report['decision']=decision
     return report
 
 def verify(root,trust_file=None,now=None):
