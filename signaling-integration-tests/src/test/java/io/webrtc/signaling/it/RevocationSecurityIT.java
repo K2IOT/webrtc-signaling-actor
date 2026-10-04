@@ -80,4 +80,24 @@ class RevocationSecurityIT {
         }
     }
 
+    @Test void authenticatedPartialCatchUpInvalidatesRevokedRoutesWithoutAdvertisingCurrentSourceFreshness() throws Exception {
+        try (var f = new LocalInviteAtomicIT.Fixture()) {
+            var revoked = SessionAuthReadIT.route(f, f.sender("security-partial-revoked"));
+            var untouched = SessionAuthReadIT.route(f, f.sender("security-partial-untouched"));
+            var worker = worker(f, new AtomicBoolean(true)); var now = Instant.now();
+            var event = new RevocationState.Event(revoked.key().issuer(), revoked.user(), revoked.key().jti(), 1, 1, now);
+            CoordinatorGrantIT.done(worker.apply(batch(0, 0, List.of(), now)));
+            try (var c = f.connection()) { assertThat(worker.allowed(c, SessionAuthReadIT.principal(untouched))).isTrue(); }
+            var partial = new RevocationReconciler.Batch(0, 1, List.of(event), now, SOURCE, List.of(), 2);
+            assertThat(CoordinatorGrantIT.done(worker.apply(partial))).isEqualTo(1);
+            assertThat(f.sessions.lookupLiveRoutes(revoked.user(), 1).toCompletableFuture().join()).isEmpty();
+            try (var c = f.connection()) { assertThat(worker.allowed(c, SessionAuthReadIT.principal(untouched))).isFalse(); }
+            assertThat(CoordinatorGrantIT.done(worker.progress()).checkedAt()).isEqualTo(Instant.EPOCH);
+            var completed = new RevocationReconciler.Batch(1, 2, List.of(), Instant.now(), SOURCE, List.of(), 2);
+            assertThat(CoordinatorGrantIT.done(worker.apply(completed))).isEqualTo(2);
+            try (var c = f.connection()) { assertThat(worker.allowed(c, SessionAuthReadIT.principal(untouched))).isTrue(); }
+            assertThatThrownBy(() -> new RevocationReconciler.Batch(2, 3, List.of(), Instant.now(), SOURCE, List.of(), 2)).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
 }
