@@ -40,7 +40,9 @@ public final class SessionRegistryService {
     /** Auth-only native read: terminal/result recovery must not depend on a live call reservation. */
     public DbOperation<SessionProofView> readCurrentSessionTracked(SessionRepository.Route expected,AuthPrincipal principal,long directoryEpoch,Duration budget){
         if(security==null)throw new IllegalStateException("Native session security policy required");
-        return sql.submitTracked(DbClass.CRITICAL,budget,c->{
+        return sql.submitTracked(DbClass.CRITICAL,budget,c->currentSessionView(c,expected,principal,directoryEpoch));
+    }
+    private SessionProofView currentSessionView(java.sql.Connection c,SessionRepository.Route expected,AuthPrincipal principal,long directoryEpoch)throws java.sql.SQLException {
             guard(c,expected.user(),directoryEpoch);authorize(c,principal);
             var route=sessions.find(c,expected.key());
             if(route==null||!route.user().equals(principal.userId())||!route.key().equals(principal.key())
@@ -51,8 +53,18 @@ public final class SessionRegistryService {
             java.time.Instant now;try(var q=c.createStatement();var r=q.executeQuery("SELECT clock_timestamp()")){r.next();now=r.getTimestamp(1).toInstant();}
             java.time.Instant until=now.plusSeconds(5);for(var expiry:List.of(principal.expiresAt(),route.tokenExpiresAt(),boot.leaseUntil()))if(expiry.isBefore(until))until=expiry;
             if(!until.isAfter(now))throw new AuthoritySql.FencedException();return new SessionProofView(route,now,until,cell,storageEpoch,directoryEpoch);
+    }
+    /** INVITE-scope recovery is native to the authenticated caller home and needs no live call/root. */
+    public DbOperation<Optional<CallCommandService.Outcome>> readInviteResultTracked(SessionRepository.Route expected,AuthPrincipal principal,long directoryEpoch,RequestId original,Duration budget){
+        if(security==null)throw new IllegalStateException("Native session security policy required");Objects.requireNonNull(original);
+        return sql.submitTracked(DbClass.CRITICAL,budget,c->{
+            currentSessionView(c,expected,principal,directoryEpoch);
+            var stored=new CommandResultRepository().find(c,expected.key(),CommandScope.invite(),original);
+            if(stored==null)return Optional.empty();
+            return Optional.of(stored.outcome()!=null?stored.outcome():new CallCommandService.Outcome("PENDING","PENDING",stored.callId(),0,null,List.of()));
         });
     }
+
     private void validateBoot(GatewayLeaseRepository.Boot boot){if(!cell.equals(boot.cell())||storageEpoch!=boot.storageEpoch())throw new AuthoritySql.FencedException();}
     private void guard(java.sql.Connection c,UserId user,long directoryEpoch)throws java.sql.SQLException {AuthoritySql.home(c,cell,storageEpoch,Map.of(bucket(user),directoryEpoch),List.of(user.value()));}
     public static int bucket(UserId user){try{byte[] digest=MessageDigest.getInstance("SHA-256").digest(user.value().getBytes(StandardCharsets.UTF_8));return (digest[6]&63)<<8|(digest[7]&255);}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
