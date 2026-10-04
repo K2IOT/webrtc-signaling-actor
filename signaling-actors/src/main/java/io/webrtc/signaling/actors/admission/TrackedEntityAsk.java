@@ -7,6 +7,9 @@ import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 /** Bounded callers own this collector until both logical outcome and independent cleanup arrive. */
 public final class TrackedEntityAsk {
+    public static final class NotEnqueued extends RuntimeException {
+        public NotEnqueued(Throwable cause) { super("Rejected before entity enqueue", cause); }
+    }
     private enum DeadlineExpired {INSTANCE}
     private TrackedEntityAsk(){}
     public static <T> ActorOperation<T> ask(ActorSystem<?> system,Duration budget,Class<T> resultType,BiConsumer<ActorRef<T>,CompletionReceipt> send){
@@ -20,7 +23,7 @@ public final class TrackedEntityAsk {
         });}));
         var collector=system.systemActorOf(behavior,"physical-completion-"+operation,Props.empty());var receipt=new CompletionReceipt(operation,collector.narrow());
         logical.orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS);
-        try{send.accept(collector.narrow(),receipt);}catch(RuntimeException failed){logical.completeExceptionally(failed);/* Unknown dispatch is quarantined until an explicit physical receipt. */}
+        try{send.accept(collector.narrow(),receipt);}catch(RuntimeException failed){logical.completeExceptionally(failed);if(failed instanceof NotEnqueued)receipt.signal();/* Other dispatch failures remain quarantined until an explicit physical receipt. */}
         var retained=CompletableFuture.allOf(physical,logical.handle((value,failure)->null));
         return new ActorOperation<>(logical.minimalCompletionStage(),retained.minimalCompletionStage());
     }
