@@ -93,6 +93,9 @@ class PostgresShardLeaseContractIT {
             PostgresShardLeaseProvider.install(system,repository,"c001",1,UUID.randomUUID(),()->true);
             var adapter=provider.getLease("lease-provider-test-shard-SignalingCallV1-106","signaling.postgres-lease",host);assertThat(adapter).isInstanceOf(PostgresShardLease.class);
             assertThat(adapter.acquire().toCompletableFuture().join()).isTrue();
+            PostgresShardLeaseProvider.shedNewAcquisition(system);assertThat(adapter.acquire().toCompletableFuture().join()).isTrue();
+            var late=provider.getLease("lease-provider-test-shard-SignalingCallV1-982","signaling.postgres-lease",host);
+            assertThatThrownBy(()->late.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
             PostgresShardLeaseProvider.drain(system).toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(((PostgresShardLease)adapter).currentGrant()).isEmpty();
             assertThatThrownBy(()->adapter.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
@@ -127,6 +130,17 @@ class PostgresShardLeaseContractIT {
         assertThatThrownBy(()->lease.acquire().toCompletableFuture().join()).hasCauseInstanceOf(DbOutcomeUnknownException.class);readSeen.get(2,TimeUnit.SECONDS);
         var drain=lease.drain().toCompletableFuture();assertThatThrownBy(()->drain.get(500,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);assertThat(releases).hasValue(0);
         readCleanup.complete(DbOperation.PhysicalCompletion.FINISHED);drain.get(3,TimeUnit.SECONDS);assertThat(releases).hasValue(1);assertThat(lease.checkLease()).isFalse();
+    }
+
+    @Test void sheddingNewAcquisitionKeepsHeldRootPulsesUntilFrameworkHandoff()throws Exception {
+        var held=lease(980,repository,null);assertThat(held.acquire().toCompletableFuture().join()).isTrue();var first=held.currentGrant().orElseThrow();
+        held.shedNewAcquisition();assertThat(held.acquire().toCompletableFuture().join()).isTrue();assertThat(held.checkLease()).isTrue();
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(7)).until(()->held.currentGrant().map(g->g.sequence()>first.sequence()).orElse(false));
+        assertThat(held.currentGrant().orElseThrow().token()).isEqualTo(first.token());
+        assertThat(held.release().toCompletableFuture().join()).isTrue();
+        assertThatThrownBy(()->held.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+        var fresh=lease(981,repository,null);fresh.shedNewAcquisition();assertThatThrownBy(()->fresh.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+        fresh.drain().toCompletableFuture().get(1,TimeUnit.SECONDS);
     }
 
 }

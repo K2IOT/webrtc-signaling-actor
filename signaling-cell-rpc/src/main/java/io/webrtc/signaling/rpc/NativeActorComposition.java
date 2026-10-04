@@ -68,6 +68,7 @@ public final class NativeActorComposition {
         return handler.nativeCritical(new NativeCriticalCommandExecutor(commands,new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock()),ingress,inputs.homes(),inputs.cell(),inputs.storageEpoch(),inputs.clock()));
     }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
+    public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
     /** Invoke after framework handoff/leave, while the native database remains available. */
     public CompletionStage<Void> drainRoots(){return PostgresShardLeaseProvider.drain(Adapter.toClassic(system));}
     public ActorSystem<?> system(){return system;}

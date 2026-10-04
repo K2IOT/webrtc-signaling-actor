@@ -29,6 +29,7 @@ public final class PostgresShardLease extends Lease {
     @Override public CompletionStage<Boolean> acquire(){return engine.acquire(error->{});}
     @Override public CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){return engine.acquire(callback);}
     @Override public CompletionStage<Boolean> release(){return engine.release();}
+    public void shedNewAcquisition(){engine.shedNewAcquisition();}
     public CompletionStage<Void> drain(){return engine.drain();}
     @Override public boolean checkLease(){return engine.check();}
     public Optional<GroupOwnerRepository.Grant> currentGrant(){return engine.currentGrant();}
@@ -48,16 +49,18 @@ public final class PostgresShardLease extends Lease {
         }
         private final LeaseSettings settings;private final Namespace namespace;private final int group;
         private final GroupOwnership repository;private final ScheduledExecutorService timers;private final BooleanSupplier clock;private final LongSupplier nanos;
-        final AtomicReference<Held> held=new AtomicReference<>();private Held retired;private Pending pending;private boolean draining;private final CompletableFuture<Void> drained=new CompletableFuture<>();private ScheduledFuture<?> pulse,expiry;
+        final AtomicReference<Held> held=new AtomicReference<>();private Held retired;private Pending pending;private boolean draining,acquisitionShed;private final CompletableFuture<Void> drained=new CompletableFuture<>();private ScheduledFuture<?> pulse,expiry;
         Engine(LeaseSettings settings,Namespace namespace,GroupOwnership repository,ScheduledExecutorService timers,BooleanSupplier clock,LongSupplier nanos){
             this.settings=settings;this.namespace=namespace;group=namespace.group(settings);this.repository=Objects.requireNonNull(repository);this.timers=Objects.requireNonNull(timers);this.clock=Objects.requireNonNull(clock);this.nanos=Objects.requireNonNull(nanos);
             var timeouts=settings.timeoutSettings();if(!timeouts.getHeartbeatInterval().equals(Duration.ofSeconds(5))||!timeouts.getHeartbeatTimeout().equals(Duration.ofSeconds(15))||timeouts.getOperationTimeout().isZero()||timeouts.getOperationTimeout().isNegative()||timeouts.getOperationTimeout().compareTo(Duration.ofSeconds(2))>0)throw new IllegalArgumentException("Unqualified lease timeout settings");
         }
         boolean check(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0;}
         Optional<GroupOwnerRepository.Grant> currentGrant(){Held current=held.get();return current!=null&&clock.getAsBoolean()&&nanos.getAsLong()-current.until()<0?Optional.of(current.grant()):Optional.empty();}
+        synchronized void shedNewAcquisition(){acquisitionShed=true;}
         synchronized CompletionStage<Boolean> acquire(Consumer<Optional<Throwable>> callback){
             Objects.requireNonNull(callback);if(draining)return failed(new AuthoritySql.FencedException());if(check()){held.get().tenure().callback=callback;return done(true);}
             if(held.get()!=null)lose(new AuthoritySql.FencedException(),true);
+            if(acquisitionShed)return failed(new AuthoritySql.FencedException());
             if(pending!=null)return pending.kind==Kind.ACQUIRE&&!pending.unknown?pending.result.minimalCompletionStage():failed(new DbOutcomeUnknownException());
             if(retired!=null){release();return done(false);}
             if(!clock.getAsBoolean())return failed(new AuthoritySql.FencedException());
