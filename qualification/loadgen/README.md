@@ -29,6 +29,13 @@ Latency begins at intended arrival on the monotonic clock. Late dispatch, reject
 local work and server failures remain in counters; no coordinated-omission correction
 is used to hide missed intended arrivals. Keep compressed raw HDR histograms and
 resource snapshots, including CPU, NIC, FD, event-loop lag and pending count/bytes.
+All workers share `scheduledStartAt`; authenticated warmup must finish before that
+common instant. ICE traces seal once at their actual last admitted sequence; the worker
+never echoes a peer END or sends a later candidate for a sealed trace.
+NIC rates use only the interface owning the assigned source IP, with actual sample intervals.
+FD headroom uses the operating system process soft limit. CPU, NIC and FD require at
+least20% headroom; event-loop lag must remain<=5ms, and pending count/bytes are also
+checked against80% of their configured bounds. Missing measurements fail closed.
 Generator saturation invalidates capacity evidence even if the server appears healthy.
 Requested sockets, established calls and throughput are distinct from observed values.
 
