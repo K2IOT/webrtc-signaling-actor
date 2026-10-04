@@ -13,7 +13,7 @@ public final class CallCommandService {
     public record Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof,long expectedCallVersion,TargetHome targetHome) {
         public Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof,long expectedCallVersion){this(callId,group,directoryEpoch,proof,expectedCallVersion,null);}
         public Authority(CallId callId,AuthoritySql.GroupToken group,long directoryEpoch,String proof){this(callId,group,directoryEpoch,proof,0);}
-        public Authority {if(expectedCallVersion<0)throw new IllegalArgumentException("Invalid expected call version");}
+        public Authority {if(expectedCallVersion<0||directoryEpoch<0)throw new IllegalArgumentException("Invalid expected call authority");}
     }
     @FunctionalInterface public interface ProofVerifier {boolean verify(CallCommand command,Snapshot snapshot,String proof);}
     public record Outcome(String status,String code,CallId callId,long version,String state,List<UUID> eventIds) implements io.webrtc.signaling.protocol.ApplicationSerializable {public Outcome{eventIds=List.copyOf(eventIds);}}
@@ -55,6 +55,7 @@ public final class CallCommandService {
     }
     private Outcome execute(Connection c,CallCommand command,Authority context)throws Exception {
         boolean invite=command.type()==SignalEnvelope.Type.INVITE;
+        if(invite&&context.directoryEpoch()<1)throw new AuthorizationRejected();
         if(!command.scope().equals(invite?CommandScope.invite():CommandScope.call(command.callId()))||!context.callId().coordinatorCell().equals(cell)||invite&&context.callId().routingEpoch()!=routingEpoch||!context.group().cell().equals(cell)||context.group().storageEpoch()!=epoch||context.group().group()!=HomeParticipationService.group(context.callId())||!invite&&!context.callId().equals(command.callId()))throw new AuthorizationRejected();
         int bucket;
         if(invite)bucket=SessionRegistryService.bucket(command.sender().userId());
@@ -62,7 +63,8 @@ public final class CallCommandService {
         var buckets=new TreeMap<Integer,Long>();buckets.put(bucket,context.directoryEpoch());var users=new ArrayList<String>();if(invite)users.add(command.sender().userId().value());
         boolean localPair=invite&&context.targetHome()!=null&&cell.equals(context.targetHome().cell());if(localPair){if(command.target()==null||command.target().equals(command.sender().userId()))throw new AuthorizationRejected();int targetBucket=SessionRegistryService.bucket(command.target());Long existing=buckets.put(targetBucket,context.targetHome().directoryEpoch());if(existing!=null&&existing!=context.targetHome().directoryEpoch())throw new AuthoritySql.FencedException();users.add(command.target().value());}
         if(!invite&&command.sender().userId().equals(calls.find(c,context.callId()).caller().user()))users.add(command.sender().userId().value());
-        AuthoritySql.coordinator(c,context.group(),buckets,users,List.of(context.callId().value()));
+        if(!invite&&context.directoryEpoch()==0)AuthoritySql.coordinatorCurrentBucket(c,context.group(),bucket,users,context.callId().value());
+        else AuthoritySql.coordinator(c,context.group(),buckets,users,List.of(context.callId().value()));
         Snapshot snapshot=invite?null:calls.find(c,context.callId());
         if(!proofs.verify(command,snapshot,context.proof()))throw new AuthorizationRejected();
         if(invite)requireLocalCurrent(c,command.sender());else requirePrincipal(command.sender(),snapshot);

@@ -60,5 +60,6 @@ public final class PostgresShardLeaseProvider {
     public static CompletionStage<Void> drain(ActorSystem system){return ID.get(system).drain();}
     public static void bindPlacement(ActorSystem system,int group,ActorRef shardParent){ID.get(system).bindPlacement(group,shardParent);}
     public static void requireInstalled(ActorSystem system){ID.get(system).requireInstalled();}
+    public static String ownerNode(ActorSystem system){var state=ID.get(system);synchronized(state){state.requireInstalled();return state.namespace.ownerNode();}}
     public static Optional<io.webrtc.signaling.storage.GroupOwnerRepository.Grant> currentGrant(ActorSystem system,int group){return ID.get(system).currentGrant(group);}
 }

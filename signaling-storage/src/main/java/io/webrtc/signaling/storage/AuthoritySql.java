@@ -53,6 +53,19 @@ public final class AuthoritySql {
     public static void coordinatorGrant(Connection c,GroupToken token,Map<Integer,Long> buckets,String call)throws SQLException {
         roots(c,token.cell(),token.storageEpoch(),buckets);groupBarrier(c,token.group(),false);validateGroup(c,token);callReadBarrier(c,call);
     }
+    /** Existing durable calls obtain their bucket epoch from the primary under native100/101. */
+    private static void currentBucketRoots(Connection c,GroupToken token,int bucket)throws SQLException {
+        cellBarrier(c,false);validateCell(c,token.cell(),token.storageEpoch());bucketBarrier(c,bucket,false);
+        try(var q=c.prepareStatement("SELECT directory_epoch,status FROM bucket_authority WHERE bucket_id=?")){
+            q.setInt(1,bucket);try(var r=q.executeQuery()){if(!r.next()||r.getLong(1)<1||!"ACTIVE".equals(r.getString(2)))throw new FencedException();}
+        }
+    }
+    public static void coordinatorCurrentBucket(Connection c,GroupToken token,int bucket,List<String> users,String call)throws SQLException {
+        currentBucketRoots(c,token,bucket);groupBarrier(c,token.group(),false);validateGroup(c,token);userGuards(c,users);callBarrier(c,call);
+    }
+    public static void coordinatorGrantCurrentBucket(Connection c,GroupToken token,int bucket,String call)throws SQLException {
+        currentBucketRoots(c,token,bucket);groupBarrier(c,token.group(),false);validateGroup(c,token);callReadBarrier(c,call);
+    }
     private static void roots(Connection c,String cell,long epoch,Map<Integer,Long> buckets)throws SQLException {
         if(buckets.size()>128)throw new IllegalArgumentException("Bucket batch exceeds limit");cellBarrier(c,false);validateCell(c,cell,epoch);
         for(int bucket:new TreeSet<>(buckets.keySet()))bucketBarrier(c,bucket,false);validateBuckets(c,buckets);
