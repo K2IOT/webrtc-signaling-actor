@@ -29,5 +29,6 @@ public final class DbPools implements AutoCloseable {
     public Connection currentConnection(DbClass clazz){if(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())throw new IllegalStateException("No admitted transaction");return DataSourceUtils.getConnection(binding(clazz).dataSource());}
     private Binding binding(DbClass clazz){return clazz.safety()?safety:control;}
     private static void close(Binding b){b.factory().destroy();b.dataSource().close();}
+    public boolean closed(){return control.dataSource().isClosed()&&safety.dataSource().isClosed();}
     @Override public void close(){close(control);close(safety);}
 }

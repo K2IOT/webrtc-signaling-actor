@@ -42,7 +42,7 @@ public final class NativeActorComposition {
         bindings=new ProofBindings(inputs.proofs(),inputs.clock());ingress=new ShardedActorIngress(system,inputs.clock());
         var home=new HomeParticipationService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),bindings.homeVerifier(inputs.cell()),inputs.epochAdoption());
         sessions=new SessionRegistryService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.sessionSecurity());
-        users=new PostgresUserBackend(new UserSnapshotService(inputs.sql(),inputs.cell(),inputs.storageEpoch()),sessions,new UserReservationService(home),new AcceptWinnerService(home,inputs.routeSecurity()),new HomeActivationService(home),new HomeProofReadService(home,inputs.homeSecurity()));
+        users=new PostgresUserBackend(new UserSnapshotService(inputs.sql(),inputs.cell(),inputs.storageEpoch()),sessions,new UserReservationService(home),new AcceptWinnerService(home,inputs.routeSecurity()),new HomeActivationService(home,inputs.homeSecurity()),new HomeProofReadService(home,inputs.homeSecurity(),inputs.routeSecurity()));
         commands=new CallCommandService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),inputs.routingEpoch(),c->{throw new IllegalStateException("Commands require hosting EntityRef authority");},bindings.commandVerifier(inputs.cell(),inputs.homes()),bindings.negotiationVerifier(inputs.cell(),inputs.homes())).businessAdmission(readiness::businessReady);
         String owner=PostgresShardLeaseProvider.ownerNode(classic);
         workflow=new CallWorkflowService(inputs.sql(),inputs.cell(),inputs.storageEpoch(),owner,bindings.workflowVerifier(inputs.cell(),inputs.homes()));

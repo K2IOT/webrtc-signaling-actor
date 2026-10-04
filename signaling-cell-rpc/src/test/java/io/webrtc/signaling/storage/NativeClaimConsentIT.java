@@ -27,15 +27,23 @@ class NativeClaimConsentIT {
                 .hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
         }
     }
-    @Test void nativeClaimConsumesOriginalPublicS1ConsentAndRejectsAnotherIntent() throws Exception {
+    @Test void nativeClaimConsumesOriginalPublicS1ConsentAndRejectsAnotherIntent() throws Exception { claimConsent(false); }
+    @Test void originalAcceptRetryUpgradesLegacyPendingConsentWithoutChangingIntent() throws Exception { claimConsent(true); }
+    private void claimConsent(boolean legacy) throws Exception {
         try (var f=new LocalInviteAtomicIT.Fixture()) {
             var caller=f.sender("s1-caller");var callee=f.sender("s1-callee");var invite=f.invite(caller,callee.userId());
             var commands=f.service();var call=commands.executeCallCommand(invite).toCompletableFuture().join().callId();var group=f.token(call);
             var accept=AcceptCompletionIT.accept(callee,call);NativeProofSagaIT.done(commands.executeUnderAuthorityTracked(accept,new CallCommandService.Authority(call,group,1,"TEST_ONLY_VERIFIED",1),Duration.ofSeconds(2)));
+            if(legacy){
+                NativeProofSagaIT.done(f.runtime.sql.submitTracked(DbClass.RECOVERY,Duration.ofSeconds(2),c->{
+                    try(var q=c.prepareStatement("UPDATE command_result SET command_type=NULL WHERE request_id=? AND status='PENDING'")){q.setObject(1,accept.requestId().value());assertThat(q.executeUpdate()).isEqualTo(1);}return true;
+                }));
+                NativeProofSagaIT.done(commands.executeUnderAuthorityTracked(accept,new CallCommandService.Authority(call,group,1,"TEST_ONLY_VERIFIED",1),Duration.ofSeconds(2)));
+            }
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
             var bindings=new ProofBindings(proofs,Clock.systemUTC());var issuer=new NativeProofIssuer(proofs,Clock.systemUTC(),()->true,group::equals);
             var grants=new CoordinatorGrantService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER");
-            var home=new HomeParticipationService(f.runtime.sql,"c001",1,bindings.homeVerifier("c001"));var reads=new HomeProofReadService(home,(c,u)->true);
+            var home=new HomeParticipationService(f.runtime.sql,"c001",1,bindings.homeVerifier("c001"));var reads=new HomeProofReadService(home,(c,u)->true,(c,r)->true);
             var query=NativeProofSagaIT.signed(f,issuer,grants,invite,call,callee.userId(),accept.requestId().value(),new AuthorizationIntent("QUERY",null,0,null,0,null,null));
             var view=NativeProofSagaIT.done(reads.observe(query,callee,Duration.ofSeconds(2)));var route=view.currentRoutes().getFirst();
             var winner=new AcceptWinnerService(home,(c,r)->true);

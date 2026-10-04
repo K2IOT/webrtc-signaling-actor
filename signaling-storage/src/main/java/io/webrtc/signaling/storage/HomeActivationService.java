@@ -6,11 +6,12 @@ import java.util.*;
 /** Confirm live homes in independent guarded transactions. A duplicate confirmation never renews a lease. */
 public final class HomeActivationService {
     public record Confirmation(UUID reservationId,long version,UUID activationId,long callVersion,Winner winner,Instant validUntil,Instant confirmedAt) {}
-    private final HomeParticipationService home;
-    public HomeActivationService(HomeParticipationService home){this.home=Objects.requireNonNull(home);}
+    private final HomeParticipationService home;private final HomeProofReadService.SecurityPolicy security;
+    public HomeActivationService(HomeParticipationService home){this(home,(c,u)->false);}
+    public HomeActivationService(HomeParticipationService home,HomeProofReadService.SecurityPolicy security){this.home=Objects.requireNonNull(home);this.security=Objects.requireNonNull(security);}
     public DbOperation<Confirmation> confirmTracked(Request request,UUID reservation,long expectedVersion,UUID activation,long callVersion,Winner winner,UUID operation,Duration budget){
         Objects.requireNonNull(reservation);Objects.requireNonNull(activation);Objects.requireNonNull(operation);if(expectedVersion<1||callVersion<1)throw new IllegalArgumentException("Invalid activation version");
-        return home.submitTracked(request,DbClass.CRITICAL,budget,new AuthorizationIntent("CONFIRM",reservation,expectedVersion,activation,callVersion,winner,null),c->{var current=home.find(c,request);
+        return home.submitTracked(request,DbClass.CRITICAL,budget,new AuthorizationIntent("CONFIRM",reservation,expectedVersion,activation,callVersion,winner,null),c->{if(!security.current(c,request.user()))throw new AuthoritySql.FencedException();var current=home.find(c,request);
             if(current==null||current.terminal()||!reservation.equals(current.reservationId())||request.grant().groupEpoch()<current.highestGroupEpoch()||!Objects.equals(winner,current.winner()))throw new AuthoritySql.FencedException();
             UUID bound,previousOperation;long boundVersion;Instant confirmed;
             try(var q=c.prepareStatement("SELECT h.activation_id,h.activation_call_version,h.activation_operation,h.activation_confirmed_at,r.lease_until>clock_timestamp()+interval '5 seconds' FROM home_participation h JOIN user_reservation r USING(user_id,call_id,reservation_id) WHERE h.call_id=? AND h.user_id=?")){q.setString(1,request.call().value());q.setString(2,request.user().value());try(var r=q.executeQuery()){if(!r.next()||!r.getBoolean(5))throw new AuthoritySql.FencedException();bound=r.getObject(1,UUID.class);boundVersion=r.getLong(2);previousOperation=r.getObject(3,UUID.class);confirmed=r.getTimestamp(4)==null?null:r.getTimestamp(4).toInstant();}}

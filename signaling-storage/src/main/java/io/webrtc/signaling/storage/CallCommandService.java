@@ -71,7 +71,14 @@ public final class CallCommandService {
         if(!proofs.verify(command,snapshot,context.proof()))throw new AuthorizationRejected();
         if(invite)requireLocalCurrent(c,command.sender());else requirePrincipal(command.sender(),snapshot);
         var stored=results.find(c,command.sender().key(),command.scope(),command.requestId());
-        if(stored!=null){if(!stored.hash().equals(command.intentHash()))throw new CommandResultRepository.IntentConflict();return outcome(stored);}
+        if(stored!=null){
+            if(!stored.hash().equals(command.intentHash()))throw new CommandResultRepository.IntentConflict();
+            if(command.type()==SignalEnvelope.Type.ACCEPT&&stored.status().equals("PENDING")&&snapshot!=null&&snapshot.state().equals("RINGING")){
+                if(!snapshot.callId().equals(stored.callId()))throw new AuthorizationRejected();
+                requireOperation(command,snapshot);results.upgradePendingAccept(c,command,snapshot.callId());
+            }
+            return outcome(stored);
+        }
         if(invite&&!businessAdmission.getAsBoolean())throw new DbOverloadedException();
         if(!results.insertPending(c,command,context.callId(),bucket)){
             stored=results.find(c,command.sender().key(),command.scope(),command.requestId());if(stored==null)throw new AuthoritySql.RetryableConflict();if(!stored.hash().equals(command.intentHash()))throw new CommandResultRepository.IntentConflict();return outcome(stored);

@@ -16,11 +16,12 @@ public final class PekkoShutdownLifecycle {
         java.util.Map.entry("cluster-leave",5),java.util.Map.entry("cluster-exiting",10),
         java.util.Map.entry("cluster-exiting-done",5),java.util.Map.entry("cluster-shutdown",5),
         java.util.Map.entry("before-actor-system-terminate",5),java.util.Map.entry("actor-system-terminate",5));
-    public static Config config(){
+    public static Config config(){return config(ConfigFactory.load());}
+    public static Config config(Config base){
         Config result=ConfigFactory.empty();
         for(var entry:BUDGETS.entrySet())result=result.withValue("pekko.coordinated-shutdown.phases."+entry.getKey()+".timeout",ConfigValueFactory.fromAnyRef(entry.getValue()+"s"));
         for(String phase:java.util.List.of("before-service-unbind","service-requests-done","before-actor-system-terminate"))result=result.withValue("pekko.coordinated-shutdown.phases."+phase+".recover",ConfigValueFactory.fromAnyRef(false));
-        return result.withFallback(ConfigFactory.load());
+        return result.withFallback(java.util.Objects.requireNonNull(base)).withFallback(ConfigFactory.load()).resolve();
     }
     public static Duration totalBudget(Config config){return BUDGETS.keySet().stream().map(p->config.getDuration("pekko.coordinated-shutdown.phases."+p+".timeout")).reduce(Duration.ZERO,Duration::plus);}
     public static void register(ActorSystem<?> system,ShutdownCoordinator.Hooks hooks){
