@@ -73,7 +73,7 @@ class CrossCellSagaIT {
         }
     }
     @Test void rejectedOrUnknownPhaseNeverStartsNextEffectAndUnknownWinnerRequiresReconciliation(){
-        for(String code:List.of("OVERLOADED","UNAUTHORIZED","UNAVAILABLE","INVALID","OUTCOME_UNKNOWN")){
+        for(String code:List.of("OVERLOADED","UNAUTHORIZED","UNAVAILABLE","INVALID","OUTCOME_UNKNOWN","STALE_VERSION","ALREADY_TERMINAL","UNSUPPORTED_OPERATION")){
             var seen=new AtomicInteger();var saga=new CrossCellSaga((phase,op,budget)->{seen.incrementAndGet();return CompletableFuture.completedFuture(code);});
             var result=saga.accept(UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();assertThat(seen).hasValue(1);assertThat(result.code()).isEqualTo(code);assertThat(result.reconcileHomeWinner()).isEqualTo(code.equals("OUTCOME_UNKNOWN"));
         }

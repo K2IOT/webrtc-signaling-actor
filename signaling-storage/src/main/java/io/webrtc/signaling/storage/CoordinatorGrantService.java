@@ -12,7 +12,7 @@ public final class CoordinatorGrantService {
     private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
     private final SqlTransactions sql;private final String cell,owner;private final long epoch;private final CallSnapshotRepository calls=new CallSnapshotRepository();private final CommandResultRepository results=new CommandResultRepository();
     public CoordinatorGrantService(SqlTransactions sql,String cell,long epoch,String localOwnerNode){this.sql=Objects.requireNonNull(sql);this.cell=Objects.requireNonNull(cell);this.epoch=epoch;owner=Objects.requireNonNull(localOwnerNode);}
-    public DbOperation<Issued> issue(Request request,AuthorizationIntent action,AuthoritySql.GroupToken token,long callerDirectoryEpoch,long expectedCallVersion,Duration budget){return sql.submitTracked(DbClass.CRITICAL,budget,c->{
+    public DbOperation<Issued> issue(Request request,AuthorizationIntent action,AuthoritySql.GroupToken token,long callerDirectoryEpoch,long expectedCallVersion,Duration budget){return sql.submitTracked(action.action().equals("RENEW")?DbClass.RENEWAL:action.action().equals("RELEASE")?DbClass.TERMINATION:DbClass.CRITICAL,budget,c->{
         if(!cell.equals(request.call().coordinatorCell())||!cell.equals(token.cell())||token.storageEpoch()!=epoch||token.hashVersion()!=1||token.group()!=HomeParticipationService.group(request.call())||!owner.equals(token.node()))throw new AuthoritySql.FencedException();
         Snapshot hint=calls.find(c,request.call());if(hint==null||callerDirectoryEpoch<0)throw new AuthoritySql.FencedException();
         if(callerDirectoryEpoch==0)AuthoritySql.coordinatorGrantCurrentBucket(c,token,hint.bucket(),request.call().value());
