@@ -35,4 +35,25 @@ class NativeProofIssuerTest {
         var stale=new HomeProofReadService.View(participation,List.of(route),null,0,now.minusSeconds(5),"c002",1,1);
         assertThatThrownBy(()->issuer.home(request,stale,transition,"SESSION",participant)).isInstanceOf(AuthoritySql.FencedException.class);
     }
+    @Test void activationUsesCurrentNativeRouteWithoutRewritingTheOriginalHomeWinner()throws Exception{
+        var generator=KeyPairGenerator.getInstance("Ed25519");var a=generator.generateKeyPair();var b=generator.generateKeyPair();var trust=Map.of("c001/test",a.getPublic(),"c002/test",b.getPublic());
+        var coordinator=new HomeAuthorizationProof("c001","test",a.getPrivate(),trust);var home=new HomeAuthorizationProof("c002","test",b.getPrivate(),trust);
+        var raw=request();var query=new HomeParticipationService.AuthorizationIntent("QUERY",null,0,null,0,null,null);
+        var issued=new CoordinatorGrantService.Issued(snapshot(),group,1,now,now.plusSeconds(5),HomeParticipationService.authorizationHash(raw,query));
+        var signed=new NativeProofIssuer(coordinator,Clock.fixed(now,ZoneOffset.UTC),()->true,g->g.equals(group)).coordinator(raw,"c002",issued);
+        var key=new SessionKey("TEST_ONLY","rebound-winner");var incarnation=new SessionIncarnation(UUID.randomUUID());var current=new Participant(user,key,incarnation,2);
+        var route=new SessionRepository.Route(user,key,incarnation,2,"gw",UUID.randomUUID(),UUID.randomUUID(),now.plusSeconds(60),"test",1);
+        var historical=new HomeParticipationService.Winner(key,incarnation,1);
+        var participation=new HomeParticipationService.Participation(call,user,raw.acquireOperation(),raw.payloadHash(),"ACCEPTED",UUID.randomUUID(),2,now.plusSeconds(30),historical,2);
+        var view=new HomeProofReadService.View(participation,List.of(route),null,0,now,"c002",1,1,UUID.randomUUID(),1);
+        var transition=new CallWorkflowService.Transition(call,group,1,1,signed.grant().operation(),CallWorkflowService.Step.ACTIVATE,current,List.of(),UUID.randomUUID(),now.plusSeconds(5),null,"UNSIGNED",null);
+        var issuer=new NativeProofIssuer(home,Clock.fixed(now,ZoneOffset.UTC),()->true,g->false);
+        var proof=issuer.home(signed,view,transition,"WINNER",current);
+        assertThat(home.decode(proof,"c002",now).orElseThrow().generation()).isEqualTo(2);
+        assertThat(view.participation().winner().generation()).isEqualTo(1);
+        var ahead=new HomeParticipationService.Participation(call,user,raw.acquireOperation(),raw.payloadHash(),"ACCEPTED",participation.reservationId(),2,now.plusSeconds(30),new HomeParticipationService.Winner(key,incarnation,3),2);
+        assertThatThrownBy(()->issuer.home(signed,new HomeProofReadService.View(ahead,List.of(route),null,0,now,"c002",1,1),transition,"WINNER",current)).isInstanceOf(AuthoritySql.FencedException.class);
+        assertThatThrownBy(()->issuer.home(signed,new HomeProofReadService.View(participation,List.of(),null,0,now,"c002",1,1),transition,"WINNER",current)).isInstanceOf(AuthoritySql.FencedException.class);
+    }
+
 }
