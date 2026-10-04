@@ -7,7 +7,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 class HomeActivationIT {
     static <T>T done(DbOperation<T> op){try{return op.logical().toCompletableFuture().join();}finally{op.physicalCompletion().toCompletableFuture().join();}}
-    @Test void nativeHomeRejectsNewStorageEpochGrantForAnOldRoutedCallEvenWithVerifiedSignature()throws Exception {
+    @Test void nativeHomeRejectsSameCellGrantStorageEpochDifferentFromItsNativeAuthority()throws Exception {
         try(var runtime=new DbTestRuntime()){Instant now=Instant.now();UUID operation=UUID.randomUUID();var home=new HomeParticipationService(runtime.sql,"c001",1,r->true);var request=new HomeParticipationService.Request(new UserId("old-epoch-user"),new CallId(CrossCellSagaIT.CALL),operation,"a".repeat(64),1,HomeParticipationService.Phase.RINGING,new HomeParticipationService.Grant("c001",2,1,685,2,1,operation,now,now.plusSeconds(5),"TEST_ONLY_VERIFIED"));assertThatThrownBy(()->done(new UserReservationService(home).reserveUserTracked(request,Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);}
     }
     @Test void committedConfirmationBindsActivationAndVersionWithoutRenewingDuplicateOrExpiredReservations()throws Exception {

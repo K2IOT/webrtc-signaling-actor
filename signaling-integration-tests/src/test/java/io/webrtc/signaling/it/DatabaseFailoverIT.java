@@ -57,10 +57,14 @@ class DatabaseFailoverIT {
     static HomeParticipationService.Request promoted(HomeParticipationService.Request old,long storage,long group,long sequence){
         Instant now=Instant.now();return new HomeParticipationService.Request(old.user(),old.call(),old.acquireOperation(),old.payloadHash(),old.directoryEpoch(),old.phase(),new HomeParticipationService.Grant(old.grant().cell(),storage,1,old.grant().group(),group,sequence,UUID.randomUUID(),now,now.plusSeconds(5),"TEST_ONLY_VERIFIED"));
     }
+    static HomeParticipationService.Request remoteCoordinatorRequest(String user){
+        var call=CallId.create("c002",1);var old=UserReservationRaceIT.request(user,call);var g=old.grant();
+        return new HomeParticipationService.Request(old.user(),call,old.acquireOperation(),old.payloadHash(),old.directoryEpoch(),old.phase(),new HomeParticipationService.Grant("c002",1,1,g.group(),g.groupEpoch(),g.sequence(),g.operation(),g.issuedAt(),g.expiresAt(),g.proof()));
+    }
     @Test void verifiedPromotionAdoptsOnlyUnexpiredReservationsAndRetainsWinnerAndReplayExpiry()throws Exception{
         try(var f=new LocalInviteAtomicIT.Fixture()){
-            var sender=f.sender("adoption-user");var old=UserReservationRaceIT.request(sender.userId().value(),CallId.create("c001",1));
-            var home=new HomeParticipationService(f.runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"),(cell,from,to)->cell.equals("c001")&&from==1&&to==2);
+            var sender=f.sender("adoption-user");var old=remoteCoordinatorRequest(sender.userId().value());
+            var home=new HomeParticipationService(f.runtime.sql,"c001",1,r->r.grant().proof().equals("TEST_ONLY_VERIFIED"),(cell,from,to)->cell.equals("c002")&&from==1&&to==2);
             var reservations=new UserReservationService(home);var first=reservations.reserveUser(old).toCompletableFuture().join();
             var claimed=new AcceptWinnerService(home).claimAccept(old,first.reservationId(),SessionAuthReadIT.route(f,sender)).toCompletableFuture().join();
             var next=promoted(old,2,2,1);
@@ -74,7 +78,7 @@ class DatabaseFailoverIT {
             reservations.releaseIfCallVersion(next,adopted.reservationId(),adopted.version()).toCompletableFuture().join();
             assertThat(reservations.reserveUser(next).toCompletableFuture().join().terminal()).isTrue();
             assertThatThrownBy(()->reservations.reserveUser(promoted(old,3,3,1)).toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
-            var expiring=UserReservationRaceIT.request("expired-adoption",CallId.create("c001",1));var reserved=reservations.reserveUser(expiring).toCompletableFuture().join();
+            var expiring=remoteCoordinatorRequest("expired-adoption");var reserved=reservations.reserveUser(expiring).toCompletableFuture().join();
             try(var c=f.connection();var q=c.prepareStatement("UPDATE user_reservation SET lease_until=clock_timestamp()-interval '1 second' WHERE user_id=?")){q.setString(1,expiring.user().value());q.executeUpdate();}
             assertThatThrownBy(()->reservations.renewReservation(promoted(expiring,2,2,1),reserved.reservationId(),reserved.version()).toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
         }
