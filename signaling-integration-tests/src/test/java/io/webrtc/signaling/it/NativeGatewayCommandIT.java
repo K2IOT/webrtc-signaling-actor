@@ -46,12 +46,13 @@ class NativeGatewayCommandIT {
             var sessionHandler=new NativeSessionHandler("c001",1,(peer,gateway)->gateway.gatewayId().equals("gw-1"),operations);
             var commands=new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)));
             var actors=new RpcBusinessHandler.ActorIngress(){
-                final Map<CallId,ActorRef<CallMessage>> running=new HashMap<>();
+                final Map<CallId,ActorRef<CallMessage>> running=new ConcurrentHashMap<>();
+                public void stopFixtureOwner(CallId call){kit.stop(running.get(call));org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->!running.containsKey(call));}
                 public CompletionStage<UserCommand.Result> user(UserCommand.Operation op,Instant deadline,int bytes){return CompletableFuture.failedFuture(new AssertionError());}
                 public CompletionStage<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition t,Instant deadline,int bytes){return CompletableFuture.failedFuture(new AssertionError());}
                 public CompletionStage<CallCommandService.Outcome> call(CallCommand command,String proof,Instant deadline,int bytes){return callTracked(command,proof,deadline,bytes).logical();}
                 public synchronized RpcOperation<CallCommandService.Outcome> callTracked(CallCommand command,String proof,Instant deadline,int bytes){
-                    var actor=running.computeIfAbsent(command.callId(),call->{var token=f.token(call);var workflow=new CallWorkflowService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER",bindings.workflowVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)));var backend=new CallCommandHandler(workflow,commands,()->Optional.of(token),1,u->new CallCommandService.TargetHome(remote?"c002":"c001",1));return kit.spawn(CallActor.create(call,backend,()->Optional.of(token),Clock.systemUTC()));});
+                    var actor=running.computeIfAbsent(command.callId(),call->{var token=f.token(call);var workflow=new CallWorkflowService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER",bindings.workflowVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)));var backend=new CallCommandHandler(workflow,commands,()->Optional.of(token),1,u->new CallCommandService.TargetHome(remote?"c002":"c001",1));var owner=kit.spawn(CallActor.create(call,backend,()->Optional.of(token),Clock.systemUTC()));kit.spawn(org.apache.pekko.actor.typed.javadsl.Behaviors.<Void>setup(context->{context.watch(owner);return org.apache.pekko.actor.typed.javadsl.Behaviors.receive(Void.class).onSignal(org.apache.pekko.actor.typed.Terminated.class,signal->{running.remove(call,owner);return org.apache.pekko.actor.typed.javadsl.Behaviors.stopped();}).build();}));return owner;});
                     var ask=TrackedEntityAsk.ask(kit.system(),Duration.between(Instant.now(),deadline),CallCommandService.Outcome.class,(reply,receipt)->actor.tell(new CallActor.Execute(command,proof,reply,deadline,bytes,receipt)));
                     return new RpcOperation<>(ask.logical(),ask.physicalCompletion());
                 }
@@ -78,6 +79,7 @@ class NativeGatewayCommandIT {
                 }
                 assertThat(first.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(first.path("callVersion").isTextual()).isTrue();
                 var call=new CallId(first.path("callId").asText());var releasedToken=f.token(call);
+                actors.stopFixtureOwner(call); // Force the stale direct fixture ref path deterministically.
                 var cancel=new CallCommand(SignalEnvelope.Type.CANCEL,sender,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
                 var canceled=retryTransient(gateway,cancel,route);assertThat(canceled.path("type").asText()).as("native cancel: %s",canceled).isEqualTo("ACK_COMMITTED");
                 org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).pollInterval(Duration.ofMillis(20)).ignoreExceptionsMatching(error->error instanceof CompletionException&&error.getCause() instanceof AuthoritySql.RetryableConflict).until(()->CoordinatorGrantIT.done(f.groups.releaseTracked(releasedToken)));f.tokens.remove(HomeParticipationService.group(call));
