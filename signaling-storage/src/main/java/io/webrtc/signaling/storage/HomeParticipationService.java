@@ -40,7 +40,7 @@ public final class HomeParticipationService {
     private void validateGrant(Connection c,Request r,AuthorizationIntent action)throws SQLException {
         var g=r.grant();if(g.cell().equals(cell)&&g.storageEpoch()!=epoch||!verifier.verify(r,action)||!r.call().coordinatorCell().equals(g.cell())||g.hashVersion()!=1||g.group()!=group(r.call()))throw new AuthoritySql.FencedException();
         try(var s=c.prepareStatement("SELECT clock_timestamp()" );var result=s.executeQuery()){result.next();Instant now=result.getTimestamp(1).toInstant();
-            if(!g.expiresAt().isAfter(now)||g.issuedAt().isAfter(now.plusSeconds(1))||g.issuedAt().isAfter(g.expiresAt())||Duration.between(g.issuedAt(),g.expiresAt()).compareTo(Duration.ofSeconds(5))>0)throw new AuthoritySql.FencedException();}
+            if(!io.webrtc.signaling.protocol.PortableProofTime.valid(g.issuedAt(),g.expiresAt(),now))throw new AuthoritySql.FencedException();}
     }
     public CompletionStage<Participation> queryParticipation(Request r){return submit(r,DbClass.CRITICAL,c->find(c,r,true));}
     Participation find(Connection c,Request request)throws SQLException {return find(c,request,false);}
