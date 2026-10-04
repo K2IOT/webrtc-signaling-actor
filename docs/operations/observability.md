@@ -1,0 +1,11 @@
+# Telemetry contract
+
+Only enum operation/outcome/plane and one configured cell/build fingerprint become metric labels. No user, call, request, token or candidate labels are accepted. Prometheus histogram buckets and p95/p99/p99.9 are emitted for control operations; an observation records its true elapsed duration, including retries/queues when the producer measures from original request start. Runtime producers wire native completion, pool/WAL/lease lag, queue age and recovery progress; zero-initialized instrumentation is not qualification evidence.
+
+The 99.95% request availability budget is 0.05% of eligible operations. USER_BUSY, CALL_ENDED, TOKEN_EXPIRED, FORBIDDEN and STALE_VERSION are published user/business exclusions. Native contention, admission backpressure, unknown outcomes, deadline expiry and service unavailability count as server failures. OVERLOADED/backpressure remains separately visible. Business counters, error budgets and call/media experience are separate measurements.
+
+Workflow convergence, active-call preservation, signaling reattachment and media continuity have independent eligible denominators. Missing client telemetry is excluded from media eligibility; an empty denominator is NaN, never manufactured 100% success. Producers must deduplicate the underlying fault/workflow observations and define eligibility from the pre-fault cohort. Fleet aggregation uses summed numerators/denominators, not an average of process ratios.
+
+Default application logging uses PrivacySafeLogbackLayout. It emits timestamp, level, component and approved structured MDC attributes; SDK free text, formatted arguments, exception messages and stacks are excluded. JDBC binds, SQL and Netty frame wire logging are off. Structured traces accept only validated W3C v00 trace identity and approved attributes; baggage/tracestate are not copied. Controlled debugging requires a separately approved, access-controlled, bounded capture; it is disabled in the production profile.
+
+Fast burn requires >14.4x budget in both 1h and 5m; slow burn requires >6x in 6h and 30m. Configure synthetic probes for low-traffic cells. The identity owner supplies the actual hard safety bound, which the runtime exports; a missing bound keeps readiness closed. Dashboards and rules are local artifacts until the deployment/qualification gates run.

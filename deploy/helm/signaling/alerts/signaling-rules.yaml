@@ -1,0 +1,32 @@
+groups:
+  - name: signaling-slo
+    interval: 30s
+    rules:
+      - record: signaling:control_error_ratio:5m
+        expr: sum by (cell,plane) (rate(signaling_operation_total{result_class="SERVICE_FAILURE",plane=~"GATEWAY|CONTROL"}[5m])) / clamp_min(sum by (cell,plane) (rate(signaling_operation_total{plane=~"GATEWAY|CONTROL",outcome!~"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION"}[5m])), 0.001)
+      - record: signaling:control_error_ratio:1h
+        expr: sum by (cell,plane) (rate(signaling_operation_total{result_class="SERVICE_FAILURE",plane=~"GATEWAY|CONTROL"}[1h])) / clamp_min(sum by (cell,plane) (rate(signaling_operation_total{plane=~"GATEWAY|CONTROL",outcome!~"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION"}[1h])), 0.001)
+      - record: signaling:control_error_ratio:30m
+        expr: sum by (cell,plane) (rate(signaling_operation_total{result_class="SERVICE_FAILURE",plane=~"GATEWAY|CONTROL"}[30m])) / clamp_min(sum by (cell,plane) (rate(signaling_operation_total{plane=~"GATEWAY|CONTROL",outcome!~"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION"}[30m])), 0.001)
+      - record: signaling:control_error_ratio:6h
+        expr: sum by (cell,plane) (rate(signaling_operation_total{result_class="SERVICE_FAILURE",plane=~"GATEWAY|CONTROL"}[6h])) / clamp_min(sum by (cell,plane) (rate(signaling_operation_total{plane=~"GATEWAY|CONTROL",outcome!~"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION"}[6h])), 0.001)
+      - alert: SignalingFastBurn
+        expr: (signaling:control_error_ratio:1h > 14.4 * 0.0005) and (signaling:control_error_ratio:5m > 14.4 * 0.0005)
+        for: 2m
+        labels: {severity: page, rollout: freeze}
+        annotations: {summary: "Control SLO fast burn; inspect affected cell and dependency"}
+      - alert: SignalingSlowBurn
+        expr: (signaling:control_error_ratio:6h > 6 * 0.0005) and (signaling:control_error_ratio:30m > 6 * 0.0005)
+        for: 15m
+        labels: {severity: page, rollout: freeze}
+        annotations: {summary: "Control SLO sustained burn"}
+      - alert: SignalingRecoverySweepLate
+        expr: signaling_progress_lag_seconds{kind="OLDEST_UNRECONCILED"} > 5
+        for: 5s
+        labels: {severity: page}
+        annotations: {summary: "Native healthy-group recovery sweep exceeds 5 seconds"}
+      - alert: SignalingRevocationFreshnessLost
+        expr: signaling_progress_lag_seconds{kind="REVOCATION"} > on(cell,plane,job,instance) signaling_security_hard_bound_seconds
+        for: 0s
+        labels: {severity: page, rollout: freeze}
+        annotations: {summary: "Configured identity safety bound exceeded; authorization fails closed"}

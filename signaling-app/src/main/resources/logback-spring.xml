@@ -1,0 +1,12 @@
+<configuration>
+  <appender name="SAFE_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+      <layout class="io.webrtc.signaling.observability.PrivacySafeLogbackLayout"/>
+    </encoder>
+  </appender>
+  <logger name="org.hibernate.SQL" level="OFF"/>
+  <logger name="org.hibernate.orm.jdbc.bind" level="OFF"/>
+  <logger name="org.postgresql" level="OFF"/>
+  <logger name="io.netty.handler.logging" level="OFF"/>
+  <root level="INFO"><appender-ref ref="SAFE_CONSOLE"/></root>
+</configuration>

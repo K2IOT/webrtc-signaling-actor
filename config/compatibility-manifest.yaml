@@ -29,3 +29,7 @@ publicProtocol: webrtc-signaling.v1
 internalSchema: 1
 ownershipHashVersion: 1
 # Image digest resolution and security/interoperability qualification are release gates.
+
+observabilityValidation:
+  prometheus: 3.6.0
+  prometheusImage: prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
