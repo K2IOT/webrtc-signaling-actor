@@ -5,7 +5,8 @@ public final class ClusterReadiness {
         public Snapshot{if(upActors<0||reachableAzCount<0)throw new IllegalArgumentException("Invalid membership counts");}
     }
     private final AtomicReference<Snapshot> state=new AtomicReference<>(new Snapshot(false,false,false,false,false,false,0,0,false));
-    public void update(Snapshot snapshot){state.set(java.util.Objects.requireNonNull(snapshot));}
+    public void update(Snapshot snapshot){java.util.Objects.requireNonNull(snapshot);state.updateAndGet(previous->new Snapshot(snapshot.localUp(),snapshot.regionsRegistered(),snapshot.fingerprintValid(),snapshot.cellActive(),snapshot.safetyPoolUsable(),snapshot.clockBoundValid(),snapshot.upActors(),snapshot.reachableAzCount(),previous.draining()||snapshot.draining()));}
+    public void beginDrain(){state.updateAndGet(s->new Snapshot(s.localUp(),s.regionsRegistered(),s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),s.upActors(),s.reachableAzCount(),true));}
     public Snapshot snapshot(){return state.get();}
     private static boolean safety(Snapshot s){return s.localUp()&&s.regionsRegistered()&&s.fingerprintValid()&&s.cellActive()&&s.safetyPoolUsable()&&s.clockBoundValid();}
     public boolean safetyReady(){return safety(state.get());}
