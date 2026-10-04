@@ -6,3 +6,6 @@
 
 # Local property-engine state
 **/.jqwik-database
+
+# Python qualification tooling cache
+**/__pycache__/

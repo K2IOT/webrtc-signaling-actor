@@ -10,7 +10,7 @@ import java.io.IOException;
 /** Actual intended-arrival samples, including failure latency; exports lossless compressed HDR data. */
 public final class EvidenceWriter {
     private static final long MAX_MICROS=86_400_000_000L;
-    public enum Operation { CONTROL, AUTH, REFRESH, INVITE, ACCEPT, NEGOTIATE, RELAY, MEDIA, SYNC, RECONNECT, HANGUP, SECURITY }
+    public enum Operation { CONTROL, CONNECT, AUTH, REFRESH, INVITE, ACCEPT, NEGOTIATE, RELAY, MEDIA, SYNC, RECONNECT, HANGUP, SECURITY }
     private final ConcurrentHistogram latency=new ConcurrentHistogram(MAX_MICROS,3);
     private final EnumMap<Operation,ConcurrentHistogram> phases=new EnumMap<>(Operation.class);
     private final AtomicLong attempts=new AtomicLong(),successes=new AtomicLong(),missed=new AtomicLong(),lateDispatch=new AtomicLong();

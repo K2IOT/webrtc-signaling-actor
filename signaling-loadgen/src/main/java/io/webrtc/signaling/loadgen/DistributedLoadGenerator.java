@@ -19,6 +19,6 @@ public final class DistributedLoadGenerator {
     }
     public static void main(String[] args)throws Exception {
         if(args.length!=6||!args[0].equals("--scenario")||!args[2].equals("--config")||!args[4].equals("--evidence"))throw new IllegalArgumentException("Use --scenario PATH --config PATH --evidence DIRECTORY");
-        new ScenarioRunner().run(Path.of(args[1]),Path.of(args[3]),Path.of(args[5]));
+        try{new ScenarioRunner().run(Path.of(args[1]),Path.of(args[3]),Path.of(args[5]));}catch(Exception failed){throw new IllegalStateException("Worker failed; inspect redacted evidence or approved input configuration");}
     }
 }

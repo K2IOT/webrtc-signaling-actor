@@ -40,6 +40,7 @@ class LoadGeneratorTlsTest {
             var request=JSON.createObjectNode().put("v",1).put("type","INVITE").put("requestId",UUID.randomUUID().toString());request.putObject("payload").put("targetUserId","test-callee");client.request(request,System.nanoTime()-100_000_000L,EvidenceWriter.Operation.INVITE).toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(calls).hasValue(1);assertThat(evidence.percentileMillis(99.9)).isGreaterThanOrEqualTo(100);client.heartbeat();for(int n=0;n<100&&pings.get()==0;n++)Thread.sleep(10);assertThat(pings).hasValue(1);
             var wrong=new VirtualClient(1,"test-user","c001",URI.create("wss://127.0.0.1:"+port+"/ws"),new InetSocketAddress("127.0.0.1",0),clientTls,sources,credits,evidence,()->jwt,(c,e)->{});clients.add(wrong);assertThatThrownBy(()->wrong.connect(System.nanoTime()).toCompletableFuture().get(6,TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class);assertThat(wrong.authenticated()).isFalse();
         }finally{for(var client:clients)client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();sources.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+        assertThat(evidence.attempts()-evidence.successes()).isGreaterThanOrEqualTo(1);
         assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
     }
 }
