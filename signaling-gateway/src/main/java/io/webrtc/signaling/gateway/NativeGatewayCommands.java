@@ -52,7 +52,12 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                     String proof=JSON.readValue(reply.getResult().toByteArray(),String.class);
                     Object payload=command.type()==SignalEnvelope.Type.SYNC_CALL?new RpcBusinessHandler.SyncRead(command.sender(),command.callId(),command.requestId(),proof,command.intentHash()):new RpcBusinessHandler.CallPayload(command,proof);
                     var wire=InternalCommand.newBuilder().setSchemaMajor(1).setOperationId(command.requestId().value().toString()).setType(command.type().name()).setSender(sender(command.sender())).setCallId(call.value()).setCommandScope(command.scope().value()).setPayloadHash(ByteString.copyFrom(HexFormat.of().parseHex(command.intentHash()))).setDestinationCell(call.coordinatorCell()).setRemainingBudgetMs(Math.max(1,remaining(end).toMillis())).setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(payload))).build();
-                    return network.call(command.type()==SignalEnvelope.Type.SYNC_CALL?CellRpcServer.Operation.SYNC:CellRpcServer.Operation.EXECUTE,wire,remaining(end)).thenApply(result->{
+                    var operation=switch(command.type()){
+                        case OFFER,ANSWER,ICE_CANDIDATES,END_OF_CANDIDATES->CellRpcServer.Operation.RELAY;
+                        case SYNC_CALL->CellRpcServer.Operation.SYNC;
+                        default->CellRpcServer.Operation.EXECUTE;
+                    };
+                    return network.call(operation,wire,remaining(end)).thenApply(result->{
                         if(!result.getOperationId().equals(wire.getOperationId())||!result.getCallId().equals(wire.getCallId())||!result.getErrorCode().isEmpty()&&!(result.getStatus().equals("PENDING")&&result.getErrorCode().equals("WORKFLOW_PENDING")))return error(original,result.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":result.getErrorCode());
                         try{
                             if(command.type()==SignalEnvelope.Type.SYNC_CALL){if(result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");return snapshot(original,JSON.readValue(result.getResult().toByteArray(),CallSnapshotRepository.Snapshot.class));}
