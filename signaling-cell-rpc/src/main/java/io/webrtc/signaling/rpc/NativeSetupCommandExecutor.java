@@ -29,8 +29,8 @@ public final class NativeSetupCommandExecutor {
         long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());var scope=new PhysicalScope();
         var logical=scope.track(actors.callTracked(command,sessionProof,clock.instant().plus(remaining(end)),RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,sessionProof)).length)).thenCompose(initial->{
             if(initial.status().equals("FINAL")&&(command.type()==SignalEnvelope.Type.INVITE||!initial.code().equals("ACCEPTED_PENDING_ACTIVATION")))return CompletableFuture.completedFuture(initial);
-            var read=commands.setupContextAuthorized(command,sessionProof,remaining(end));
-            return scope.track(new RpcOperation<>(read.logical(),read.physicalCompletion())).thenCompose(context->run(command,sessionProof,context,end,scope));
+            var read=NativeReadRetry.execute(left->commands.setupContextAuthorized(command,sessionProof,left),remaining(end));
+            return scope.track(read).thenCompose(context->run(command,sessionProof,context,end,scope));
         });return scope.seal(logical);
     }
     private CompletionStage<CallCommandService.Outcome> run(CallCommand command,String proof,CallCommandService.SetupContext context,long end,PhysicalScope scope){
@@ -61,8 +61,8 @@ public final class NativeSetupCommandExecutor {
                     else throw new AuthoritySql.FencedException();
                     return progression.thenCompose(finalCode->{
                         if(!Set.of("RINGING","CALL_READY").contains(finalCode))throw new CompletionException(new DbOutcomeUnknownException());
-                        var original=commands.setupContextAuthorized(command,proof,remaining(end));
-                        return scope.track(new RpcOperation<>(original.logical(),original.physicalCompletion())).thenApply(CallCommandService.SetupContext::durableOutcome);
+                        var original=NativeReadRetry.execute(left->commands.setupContextAuthorized(command,proof,left),remaining(end));
+                        return scope.track(original).thenApply(CallCommandService.SetupContext::durableOutcome);
                     });
                 }));
         });
