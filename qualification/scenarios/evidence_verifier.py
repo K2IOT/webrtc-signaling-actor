@@ -412,15 +412,74 @@ def _capacity(root,gate,manifest,records):
         if name=='soak-24h' and not number(stage.get('durationSeconds'),86400):errors.append('SOAK_DURATION_INSUFFICIENT')
     return errors
 
+def native_drill_receipt_errors(receipt,kind,gate,name):
+    """Validate original observations; source enrollment/signature still attest authenticity."""
+    error={'faultTimeline':'INVALID_FAULT_TIMELINE','physicalFenceReceipt':'INVALID_PHYSICAL_FENCE',
+           'acknowledgedWalReceipt':'INVALID_ACKNOWLEDGED_WAL',
+           'outsideBackupEpochHighWaterReceipt':'INVALID_OUTSIDE_BACKUP_EPOCH'}[kind]
+    try:
+        expected={'faultTimeline':'FAULT_TIMELINE','physicalFenceReceipt':'PHYSICAL_FENCE',
+                  'acknowledgedWalReceipt':'ACKNOWLEDGED_WAL',
+                  'outsideBackupEpochHighWaterReceipt':'OUTSIDE_BACKUP_EPOCH'}[kind]
+        if type(receipt.get('receiptVersion')) is not int or receipt['receiptVersion']!=1 or receipt.get('receiptType')!=expected:raise ValueError('Receipt type')
+        for key in ('drillId','sourceIdentity'):
+            value=receipt.get(key)
+            if not isinstance(value,str) or not value.strip() or len(value)>512 or any(ord(c)<32 for c in value):raise ValueError('Source identity')
+        if not isinstance(receipt.get('cell'),str) or not re.fullmatch('[a-z][a-z0-9-]{0,23}',receipt['cell']):raise ValueError('Native cell')
+        start,end,observed=utc(gate['startedAt']),utc(gate['finishedAt']),utc(receipt['observedAt'])
+        if not start<=observed<=end:raise ValueError('Original observation window')
+        if kind=='faultTimeline':
+            events=receipt.get('events')
+            if not isinstance(events,list) or not 3<=len(events)<=4096:raise ValueError('Bounded timeline required')
+            previous=None;kinds=[]
+            for sequence,event in enumerate(events,1):
+                if not isinstance(event,dict) or type(event.get('sequence')) is not int or event['sequence']!=sequence:raise ValueError('Original sequence')
+                at=utc(event['at']);event_kind=event.get('kind')
+                if not start<=at<=observed or previous is not None and at<=previous:raise ValueError('Original event time')
+                if not isinstance(event_kind,str) or not re.fullmatch('[A-Z][A-Z0-9_]{0,63}',event_kind):raise ValueError('Event kind')
+                previous=at;kinds.append(event_kind)
+            if kinds[0]!='DRILL_STARTED' or kinds[-1]!='OBSERVATION_COMPLETED' or 'FAULT_INJECTED' not in kinds[1:-1]:raise ValueError('No observed fault interval')
+        elif kind in ('physicalFenceReceipt','acknowledgedWalReceipt'):
+            writer=receipt.get('oldWriter')
+            if not isinstance(writer,dict) or not isinstance(writer.get('systemIdentifier'),str) or not re.fullmatch('[1-9][0-9]{0,19}',writer['systemIdentifier']):raise ValueError('Original writer')
+            import uuid
+            for field in ('podUid','bootId'):uuid.UUID(writer[field])
+            if type(writer.get('storageEpoch')) is not int or not 1<=writer['storageEpoch']<=9223372036854775807:raise ValueError('Original writer epoch')
+            if kind=='physicalFenceReceipt':
+                if receipt.get('writeAccessRevoked') is not True or receipt.get('fenceMethod') not in ('POWER_FENCED','STORAGE_ACCESS_REVOKED','NETWORK_WRITE_ACCESS_REVOKED'):raise ValueError('No physical writer fence')
+                fenced,promoted,opened=(utc(receipt[key]) for key in ('fencedAt','promotedAt','trafficOpenedAt'))
+                if not start<=fenced<promoted<=opened<=observed:raise ValueError('Unsafe promotion order')
+            else:
+                def lsn(value):
+                    if not isinstance(value,str) or not re.fullmatch('[0-9A-F]{1,8}/[0-9A-F]{1,8}',value):raise ValueError('Native WAL LSN')
+                    hi,lo=value.split('/');return (int(hi,16)<<32)+int(lo,16)
+                acknowledged,recovered=lsn(receipt.get('acknowledgedWalLsn')),lsn(receipt.get('recoveredWalLsn'))
+                count,reconciled=receipt.get('acknowledgedOperations'),receipt.get('reconciledOperations')
+                if type(count) is not int or type(reconciled) is not int or count<1 or reconciled!=count:raise ValueError('Original operation reconciliation')
+                mode=receipt.get('recoveryMode')
+                if mode=='SYNCHRONOUS_FAILOVER':
+                    if recovered<acknowledged or receipt.get('lostAcknowledgedOperations',0)!=0:raise ValueError('Lost acknowledged critical WAL')
+                elif mode=='PITR_RESTORE':
+                    lost=receipt.get('lostAcknowledgedOperations')
+                    if type(lost) is not int or not 0<=lost<=count or (recovered<acknowledged and lost==0) or receipt.get('allRestoredNonterminalInvalidated') is not True:raise ValueError('Unaccounted disaster history')
+                else:raise ValueError('Recovery mode required')
+        else:
+            backup,high,restored=(receipt.get(key) for key in ('backupStorageEpoch','outsideBackupHighWater','restoredStorageEpoch'))
+            if any(type(value) is not int or not 1<=value<=9223372036854775807 for value in (backup,high,restored)):raise ValueError('Native epoch bounds')
+            if receipt.get('sourcePlacement')!='OUTSIDE_BACKUP' or restored<=max(backup,high):raise ValueError('Reused restored authority')
+    except (ValueError,TypeError,KeyError,AttributeError):return [error+':'+name]
+    return []
+
 def drill_receipt_errors(root,gate,name,manifest,records):
     """An indexed digest alone cannot override original receipt provenance."""
-    errors=[]
+    errors=[];receipts={}
     for kind in ('faultTimeline','physicalFenceReceipt','acknowledgedWalReceipt','outsideBackupEpochHighWaterReceipt'):
         path=gate.get(kind)
         if not path or path not in records:continue
         try:
             receipt=_json(artifact_path(root,path))
             if not isinstance(receipt,dict):raise ValueError('Receipt must be a bounded object')
+            receipts[kind]=receipt
             stack=[receipt];test_only=receipt.get('testOnly') is not False
             while stack:
                 node=stack.pop()
@@ -429,9 +488,15 @@ def drill_receipt_errors(root,gate,name,manifest,records):
                     stack.extend(node.values())
                 elif isinstance(node,list):stack.extend(node)
             if test_only:errors.append('TEST_ONLY_DRILL_RECEIPT:'+name+':'+kind)
+            errors.extend(native_drill_receipt_errors(receipt,kind,gate,name))
             if any(receipt.get(key)!=manifest.get(key) or key not in receipt for key in IDENTITY_BINDINGS):
                 errors.append('DRILL_RECEIPT_BINDING_MISMATCH:'+name+':'+kind)
         except Exception:errors.append('INVALID_DRILL_RECEIPT:'+name+':'+kind)
+    if receipts:
+        scopes={(receipt.get('cell'),receipt.get('drillId')) for receipt in receipts.values() if isinstance(receipt.get('cell'),str) and isinstance(receipt.get('drillId'),str)}
+        fence,wal=receipts.get('physicalFenceReceipt'),receipts.get('acknowledgedWalReceipt')
+        if len(scopes)!=1 or fence and wal and fence.get('oldWriter')!=wal.get('oldWriter'):
+            errors.append('DRILL_RECEIPT_SCOPE_MISMATCH:'+name)
     return errors
 
 def _verify(root,trust_file=None,now=None):

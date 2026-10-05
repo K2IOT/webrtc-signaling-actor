@@ -87,7 +87,20 @@ def complete_bundle(verifier, root, now):
     for name in verifier.REPORTS:
         write(name,'TEST_ONLY synthetic unit input; not release evidence.\n')
     write('capacity-adr.md','TEST_ONLY unit capacity ADR stand-in.\n')
-    write('raw-drill.json',json.dumps(dict(context,testOnly=False,purpose='UNIT_FIXTURE_ONLY')))
+    receipt_context = dict(context,testOnly=False,receiptVersion=1,cell='c001',drillId='TEST_ONLY_DRILL',
+                           sourceIdentity='TEST_ONLY_UNIT_COLLECTOR',observedAt=now.isoformat())
+    write('raw-drill.json',json.dumps(dict(receipt_context,receiptType='FAULT_TIMELINE',
+        events=[dict(sequence=1,kind='DRILL_STARTED',at=(now-timedelta(minutes=5)).isoformat()),
+                dict(sequence=2,kind='FAULT_INJECTED',at=(now-timedelta(minutes=4)).isoformat()),
+                dict(sequence=3,kind='OBSERVATION_COMPLETED',at=(now-timedelta(minutes=1)).isoformat())])))
+    writer = dict(podUid='11111111-1111-4111-8111-111111111111',bootId='22222222-2222-4222-8222-222222222222',systemIdentifier='123456789',storageEpoch=1)
+    write('physical-fence.json',json.dumps(dict(receipt_context,receiptType='PHYSICAL_FENCE',oldWriter=writer,
+        writeAccessRevoked=True,fenceMethod='STORAGE_ACCESS_REVOKED',fencedAt=(now-timedelta(minutes=4)).isoformat(),
+        promotedAt=(now-timedelta(minutes=3)).isoformat(),trafficOpenedAt=(now-timedelta(minutes=2)).isoformat())))
+    write('acknowledged-wal.json',json.dumps(dict(receipt_context,receiptType='ACKNOWLEDGED_WAL',oldWriter=writer,
+        recoveryMode='SYNCHRONOUS_FAILOVER',acknowledgedWalLsn='0/FF',recoveredWalLsn='1/0',acknowledgedOperations=1,reconciledOperations=1)))
+    write('outside-epoch.json',json.dumps(dict(receipt_context,receiptType='OUTSIDE_BACKUP_EPOCH',
+        sourcePlacement='OUTSIDE_BACKUP',backupStorageEpoch=1,outsideBackupHighWater=4,restoredStorageEpoch=5)))
     gates = {}
     for name in verifier.GATES:
         gate = dict(context,status='PASSED',testOnly=False,startedAt=(now-timedelta(days=2)).isoformat(),
@@ -97,7 +110,7 @@ def complete_bundle(verifier, root, now):
             gate['faultTimeline']='raw-drill.json'
         if name=='dr-restore':
             for key in ('physicalFenceReceipt','acknowledgedWalReceipt','outsideBackupEpochHighWaterReceipt'):
-                gate[key]='raw-drill.json'
+                gate[key]={'physicalFenceReceipt':'physical-fence.json','acknowledgedWalReceipt':'acknowledged-wal.json','outsideBackupEpochHighWaterReceipt':'outside-epoch.json'}[key]
         if name=='capacity':gate['metrics']={'stages':stages}
         if name=='soak':gate['metrics']={'durationSeconds':86400,'retainedDatasetAgeSeconds':86400}
         if name=='n-minus-one':gate['metrics']={'eligibleReconnects':1,'p99ReconnectSeconds':1}

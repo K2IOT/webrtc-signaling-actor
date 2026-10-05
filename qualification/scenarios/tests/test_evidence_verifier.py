@@ -388,10 +388,70 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         manifest['artifacts']['raw-drill.json']={'sha256':hashlib.sha256(raw.read_bytes()).hexdigest(),'bytes':raw.stat().st_size};seal()
         rejected_binding=verifier.verify(self.root,trust,self.now)
         self.assertEqual(rejected_binding['decision'],'NOT_QUALIFIED')
-        self.assertIn('DRILL_RECEIPT_BINDING_MISMATCH:dr-restore:physicalFenceReceipt',rejected_binding['errors'])
+        self.assertIn('DRILL_RECEIPT_BINDING_MISMATCH:dr-restore:faultTimeline',rejected_binding['errors'])
         manifest['testOnly']=True;seal()
         rejected=verifier.verify(self.root,trust,self.now)
         self.assertEqual(rejected['decision'],'NOT_QUALIFIED')
         self.assertIn('TEST_ONLY_CANDIDATE',rejected['errors'])
+
+    def test_original_dr_receipts_reject_lost_wal_unfenced_promotion_and_reused_epoch(self):
+        from complete_bundle_fixture import complete_bundle
+        import json,hashlib
+        manifest,trust,seal=complete_bundle(verifier,self.root,self.now)
+        mutations=[('acknowledged-wal.json','recoveredWalLsn','0/FE','INVALID_ACKNOWLEDGED_WAL'),
+                   ('acknowledged-wal.json','reconciledOperations',0,'INVALID_ACKNOWLEDGED_WAL'),
+                   ('physical-fence.json','writeAccessRevoked',False,'INVALID_PHYSICAL_FENCE'),
+                   ('physical-fence.json','fencedAt',self.now.isoformat(),'INVALID_PHYSICAL_FENCE'),
+                   ('outside-epoch.json','restoredStorageEpoch',4,'INVALID_OUTSIDE_BACKUP_EPOCH'),
+                   ('outside-epoch.json','sourcePlacement','INSIDE_BACKUP','INVALID_OUTSIDE_BACKUP_EPOCH')]
+        for path,key,value,error in mutations:
+            with self.subTest(path=path,key=key):
+                artifact=self.root/path;original=artifact.read_bytes();receipt=json.loads(original);receipt[key]=value
+                artifact.write_text(json.dumps(receipt));manifest['artifacts'][path]={'sha256':hashlib.sha256(artifact.read_bytes()).hexdigest(),'bytes':artifact.stat().st_size};seal()
+                report=verifier.verify(self.root,trust,self.now)
+                self.assertEqual(report['decision'],'NOT_QUALIFIED')
+                self.assertIn(error+':dr-restore',report['errors'])
+                artifact.write_bytes(original);manifest['artifacts'][path]={'sha256':hashlib.sha256(original).hexdigest(),'bytes':len(original)};seal()
+
+    def test_original_fault_timeline_rejects_reordered_and_outside_window_events(self):
+        from complete_bundle_fixture import complete_bundle
+        import json,hashlib
+        manifest,trust,seal=complete_bundle(verifier,self.root,self.now)
+        artifact=self.root/'raw-drill.json';original=artifact.read_bytes()
+        for mutation in ('reordered','outside-window','no-fault'):
+            with self.subTest(mutation=mutation):
+                receipt=json.loads(original)
+                if mutation=='reordered':receipt['events'][1]['at']=receipt['events'][0]['at']
+                elif mutation=='outside-window':receipt['events'][2]['at']=(self.now+timedelta(days=1)).isoformat()
+                else:receipt['events'][1]['kind']='MEASUREMENT_ONLY'
+                artifact.write_text(json.dumps(receipt));manifest['artifacts']['raw-drill.json']={'sha256':hashlib.sha256(artifact.read_bytes()).hexdigest(),'bytes':artifact.stat().st_size};seal()
+                report=verifier.verify(self.root,trust,self.now)
+                self.assertEqual(report['decision'],'NOT_QUALIFIED')
+                self.assertIn('INVALID_FAULT_TIMELINE:n-minus-one',report['errors'])
+
+    def test_pitr_can_account_for_lost_history_only_with_global_invalidation(self):
+        from complete_bundle_fixture import complete_bundle
+        import json
+        manifest,_,_=complete_bundle(verifier,self.root,self.now)
+        gate=manifest['gates']['dr-restore'];receipt=json.loads((self.root/'acknowledged-wal.json').read_bytes())
+        receipt.update(recoveryMode='PITR_RESTORE',recoveredWalLsn='0/FE',lostAcknowledgedOperations=1,allRestoredNonterminalInvalidated=True)
+        self.assertEqual(verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'),[])
+        receipt['allRestoredNonterminalInvalidated']=False
+        self.assertIn('INVALID_ACKNOWLEDGED_WAL:dr-restore',verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'))
+
+    def test_dr_receipts_cannot_mix_different_writer_cell_or_drill(self):
+        from complete_bundle_fixture import complete_bundle
+        import json
+        manifest,_,_=complete_bundle(verifier,self.root,self.now)
+        path=self.root/'acknowledged-wal.json';original=path.read_bytes()
+        for field in ('writer','cell','drillId'):
+            with self.subTest(field=field):
+                receipt=json.loads(original)
+                if field=='writer':receipt['oldWriter']['bootId']='33333333-3333-4333-8333-333333333333'
+                elif field=='cell':receipt['cell']='c002'
+                else:receipt['drillId']='TEST_ONLY_OTHER_DRILL'
+                path.write_text(json.dumps(receipt))
+                errors=verifier.drill_receipt_errors(self.root,manifest['gates']['dr-restore'],'dr-restore',manifest,manifest['artifacts'])
+                self.assertIn('DRILL_RECEIPT_SCOPE_MISMATCH:dr-restore',errors)
 
 if __name__=='__main__':unittest.main()
