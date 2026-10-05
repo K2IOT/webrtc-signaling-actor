@@ -1,5 +1,6 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>io.webrtc.signaling</groupId><artifactId>signaling-parent</artifactId><version>0.1.0-SNAPSHOT</version></parent><artifactId>signaling-loadgen</artifactId>
 <dependencies>
+  <dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-gateway</artifactId><version>${project.version}</version><scope>test</scope></dependency>
   <dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-auth</artifactId><version>${project.version}</version></dependency>
   <dependency><groupId>io.netty</groupId><artifactId>netty-codec-http</artifactId></dependency>
   <dependency><groupId>io.netty</groupId><artifactId>netty-handler</artifactId></dependency>

@@ -94,6 +94,21 @@ attempt counters. Disabled scopes are null with zero counters. These observation
 must establish achieved skew; YAML labels and a local distribution test cannot
 qualify capacity. Normal busy/server/admission failures remain failures.
 
+`VirtualClient.probe` now supplies bounded malformed-JSON and oversized-frame
+wire primitives. Each receipt preserves the original intended monotonic time,
+socket generation and native close code; only an observed matching 1002/1009 is
+`PROTOCOL_REJECTED`. A close before dispatch, an unrelated/missing close code,
+transport failure, rejected admission and an expired original two-second deadline
+remain distinct. Probe results never enter ordinary traffic latency/error counters.
+The original write and actual original socket close must both settle before
+physical completion releases global count/byte credit or permits a new generation.
+The gateway preserves the decoder's original close write and bounds unknown-write
+socket cleanup to one second, without claiming that the write succeeded.
+
+These primitives are tested over real TLS1.3 with TEST_ONLY RS256 authority and
+production decoder/validator handlers. The scenario orchestrator and enrolled
+security observations still need all six drivers before security qualification.
+
 Requested security abuse profiles still fail preflight before opening sockets.
 Their presence in YAML cannot produce an ordinary workload presented as security
 coverage. Genuine approved source machines and identity inventories remain

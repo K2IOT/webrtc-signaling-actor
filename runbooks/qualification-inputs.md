@@ -16,7 +16,9 @@ that the executable reads that Secret or serves its listeners.
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The six security drivers in
-`security-abuse.yaml` remain unimplemented and are rejected before socket startup.
+`security-abuse.yaml` remain unwired in the scenario orchestrator and are rejected
+before socket startup. Bounded malformed/oversized wire primitives now observe
+native gateway close codes and original physical completion over WSS.
 Their YAML labels cannot count as a successful security drill.
 
 ## Required external inputs
