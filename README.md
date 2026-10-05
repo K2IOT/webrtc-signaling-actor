@@ -1,6 +1,8 @@
 # WebRTC signaling actor
 
-Implementation of the v1.11 production-standard target specification. This branch currently contains **Tasks 1–17 of 24**: Java 21 configuration and protocol contracts, RS256 authentication, asynchronous directory/bootstrap contracts, real PostgreSQL authority migrations, bounded virtual-thread JPA/JDBC transactions, and fenced gateway/session registration. Reservation/winner arbitration, durable command results/outbox, PostgreSQL shard leases and multi-node Pekko sharding are verified. UserActor hydration, serialization and idle passivation are verified. CallActor transitions, primary fencing, durable timers and proactive indexed recovery are verified. Native cross-cell grants/proof reads and workflow composition, TLS1.3 workload-bound session RPC, bounded WSS authentication, local heartbeat and edge admission are verified. Bounded EntityRef/RPC physical credits, reserved admission, socket write queues and slow-consumer isolation are verified. Relay, recovery workers and remaining qualification tasks are in progress.
+Implementation of the v1.11 production-standard target specification. Tasks 1–21 have local contract coverage; **Tasks 22–24 remain in progress**. The branch includes fenced PostgreSQL/Pekko call and session state, scoped command results, native cross-cell proof/activation composition, bounded WSS and RPC transports, physical completion tracking, relay/recovery primitives, maintenance workers, telemetry and deployment/runbook contracts.
+
+Native qualification work now covers signed clock reports over actual mTLS source I/O, winner-only snapshot authorization, portable proof expiry, original-ID RPC retries and native shutdown. The distributed worker uses real TLS1.3/RS256, seeded disjoint call ranges, bounded live ICE traces, current-socket reconnect sequencing, raw HDR histograms and original workload/resource time series. Complete native launcher/source/relay wiring, hot/security scenarios and genuine staged production runs remain open.
 
 ## Build
 
@@ -12,17 +14,17 @@ Use Java 21 and run:
 
 The wrapper pins Maven 3.9.11. Configure your normal Maven proxy settings when required by the environment. The managed cloud workspace already supplies `/workspace/.onboarding/activate.sh` for its Java/Maven/proxy setup.
 
-The launcher requires exactly one of `gateway`, `actor`, or `control` as an active Spring profile. It loads the packaged `production-defaults.yaml`. Set `SIGNALING_IDENTITY_ISSUER` and `SIGNALING_IDENTITY_AUDIENCE` from the actual identity contract; empty or unresolved values fail startup. Deployment profiles currently select a plane and validate configuration; their runtime services are later plan tasks.
+The launcher requires exactly one of `gateway`, `actor`, or `control` as an active Spring profile. It loads the packaged `production-defaults.yaml`. Set `SIGNALING_IDENTITY_ISSUER` and `SIGNALING_IDENTITY_AUDIENCE` from the actual identity contract; empty or unresolved values fail startup. Deployment profiles currently select a plane and validate configuration. Complete executable runtime composition remains an open Task 22 dependency. See [native source contract](config/native-sources.md) for the enrolled clock adapter; it does not configure production identity or clock measurements.
 
 The compatibility manifest pins an **unqualified candidate**. Dependency integration, security scans, image digests and infrastructure qualification remain release gates.
 
 ## Contracts
 
-Public input uses `webrtc-signaling.v1` JSON; internal transport uses generated protobuf/gRPC. Public identity and routing authority come from authenticated server context, and critical repositories must validate them again at the authoritative store. Counter values on public JSON use decimal strings to preserve values above JavaScript's exact-integer limit.
+Public WSS handshakes require and select the `webrtc-signaling.v1` subprotocol; input uses strict JSON; internal transport uses generated protobuf/gRPC. Public identity and routing authority come from authenticated server context, and critical repositories must validate them again at the authoritative store. Counter values on public JSON use decimal strings to preserve values above JavaScript's exact-integer limit.
 
 User IDs use case-sensitive NFC UTF-8 with no whitespace trimming or case folding. Opaque issuer/jti values remain exact. Identifiers have UTF-8 byte bounds; oversized values are rejected. Call IDs use `<coordinatorCell>.e<routingEpoch>.<UUID>`; the server generates the random UUID. A call ID provides routing, not authorization.
 
-INVITE scope is `INVITE` at caller home; call-bound scope is `CALL:<callId>` at the original coordinator. Canonical SHA-256 intent hashes include command type, scope, authenticated issuer/jti/user and validated payload/negotiation. Transport retry generation, incarnation, trace and deadline do not change intent. Reservations, scoped call replay and native outbox are implemented; delivery/reconciliation workers follow in Task 18.
+INVITE scope is `INVITE` at caller home; call-bound scope is `CALL:<callId>` at the original coordinator. Canonical SHA-256 intent hashes include command type, scope, authenticated issuer/jti/user and validated payload/negotiation. Transport retry generation, incarnation, trace and deadline do not change intent. Reservations, scoped call replay and native outbox are implemented; bounded delivery/reconciliation workers are covered locally, with production scheduler/source installation still required.
 
 The frozen previous-release protobuf fixture exercises adjacent internal minor versions 0/1, including preservation of unknown fields. This is a schema contract test, not evidence of a real mixed-fleet rolling upgrade.
 
