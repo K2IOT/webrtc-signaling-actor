@@ -138,3 +138,16 @@ INVALIDATED/RESYNC recovery, committed new rounds, source-seeded reconnect
 jitter and original HTTP Retry-After. Requested skew/security profiles fail
 preflight until their drivers exist. Tasks 22–24 remain in progress; these
 local checks do not qualify production release.
+
+Fresh full verification after native ingress/transport drain passed **538 tests
+in 126 fresh reports**, zero failures, errors or skips (2026-10-05T16:46:17Z,
+4m46s). Python verification subsequently passed52 tests; the static loadgen
+contract also passed. The joined native relay test crosses actual gateway→actor
+and actor→gateway mTLS transports; original stream, channel and executor cleanup
+now gate client drain. Loadgen rejects stale round/ICE frames and binds recovery
+SYNC to the original committed restart version. DR verification rejects malformed
+fault timelines, unfenced promotion, mixed writer/cell/drill receipts, reused
+recovery epochs and foreign/pre-ACK WAL lineage. PITR loss remains explicit and
+requires restored-call invalidation. These local checks leave complete Main
+source enrollment, skew/security drivers and genuine staged qualification open;
+Tasks22–24 remain in progress and release remains **NOT_QUALIFIED**.
