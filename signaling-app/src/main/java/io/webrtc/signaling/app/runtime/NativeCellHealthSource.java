@@ -29,7 +29,7 @@ public final class NativeCellHealthSource implements AutoCloseable {
                 if(error!=null)throw new CompletionException(error);return facts;
             });
             operation.physicalCompletion().thenCombine(logical.handle((v,e)->null),(a,b)->null).whenComplete((v,error)->{
-                if(error==null)synchronized(this){active=false;physical.complete(null);if(draining)drained.complete(null);}
+                if(error==null)synchronized(this){active=false;physical.complete(null);if(draining&&!active)drained.complete(null);}
             });
             return new RpcOperation<>(logical,physical);
         }catch(Throwable unknown){

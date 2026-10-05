@@ -8,6 +8,28 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class NativeCellHealthSourceIT {
+    @Test void originalPhysicalCallbackCannotFinishDrainWhileItsNextNativePollStillOwnsSql()throws Exception {
+        try(var f=new LocalInviteAtomicIT.Fixture();var lock=f.connection()){
+            var source=new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql,"c001",1));
+            var violation=new java.util.concurrent.atomic.AtomicBoolean();
+            var callback=new java.util.concurrent.CompletableFuture<Void>();
+            var second=new java.util.concurrent.atomic.AtomicReference<io.webrtc.signaling.rpc.RpcOperation<PrimaryCellFacts.Facts>>();
+            var first=source.poll(Duration.ofSeconds(2));
+            first.physicalCompletion().thenRun(()->{
+                try{
+                    lock.setAutoCommit(false);try(var query=lock.createStatement()){query.execute("LOCK TABLE cell_authority IN ACCESS EXCLUSIVE MODE");}
+                    var next=source.poll(Duration.ofSeconds(2));second.set(next);
+                    assertThat(next.physicalCompletion().toCompletableFuture()).isNotDone();
+                    source.drain().thenRun(()->{if(!next.physicalCompletion().toCompletableFuture().isDone())violation.set(true);});
+                    callback.complete(null);
+                }catch(Throwable failure){callback.completeExceptionally(failure);}
+            });
+            callback.get(2,TimeUnit.SECONDS);first.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);
+            lock.rollback();second.get().physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);
+            source.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);
+            assertThat(violation).isFalse();
+        }
+    }
     @Test void actualPrimaryWorkerFeedsOnlyFreshHealthFactsAndDrainIsAbsorbing()throws Exception {
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var source=new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql,"c001",1));
