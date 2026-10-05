@@ -33,3 +33,13 @@ hooks when installing the concrete process launcher.
 Revocation, directory, peer/compatibility sources and complete native launcher binding
 remain separate required integrations. This adapter does not stand in for those
 sources or for production qualification.
+
+The native actor launcher also needs `NativeCellHealthSource`, backed by
+`PrimaryCellFacts` on its actual RECOVERY safety pool. Its read-only primary/cell query
+checks `pg_is_in_recovery`, the enrolled cell/storage epoch, GROUPED schema and cell
+status. A fact is usable for less than one second from the original request; the fixed
+SAFETY job polls at100–500ms. Private probes read that cached fact and expire it without
+SQL. Drain invalidates cached health, stops new polls and retains admitted native work
+until its independent physical receipt and cache processing finish. A throwing factory
+without a physical receipt remains UNKNOWN. These health facts grant no mutation or
+relay authority and do not replace clock, revocation or compatibility admission.
