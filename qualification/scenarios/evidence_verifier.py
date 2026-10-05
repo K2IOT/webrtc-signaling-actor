@@ -326,10 +326,18 @@ def _capacity(root,gate,manifest,records):
         workers=stage.get('workers',[])
         if not isinstance(workers,list) or not workers:errors.append('MISSING_WORKER_EVIDENCE:'+name)
         else:
-            end=0;count=len(workers);ips=set();hosts=set()
+            end=0;count=len(workers);ips=set();hosts=set();scheduled_start=None
             for index,worker in enumerate(workers):
                 if not isinstance(worker,dict) or worker.get('workerIndex')!=index or worker.get('workerCount')!=count or worker.get('testOnly') is not False or worker.get('summaryArtifact') not in records or worker.get('rawHistogramArtifact') not in records or worker.get('generatorSamplesArtifact') not in records:errors.append('INVALID_WORKER_EVIDENCE:'+name);continue
                 errors.extend(error+':'+name+':'+str(index) for error in worker_errors(root,worker,manifest,records))
+                try:
+                    original=_json(artifact_path(root,worker['summaryArtifact']))
+                    original_start,original_finish=utc(original['startedAt']),utc(original['finishedAt'])
+                    if original_start<utc(stage['startedAt'])-timedelta(milliseconds=250) or original_finish>utc(stage['finishedAt'])+timedelta(milliseconds=250):errors.append('WORKER_OUTSIDE_STAGE_INTERVAL:'+name+':'+str(index))
+                    scheduled=utc(original['observed']['scheduledStartAt'])
+                    if scheduled_start is None:scheduled_start=scheduled
+                    elif scheduled!=scheduled_start:errors.append('WORKER_SCHEDULED_START_MISMATCH:'+name+':'+str(index))
+                except Exception:errors.append('INVALID_WORKER_STAGE_CLOCK:'+name+':'+str(index))
                 start,stop=worker.get('socketStart'),worker.get('socketEnd')
                 if type(start) is not int or type(stop) is not int or start!=end or stop<start:errors.append('WORKER_RANGE_GAP_OR_OVERLAP:'+name)
                 else:end=stop

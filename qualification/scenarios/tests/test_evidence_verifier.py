@@ -275,6 +275,28 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_SOURCE_CONFIGURATION_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
+    def test_capacity_cannot_reuse_worker_from_outside_original_stage_window(self):
+        context,worker,records,summary,sample=self.worker_fixture()
+        _,gate=self.gate('capacity')
+        stage={**context,'startedAt':(self.now-timedelta(seconds=30)).isoformat(),'finishedAt':self.now.isoformat(),'workers':[{**worker,'testOnly':False}]}
+        gate['metrics']={'stages':{name:stage for name in verifier.STAGES}}
+        self.assertIn('WORKER_OUTSIDE_STAGE_INTERVAL:p2:0',verifier._capacity(self.root,gate,context,records))
+
+    def test_capacity_workers_cannot_have_different_original_scheduled_starts(self):
+        import json,shutil,hashlib
+        context,worker,records,summary,sample=self.worker_fixture()
+        second=self.root/'second';shutil.copytree(self.root/'worker',second)
+        summary['observed']['scheduledStartAt']=(self.now-timedelta(seconds=61)).isoformat()
+        (second/'summary.json').write_text(json.dumps(summary))
+        descriptor={**worker,'workerIndex':1,'workerCount':2,'testOnly':False}
+        for field in ('summaryArtifact','rawHistogramArtifact','generatorSamplesArtifact','configArtifact','scenarioArtifact'):
+            descriptor[field]=descriptor[field].replace('worker/','second/')
+            records[descriptor[field]]={}
+        _,gate=self.gate('capacity')
+        stage={**context,'startedAt':(self.now-timedelta(minutes=3)).isoformat(),'finishedAt':self.now.isoformat(),'workers':[{**worker,'workerCount':2,'testOnly':False},descriptor]}
+        gate['metrics']={'stages':{name:stage for name in verifier.STAGES}}
+        self.assertIn('WORKER_SCHEDULED_START_MISMATCH:p2:1',verifier._capacity(self.root,gate,context,records))
+
     def test_worker_cannot_stretch_monotonic_samples_past_its_actual_finish(self):
         import json,copy
         context,worker,records,summary,sample=self.worker_fixture();summary['observed']['durationSeconds']=3
