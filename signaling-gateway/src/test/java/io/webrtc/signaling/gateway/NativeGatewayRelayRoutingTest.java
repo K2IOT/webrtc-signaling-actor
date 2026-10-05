@@ -19,7 +19,9 @@ class NativeGatewayRelayRoutingTest {
     @Test void answerUsesIsolatedVolatileRelayLane(){check(SignalEnvelope.Type.ANSWER);}
     @Test void iceBatchUsesIsolatedVolatileRelayLane(){check(SignalEnvelope.Type.ICE_CANDIDATES);}
     @Test void endMarkerUsesIsolatedVolatileRelayLane(){check(SignalEnvelope.Type.END_OF_CANDIDATES);}
-    private static void check(SignalEnvelope.Type type){
+    @Test void volatileOfferCannotBeProjectedAsDurableCommit(){check(SignalEnvelope.Type.OFFER,true);}
+    private static void check(SignalEnvelope.Type type){check(type,false);}
+    private static void check(SignalEnvelope.Type type,boolean malformedCommit){
         UUID boot=UUID.randomUUID(),connection=UUID.randomUUID();
         var sender=new AuthenticatedSession(new UserId("TEST_ONLY_USER"),new SessionKey("TEST_ONLY_ISSUER","TEST_ONLY_JTI"),new SessionIncarnation(UUID.randomUUID()),1,connection);
         var route=new SessionRepository.Route(sender.userId(),sender.key(),sender.incarnation(),1,"TEST_ONLY_GW",boot,connection,Instant.now().plusSeconds(60),"TEST_ONLY_KEY",1);
@@ -32,6 +34,7 @@ class NativeGatewayRelayRoutingTest {
             }
             public CompletionStage<InternalReply> call(CellRpcServer.Operation operation,InternalCommand command,Duration remaining){
                 lane.set(operation);dispatched.set(command);
+                if(malformedCommit)return CompletableFuture.completedFuture(InternalReply.newBuilder().setOperationId(command.getOperationId()).setCallId(command.getCallId()).setAckCommitted(true).setStatus("COMMITTED").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(new CallCommandService.Outcome("FINAL","RELAYED",new CallId(command.getCallId()),1,"CONNECTING",List.of())))).build());
                 return CompletableFuture.completedFuture(InternalReply.newBuilder().setOperationId(command.getOperationId()).setCallId(command.getCallId()).setStatus("PENDING").setErrorCode("UNSUPPORTED_OPERATION").build());
             }
         };
@@ -42,6 +45,6 @@ class NativeGatewayRelayRoutingTest {
         assertThat(lane.get()).isEqualTo(CellRpcServer.Operation.RELAY);
         assertThat(dispatched.get().getType()).isEqualTo(type.name());assertThat(dispatched.get().getDestinationCell()).isEqualTo("c002");
         assertThat(dispatched.get().getOperationId()).isEqualTo(request.value().toString());assertThat(dispatched.get().getCallId()).isEqualTo(call.value());
-        assertThat(reply).contains("UNSUPPORTED_OPERATION","\"ackCommitted\":false").doesNotContain("ACK_COMMITTED");
+        assertThat(reply).contains(malformedCommit?"OUTCOME_UNKNOWN":"UNSUPPORTED_OPERATION","\"ackCommitted\":false").doesNotContain("ACK_COMMITTED");
     }
 }

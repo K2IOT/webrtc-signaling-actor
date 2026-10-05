@@ -58,6 +58,7 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                         default->CellRpcServer.Operation.EXECUTE;
                     };
                     return network.call(operation,wire,remaining(end)).thenApply(result->{
+                        if(operation==CellRpcServer.Operation.RELAY&&result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");
                         if(!result.getOperationId().equals(wire.getOperationId())||!result.getCallId().equals(wire.getCallId())||!result.getErrorCode().isEmpty()&&!(result.getStatus().equals("PENDING")&&result.getErrorCode().equals("WORKFLOW_PENDING")))return error(original,result.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":result.getErrorCode());
                         try{
                             if(command.type()==SignalEnvelope.Type.SYNC_CALL){if(result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");return snapshot(original,JSON.readValue(result.getResult().toByteArray(),CallSnapshotRepository.Snapshot.class));}
