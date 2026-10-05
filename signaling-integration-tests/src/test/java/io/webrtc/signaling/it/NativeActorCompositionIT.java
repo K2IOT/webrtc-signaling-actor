@@ -104,8 +104,9 @@ class NativeActorCompositionIT {
             host.readiness().beginDrain();assertThat(host.readiness().businessReady()).isFalse();
             var existing=host.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2));assertThat(existing.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).recipient()).isEqualTo(callee);existing.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
             // Joined TEST_ONLY native PostgreSQL + EntityRef authority + actual TLS RPC + Netty write.
-            try(var gatewayClient=recipientGateway.client();var producer=host.relayProducer(network,4,new RelayBufferBudget(262144),gatewayClient)){
-                backend.nativeRelay(producer);
+            try(var gatewayClient=recipientGateway.client();
+                    var ingress=host.rpcIngress("test",0,RpcTlsContexts.server("test","c001",RelayGatewayFixture.cert("ca.crt"),RelayGatewayFixture.cert("actor.crt"),RelayGatewayFixture.cert("actor.key")),new RpcAdmission(16,1048576,16,1048576),network,4,new RelayBufferBudget(262144),gatewayClient,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),event->CompletableFuture.failedFuture(new IllegalArgumentException("TEST_ONLY_NO_CONTROL_DELIVERY"))).start();
+                    var relayClient=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",ingress.server().port(),"localhost")),RpcTlsContexts.clients("test",RelayGatewayFixture.cert("ca.crt"),RelayGatewayFixture.cert("gateway.crt"),RelayGatewayFixture.cert("gateway.key")),new RpcAdmission(16,1048576,16,1048576))){
                 var protocol=new ProtocolValidator(ProtocolLimits.v1());var originalOffer=new java.util.concurrent.atomic.AtomicReference<CallCommand>();var originalOfferProof=new java.util.concurrent.atomic.AtomicReference<String>();
                 for(var type:List.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES)){
                     var sender=type==SignalEnvelope.Type.ANSWER?callee:caller;var destination=sender.equals(caller)?callee:caller;
@@ -113,16 +114,16 @@ class NativeActorCompositionIT {
                     var originalRelay=protocol.bind(new SignalEnvelope(1,type,new RequestId(UUID.randomUUID()),call,new NegotiationId(1),new IceGeneration(1),payload),sender);
                     var nativeSender=currentSession(registry,SessionAuthReadIT.route(f,sender));
                     var r1=proofs.relaySessionProofs().issue(nativeSender,originalRelay);if(type==SignalEnvelope.Type.OFFER){originalOffer.set(originalRelay);originalOfferProof.set(r1);}
-                    var receipt=publicRelay(backend,originalRelay,r1);
+                    var receipt=publicRelay(relayClient,originalRelay,r1);
                     assertThat(receipt.matches(originalRelay)).isTrue();assertThat(receipt.callVersion()).isEqualTo(5);
                     var delivered=recipientGateway.take(destination);assertThat(delivered.path("type").asText()).isEqualTo(type.name());assertThat(delivered.path("payload")).isEqualTo(new com.fasterxml.jackson.databind.ObjectMapper().readTree(payload));
                     assertThat(delivered.path("sessionIncarnation").asText()).isEqualTo(destination.incarnation().value().toString());
-                    if(type==SignalEnvelope.Type.OFFER){assertThat(publicRelay(backend,originalRelay,proofs.relaySessionProofs().issue(nativeSender,originalRelay))).isEqualTo(receipt);assertThat(recipientGateway.empty(destination)).isTrue();}
+                    if(type==SignalEnvelope.Type.OFFER){assertThat(publicRelay(relayClient,originalRelay,proofs.relaySessionProofs().issue(nativeSender,originalRelay))).isEqualTo(receipt);assertThat(recipientGateway.empty(destination)).isTrue();}
                 }
                 assertThat(gatewayClient.channelCount()).isEqualTo(2);
                 var terminate=new CallCommand(SignalEnvelope.Type.HANGUP,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","d".repeat(64));
                 var terminated=publicCommand(backend,terminate,proofs.sessionProofs().issue(currentSession(registry,route),terminate));assertThat(terminated.state()).isEqualTo("TERMINAL");
-                var afterTerminal=relayReply(backend,originalOffer.get(),originalOfferProof.get());assertThat(afterTerminal.getStatus()).isEqualTo("REJECTED");assertThat(afterTerminal.getErrorCode()).isEqualTo("RESYNC_REQUIRED");assertThat(recipientGateway.empty(callee)).isTrue();
+                var afterTerminal=relayReply(relayClient,originalOffer.get(),originalOfferProof.get());assertThat(afterTerminal.getStatus()).isEqualTo("REJECTED");assertThat(afterTerminal.getErrorCode()).isEqualTo("RESYNC_REQUIRED");assertThat(recipientGateway.empty(callee)).isTrue();
             }
 
             host.readiness().beginDrain();assertThat(host.readiness().businessReady()).isFalse();
@@ -149,13 +150,13 @@ class NativeActorCompositionIT {
         boolean empty(AuthenticatedSession recipient){return channels.get(recipient.userId()).outboundMessages().isEmpty();}
         public void close()throws Exception {server.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);channels.values().forEach(io.netty.channel.embedded.EmbeddedChannel::finishAndReleaseAll);}
     }
-    private static RelayWriteReceipt publicRelay(RpcBusinessHandler backend,CallCommand command,String proof)throws Exception {
-        var reply=relayReply(backend,command,proof);assertThat(reply.getAckCommitted()).isFalse();assertThat(reply.getStatus()).describedAs(reply.getErrorCode()).isEqualTo("WRITE_COMPLETED");return new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().readValue(reply.getResult().toByteArray(),RelayWriteReceipt.class);
+    private static RelayWriteReceipt publicRelay(CellRpcClient client,CallCommand command,String proof)throws Exception {
+        var reply=relayReply(client,command,proof);assertThat(reply.getAckCommitted()).isFalse();assertThat(reply.getStatus()).describedAs(reply.getErrorCode()).isEqualTo("WRITE_COMPLETED");return new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().readValue(reply.getResult().toByteArray(),RelayWriteReceipt.class);
     }
-    private static io.webrtc.signaling.protocol.internal.InternalReply relayReply(RpcBusinessHandler backend,CallCommand command,String proof)throws Exception {
+    private static io.webrtc.signaling.protocol.internal.InternalReply relayReply(CellRpcClient client,CallCommand command,String proof)throws Exception {
         java.util.function.Function<UUID,com.google.protobuf.ByteString> uuid=id->com.google.protobuf.ByteString.copyFrom(java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array());var sender=command.sender();
         var wire=io.webrtc.signaling.protocol.internal.InternalCommand.newBuilder().setSchemaMajor(1).setType(command.type().name()).setOperationId(command.requestId().value().toString()).setCallId(command.callId().value()).setCommandScope(command.scope().value()).setDestinationCell("c001").setRemainingBudgetMs(1000).setPayloadHash(com.google.protobuf.ByteString.copyFrom(HexFormat.of().parseHex(command.intentHash()))).setPayload(com.google.protobuf.ByteString.copyFrom(RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,proof)))).setSender(io.webrtc.signaling.protocol.internal.SessionIdentity.newBuilder().setUserId(sender.userId().value()).setIssuer(sender.key().issuer()).setJti(sender.key().jti()).setIncarnation(uuid.apply(sender.incarnation().value())).setConnectionGeneration(sender.connectionGeneration()).setConnectionId(uuid.apply(sender.connectionId()))).build();
-        var operation=backend.executeTracked(CellRpcServer.Operation.RELAY,wire,new CellRpcServer.Peer("c001","gateway","gw-1"),Duration.ofSeconds(1));var reply=operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);return reply;
+        var operation=client.callTracked(CellRpcServer.Operation.RELAY,wire,Duration.ofSeconds(1));var reply=operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);return reply;
     }
     /** Fixture eligibility read: known native contention retries within one original read budget. */
     private static SessionRegistryService.SessionProofView currentSession(SessionRegistryService registry,SessionRepository.Route route)throws Exception {

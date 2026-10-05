@@ -83,6 +83,21 @@ public final class NativeActorComposition {
         var rounds=new NativeRelayRoundCache(capacity,Math.min(capacity,64),relayAuthorization(network),System::nanoTime,trusted,owner);
         relayProducer=new NativeRelayProducer(rounds,capacity,System::nanoTime,trusted,owner,memory,gateway::send);return relayProducer;
     }
+    /** Transfers gateway ownership to the installed listener; bind only after native region registration. */
+    public synchronized NativeActorRpcIngress rpcIngress(String environment,int port,io.netty.handler.ssl.SslContext tls,
+            RpcAdmission admission,NativeSagaEffects.Network network,int capacity,
+            io.webrtc.signaling.actors.relay.RelayBufferBudget memory,GatewayRelayRpcClient gateway,
+            BiPredicate<CellRpcServer.Peer,NativeSessionHandler.GatewayIdentity> gatewayWorkloads,
+            Function<io.webrtc.signaling.protocol.internal.ControlEvent,CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply>> deliver){
+        if(!registered)throw new IllegalStateException("Native actor regions not installed");
+        if(environment==null||!environment.matches("[a-z0-9-]{1,32}")||port<0||port>65535)throw new IllegalArgumentException("Invalid native listener identity");
+        Objects.requireNonNull(tls);Objects.requireNonNull(admission);Objects.requireNonNull(network);Objects.requireNonNull(memory);Objects.requireNonNull(gateway);Objects.requireNonNull(gatewayWorkloads);Objects.requireNonNull(deliver);
+        var sessions=new NativeSessionHandler(inputs.cell(),inputs.storageEpoch(),gatewayWorkloads,sessionOperations());
+        var backend=backend(network,request->CompletableFuture.failedFuture(new IllegalStateException("Native relay installation required")));
+        var producer=relayProducer(network,capacity,memory,gateway);backend.nativeRelay(producer);
+        var server=new CellRpcServer(inputs.cell(),environment,port,tls,admission,backend,deliver).sessions(sessions);
+        return new NativeActorRpcIngress(server,producer,gateway);
+    }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.proofs().relaySessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
     /** Invoke after framework handoff/leave, while the native database remains available. */

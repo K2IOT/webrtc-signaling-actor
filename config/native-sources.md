@@ -179,3 +179,13 @@ kinds, including same-SDP receipt reuse and immediate rejection after HANGUP.
 Gateway boot/security adapters in that test remain TEST_ONLY. Full process
 startup, authenticated production sources and deployment qualification remain
 required.
+
+`NativeActorComposition.rpcIngress(...)` installs the native control/read/setup,
+critical, relay and session backends before its listener can start. It requires
+already registered native regions and explicit environment/TLS/admission/network,
+gateway workload enrollment, relay memory and an owned gateway relay client.
+`NativeActorRpcIngress.drain()` waits for original cell server work before
+retiring volatile producer state and draining the gateway client; register this
+owner in the runtime source drain list. The joined test now crosses both actual
+mTLS RPC legs before the original Netty write. This factory is a concrete startup
+component; Spring Main enrollment and complete process composition remain open.
