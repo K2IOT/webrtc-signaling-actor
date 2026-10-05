@@ -275,6 +275,43 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_SOURCE_CONFIGURATION_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
+    def p2_source_fixture(self,disjoint=False,rate_scale=1):
+        import json
+        workers=[]
+        for index in range(2):
+            path='TEST_ONLY_source_'+str(index)+'.jsonl'
+            workers.append({'generatorSamplesArtifact':path})
+            with (self.root/path).open('w') as stream:
+                for second in range(1,602 if disjoint else 302):
+                    active=not disjoint or (second<=301 if index==0 else second>301)
+                    calls=int(second*rate_scale)//2
+                    sample={'elapsedNanos':second*1000000000,'workload':{'authenticatedSockets':300,'establishedCallerCalls':150 if active else 0,'callAttempts':calls,'crossCellAttempts':calls-calls//50,'relayFrames':int(250*second*rate_scale),'registrations':int(10*second*rate_scale)}}
+                    stream.write(json.dumps(sample)+'\n')
+        envelope={'sockets':600,'establishedCalls':300,'callAttemptsPerSecond':1,'inboundSetupFramesPerSecond':500,'registrationsPerSecond':20,'crossCellRatio':.98}
+        return {'workers':workers},envelope
+
+    def test_original_sources_prove_a_common_three_hundred_second_p2_window(self):
+        stage,envelope=self.p2_source_fixture()
+        self.assertEqual(verifier.p2_source_window_errors(self.root,stage,envelope),[])
+
+    def test_source_peaks_at_different_times_cannot_prove_simultaneous_p2(self):
+        stage,envelope=self.p2_source_fixture(disjoint=True)
+        self.assertIn('NO_SIMULTANEOUS_P2_SOURCE_WINDOW',verifier.p2_source_window_errors(self.root,stage,envelope))
+
+    def test_steady_live_calls_cannot_replace_actual_original_arrival_rates(self):
+        stage,envelope=self.p2_source_fixture(rate_scale=.5)
+        self.assertIn('NO_SIMULTANEOUS_P2_SOURCE_WINDOW',verifier.p2_source_window_errors(self.root,stage,envelope))
+
+    def test_same_timestamp_worker_drop_cannot_be_hidden_by_merge_order(self):
+        import json
+        stage,envelope=self.p2_source_fixture()
+        envelope={**envelope,'inboundSetupFramesPerSecond':400,'registrationsPerSecond':15}
+        path=self.root/stage['workers'][1]['generatorSamplesArtifact']
+        samples=[json.loads(line) for line in path.read_text().splitlines()]
+        samples[-1]['workload']['establishedCallerCalls']=0
+        path.write_text(''.join(json.dumps(sample)+'\n' for sample in samples))
+        self.assertIn('NO_SIMULTANEOUS_P2_SOURCE_WINDOW',verifier.p2_source_window_errors(self.root,stage,envelope))
+
     def test_capacity_cannot_reuse_worker_from_outside_original_stage_window(self):
         context,worker,records,summary,sample=self.worker_fixture()
         _,gate=self.gate('capacity')

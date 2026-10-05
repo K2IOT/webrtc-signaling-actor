@@ -292,6 +292,55 @@ def resource_metric_valid(value,maximum=None,depth=0):
         return 0<len(value)<=256 and all(isinstance(label,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}',label) and resource_metric_valid(metric,maximum,depth+1) for label,metric in value.items())
     return number(value,0) and (maximum is None or value<=maximum)
 
+def p2_source_window_errors(root,stage,envelope,minimum_seconds=300):
+    """Streaming original source observations; native collectors remain independently required."""
+    import heapq
+    from contextlib import ExitStack
+    fields=('callAttempts','crossCellAttempts','relayFrames','registrations')
+    try:
+        workers=stage.get('workers')
+        if not isinstance(workers,list) or not 1<=len(workers)<=4096:raise ValueError('Missing bounded workers')
+        def samples(stream):
+            count=0;previous=-1
+            while line:=stream.readline(8193):
+                count+=1
+                if len(line)>8192 or count>100000:raise ValueError('Source bounds')
+                sample=_json_value(line);elapsed=sample.get('elapsedNanos');workload=mapping(sample.get('workload'))
+                if type(elapsed) is not int or elapsed<0 or elapsed<previous:raise ValueError('Source clock')
+                if any(type(workload.get(field)) is not int or workload[field]<0 for field in fields+('authenticatedSockets','establishedCallerCalls')):raise ValueError('Source workload')
+                previous=elapsed
+                if elapsed>0:yield elapsed,workload
+        with ExitStack() as owners:
+            queue=[];iterators=[];latest=[None]*len(workers);finished=[None]*len(workers)
+            for index,worker in enumerate(workers):
+                path=artifact_path(root,worker['generatorSamplesArtifact'])
+                if path.stat().st_size>134217728:raise ValueError('Source bytes')
+                iterator=samples(owners.enter_context(path.open()));iterators.append(iterator)
+                elapsed,workload=next(iterator);heapq.heappush(queue,(elapsed,index,workload))
+            begin=None;initial=None;qualified=False
+            while queue:
+                instant=queue[0][0]
+                while queue and queue[0][0]==instant:
+                    _,index,workload=heapq.heappop(queue);latest[index]=(instant,workload)
+                    try:
+                        elapsed,following=next(iterators[index]);heapq.heappush(queue,(elapsed,index,following))
+                    except StopIteration:finished[index]=instant
+                if any(value is None or instant-value[0]>2250000000 or end is not None and instant>end for value,end in zip(latest,finished)):
+                    begin=None;continue
+                values=[value[1] for value in latest]
+                if sum(value['authenticatedSockets'] for value in values)<envelope['sockets'] or sum(value['establishedCallerCalls'] for value in values)<envelope['establishedCalls']:
+                    begin=None;continue
+                totals={field:sum(value[field] for value in values) for field in fields}
+                if begin is None:begin=instant;initial=totals;continue
+                seconds=(instant-begin)/1000000000
+                if seconds<minimum_seconds:continue
+                deltas={field:totals[field]-initial[field] for field in fields}
+                if all(deltas[field]>=seconds*envelope[target] for field,target in (('callAttempts','callAttemptsPerSecond'),('relayFrames','inboundSetupFramesPerSecond'),('registrations','registrationsPerSecond'))):
+                    attempts=deltas['callAttempts'];ratio=deltas['crossCellAttempts']/attempts if attempts>0 else -1
+                    if max(0,envelope['crossCellRatio']-.01)<=ratio<=min(1,envelope['crossCellRatio']+.01):qualified=True
+            return [] if qualified else ['NO_SIMULTANEOUS_P2_SOURCE_WINDOW']
+    except Exception:return ['INVALID_P2_SOURCE_MEASUREMENTS']
+
 def _capacity(root,gate,manifest,records):
     errors=[];metrics=gate.get('metrics',{});stages=metrics.get('stages',{}) if isinstance(metrics,dict) else {}
     if not isinstance(stages,dict) or set(stages)!=set(required_stages(manifest)):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
@@ -349,6 +398,7 @@ def _capacity(root,gate,manifest,records):
         minimum={'10k':10000,'100k':100000,'200k-per-cell':200000,'multi-cell':400000}.get(name,envelope.get('sockets',10000000))
         if not number(stage.get('observedSockets'),minimum):errors.append('STAGE_SOCKET_TARGET_MISSED:'+name)
         if name in ('p2','p2-n-minus-one','soak-24h'):
+            errors.extend(error+':'+name for error in p2_source_window_errors(root,stage,envelope,86395.5 if name=='soak-24h' else 300))
             expected={key:envelope.get(key,P2_ENVELOPE[key]) for key in ('distinctUsers','establishedCalls','callAttemptsPerSecond','inboundSetupFramesPerSecond','registrationsPerSecond')}
             for field,target in expected.items():
                 if not number(mapping(stage.get('observed')).get(field),target):errors.append('P2_TARGET_MISSED:'+name+':'+field)

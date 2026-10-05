@@ -52,7 +52,7 @@ and cumulative call/cross-cell/relay/registration/reconnect counts for every sam
 The verifier requires integer counts, bounds gauges by the original socket range and
 summary peak, rejects counter regression and rejects any counter exceeding its original
 summary. Samples must cover the start and entire duration without hidden gaps.
-Simultaneous stage capacity still requires the actual collector to align all worker
+Simultaneous stage capacity also requires the actual collector to align all worker
 intervals and native cell measurements; separate peaks do not establish P2 concurrency.
 
 `resourceMeasurements` requires all sixteen native resource metrics. Each value is a
@@ -72,3 +72,19 @@ source candidate, host, literal source IP, seed, test-only flag, deterministic p
 local socket limit, requested scenario targets and original scheduled start. Preserve
 input paths as originally used; copying or redacting the file must not change the bytes
 behind those hashes. Token inventory contents are separate secrets and are not indexed.
+
+Original worker UTC runs must fit their own stage within250ms and all workers must
+retain the same scheduled start instant. Monotonic samples must stay inside the
+original scheduled-start-to-finish window; integer duration allows at most1.25s for
+flooring/export, and samples allow250ms clock uncertainty.
+
+P2 and P2 N-1 additionally require a common source observation window of at least
+300s with simultaneous live socket/caller-call targets. Original counter differences
+in that window must meet actual call, relay and registration rates and cross-cell
+ratio. A streaming merge keeps one current sample per source, advances every equal
+timestamp together and rejects stale observations older than2.25s. For24h soak the
+source window must span at least86395.5s, allowing two2.25s endpoint sampling margins;
+the independently required original UTC run and retained dataset still span>=86400s.
+These discrete source observations supplement the approved native collectors. They
+do not establish actual media preservation, distinct-user measurements, call-lifetime
+mean or physical cluster topology, which still require original native evidence.
