@@ -131,3 +131,36 @@ ICE generation must match the original operation. This is a transport write
 result, not peer ICE application or a durable journal entry. The native delivery
 producer must supply the original receipt; the complete launcher/delivery binding
 remains required.
+
+Gateway volatile delivery has a separate `GatewayRelayIngress` service. A
+`GatewayRelayRpcServer` is bound to exactly one enrolled cell, gateway workload
+and boot UUID; use `RpcTlsContexts.gatewayServer` with that gateway's own
+certificate. The source must present an actor SPIFFE workload ID, and its cell
+must match the call coordinator. Gateway processes remain outside the actor
+cluster.
+
+Command-scoped ACTIVE v2 signs the current native gateway workload and boot in
+addition to the complete session binding. V1 proof purposes preserve their old
+claims; relay authorization requires v2 and never infers a destination from
+actor location. Rollout must explicitly enroll compatible producers and
+consumers before enabling v2 traffic; older strict decoders fail closed. The
+native authorizer exposes the original minimum of both ACTIVE expiries and the
+committed negotiation roles/ICE/deadline, with no renewed receiver TTL.
+
+`GatewayRelayRpcClient` accepts an immutable, explicitly bounded map of enrolled
+`(cell, gatewayId, bootId)` endpoints. Its gateway TLS factory pins the destination
+role, cell and workload before payload transmission. Two relay channels are
+created lazily per active destination; their sockets are independent. Stale
+boots cannot fall back to another process. Control RPCs use their separate
+transport. Both RPC sides retain their own relay admission until original
+transport/native cleanup completes; logical deadlines do not attest physical
+cleanup.
+
+Bind the listener backend to `GatewayRelayStream.send`, supply bounded CPU
+execution, the actual connection registry, current gateway boot/security and
+trusted clock sources. Delivery rechecks the full recipient binding and original
+ACTIVE expiry immediately before Netty write, retaining the original write
+receipt through timeout or unknown close. A WRITE_COMPLETED result remains
+volatile. Native coordinator producer, cache/retry integration and complete
+process startup still require installation and end-to-end validation; these
+components alone are not deployment or qualification evidence.
