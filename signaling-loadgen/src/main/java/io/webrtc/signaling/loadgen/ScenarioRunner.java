@@ -192,7 +192,7 @@ public final class ScenarioRunner {
                     if(!state.outgoing)return;
                     var ids=SnapshotOffer.freshRound(reply,state.session,state.lastOfferedRound);if(ids.isEmpty())return;
                     var round=ids.get();state.lastOfferedRound=Long.parseLong(round.negotiation());state.round=new Round(requestedCall,round.negotiation(),round.ice());activeTraces.put(state.client.index(),state.round);
-                    sendForCall(state,requestedCall,"OFFER",round.negotiation(),null,JSON.createObjectNode().put("sdp",offer),System.nanoTime(),EvidenceWriter.Operation.RELAY);
+                    sendForCall(state,requestedCall,"OFFER",round.negotiation(),round.ice(),JSON.createObjectNode().put("sdp",offer),System.nanoTime(),EvidenceWriter.Operation.RELAY);
                 }catch(RuntimeException invalid){fail("SYNC_WIRE_CONTRACT_INVALID");}
             }});
         }
