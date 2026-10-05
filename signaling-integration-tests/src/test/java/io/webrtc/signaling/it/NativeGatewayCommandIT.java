@@ -42,8 +42,9 @@ class NativeGatewayCommandIT {
             var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->p.equals(principal));
             var policyMode=new java.util.concurrent.atomic.AtomicInteger(1);
             CallAuthorizationPolicy policy=request->policyMode.get()==1?CallAuthorizationPolicy.openAuthenticated("TEST_ONLY_POLICY",Duration.ofSeconds(2)).authorize(request):policyMode.get()==0?CompletableFuture.completedFuture(AuthorizationDecision.denied()):CompletableFuture.failedFuture(new IllegalStateException("TEST_ONLY_DEPENDENCY_OUTAGE"));
-            var operations=new NativeSessionOperations(registry,verifier,Clock.systemUTC(),proofs.sessionProofs(),()->true,policy);
-            var sessionHandler=new NativeSessionHandler("c001",1,(peer,gateway)->gateway.gatewayId().equals("gw-1"),operations);
+            var operations=new NativeSessionOperations(registry,verifier,Clock.systemUTC(),proofs.sessionProofs(),proofs.relaySessionProofs(),()->true,policy);
+            var homeRelayReads=new java.util.concurrent.atomic.AtomicInteger();
+            var sessionHandler=new NativeSessionHandler("c001",1,(peer,gateway)->gateway.gatewayId().equals("gw-1"),(r,b)->{if(r.type().equals("READ_RELAY_PROOF"))homeRelayReads.incrementAndGet();return operations.execute(r,b);});
             var commands=new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1))).businessAdmission(()->true);
             var actors=new RpcBusinessHandler.ActorIngress(){
                 final Map<CallId,ActorRef<CallMessage>> running=new ConcurrentHashMap<>();
@@ -63,7 +64,9 @@ class NativeGatewayCommandIT {
                 var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("gateway.crt"),cert("gateway.key")),new RpcAdmission(16,1024*1024,16,1024*1024));
                 var boot=new GatewayBootController(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),GatewayBootController.network(client),System::nanoTime)){
                 boot.start();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(boot::current);
-                var gateway=new NativeGatewayServices(boot,verifier,(p,now)->AuthorizationStatus.ALLOWED,u->new NativeGatewayServices.Home("c001",1),client,new NativeGatewayCommands(boot.identity(),u->new ProofBindings.TrustedHome("c001",1,1),NativeGatewayCommands.network(client),Clock.systemUTC()));
+                var relayCache=new NativeRelaySessionProofCache(4,2,Clock.systemUTC(),System::nanoTime,boot::current,new RelaySessionAuthorizationProof(Map.of("c001/test",key.getPublic())));
+                var gatewayCommands=new NativeGatewayCommands(boot.identity(),u->new ProofBindings.TrustedHome("c001",1,1),NativeGatewayCommands.network(client),Clock.systemUTC()).relayProofCache(relayCache);
+                var gateway=new NativeGatewayServices(boot,verifier,(p,now)->AuthorizationStatus.ALLOWED,u->new NativeGatewayServices.Home("c001",1),client,gatewayCommands);
                 var route=gateway.register(principal,"TEST_ONLY_ORIGINAL_TOKEN",UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();
                 var sender=new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),route.connectionId());var request=new RequestId(UUID.randomUUID());
                 var invite=new CallCommand(SignalEnvelope.Type.INVITE,sender,request,null,CommandScope.invite(),callee.userId(),null,null,"{}","a".repeat(64));
@@ -80,6 +83,16 @@ class NativeGatewayCommandIT {
                 assertThat(first.path("type").asText()).isEqualTo("ACK_COMMITTED");assertThat(first.path("callVersion").isTextual()).isTrue();
                 var call=new CallId(first.path("callId").asText());var releasedToken=f.token(call);
                 actors.stopFixtureOwner(call); // Force the stale direct fixture ref path deterministically.
+                f.runtime.boundary.settleAdmitted().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                // R1 is auth-only: this RINGING call still has no installed volatile relay producer.
+                for(int frame=0;frame<2;frame++){
+                    var relay=new CallCommand(SignalEnvelope.Type.OFFER,sender,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{}","f".repeat(64));
+                    var rejected=JSON.readTree(gateway.command(relay,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());
+                    assertThat(rejected.path("error").path("code").asText()).isEqualTo("UNSUPPORTED_OPERATION");assertThat(rejected.path("ackCommitted").asBoolean()).isFalse();
+                }
+                client.settleAdmitted().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                assertThat(homeRelayReads).hasValue(1);assertThat(relayCache.retainedBytes()).isLessThanOrEqualTo(4L*NativeRelaySessionProofCache.ENTRY_BYTES);
+                relayCache.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
                 var cancel=new CallCommand(SignalEnvelope.Type.CANCEL,sender,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
                 var canceled=retryTransient(gateway,cancel,route);assertThat(canceled.path("type").asText()).as("native cancel: %s",canceled).isEqualTo("ACK_COMMITTED");
                 org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).pollInterval(Duration.ofMillis(20)).ignoreExceptionsMatching(error->error instanceof CompletionException&&error.getCause() instanceof AuthoritySql.RetryableConflict).until(()->CoordinatorGrantIT.done(f.groups.releaseTracked(releasedToken)));f.tokens.remove(HomeParticipationService.group(call));

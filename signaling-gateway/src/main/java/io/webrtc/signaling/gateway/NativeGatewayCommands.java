@@ -20,15 +20,20 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
         CompletionStage<SessionReply> session(SessionCommand command,Duration budget);
         CompletionStage<InternalReply> call(CellRpcServer.Operation operation,InternalCommand command,Duration budget);
     }
-    public static Network network(CellRpcClient client){Objects.requireNonNull(client);return new Network(){
-        public CompletionStage<SessionReply> session(SessionCommand c,Duration b){return client.session(c,b);}
+    public interface TrackedNetwork extends Network {
+        RpcOperation<SessionReply> sessionTracked(SessionCommand command,Duration budget);
+        default CompletionStage<SessionReply> session(SessionCommand command,Duration budget){return sessionTracked(command,budget).logical();}
+    }
+    public static TrackedNetwork network(CellRpcClient client){Objects.requireNonNull(client);return new TrackedNetwork(){
+        public RpcOperation<SessionReply> sessionTracked(SessionCommand c,Duration b){return client.sessionTracked(c,b);}
         public CompletionStage<InternalReply> call(CellRpcServer.Operation op,InternalCommand c,Duration b){return client.call(op,c,b);}
     };}
     private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
     private final NativeSessionHandler.GatewayIdentity gateway;
     private final Function<UserId,ProofBindings.TrustedHome> homes;
     private final Network network;
-    private final Clock clock;private final long routingEpoch;
+    private final Clock clock;private final long routingEpoch;private volatile NativeRelaySessionProofCache relayCache;
+    public synchronized NativeGatewayCommands relayProofCache(NativeRelaySessionProofCache cache){if(!(network instanceof TrackedNetwork)||relayCache!=null)throw new IllegalStateException("Original tracked session network and one-time installation required");relayCache=Objects.requireNonNull(cache);return this;}
     public NativeGatewayCommands(NativeSessionHandler.GatewayIdentity gateway,Function<UserId,ProofBindings.TrustedHome> homes,Network network,Clock clock){this(gateway,homes,network,clock,gateway.storageEpoch());}
     public NativeGatewayCommands(NativeSessionHandler.GatewayIdentity gateway,Function<UserId,ProofBindings.TrustedHome> homes,Network network,Clock clock,long routingEpoch){if(routingEpoch<1)throw new IllegalArgumentException("Invalid routing epoch");this.routingEpoch=routingEpoch;this.gateway=Objects.requireNonNull(gateway);this.homes=Objects.requireNonNull(homes);this.network=Objects.requireNonNull(network);this.clock=Objects.requireNonNull(clock);}
     @Override public CompletionStage<String> execute(CallCommand original,SessionRepository.Route route,String token,Duration budget){
@@ -48,7 +53,7 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
             var proofCommand=relay?new CallCommand(command.type(),command.sender(),command.requestId(),command.callId(),command.scope(),null,command.negotiationId(),command.iceGeneration(),"{}",command.intentHash()):command;
             var request=new NativeSessionHandler.Request(lookup?"READ_INVITE_RESULT":relay?"READ_RELAY_PROOF":"READ_PROOF",gateway,token,route,null,home.directoryEpoch(),0,command.requestId().value(),proofCommand);
             var session=SessionCommand.newBuilder().setSchemaMajor(1).setDestinationCell(home.cell()).setOperationId(request.operation().toString()).setType(request.type()).setRemainingBudgetMs(Math.max(1,remaining(end).toMillis())).setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(request))).build();
-            return network.session(session,remaining(end)).thenCompose(reply->{
+            return readSession(session,proofCommand,home,relay,end).thenCompose(reply->{
                 if(!reply.getOperationId().equals(session.getOperationId())||reply.getAckCommitted()||!reply.getErrorCode().isEmpty()||!reply.getStatus().equals("READ"))return CompletableFuture.completedFuture(error(original,reply.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":reply.getErrorCode()));
                 try{
                     if(lookup){var value=JSON.readTree(reply.getResult().toByteArray());return CompletableFuture.completedFuture(value.isNull()?error(original,"RESULT_EXPIRED"):outcome(original,JSON.treeToValue(value,CallCommandService.Outcome.class),false));}
@@ -78,6 +83,19 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                 }catch(Exception invalid){return CompletableFuture.completedFuture(error(original,"OUTCOME_UNKNOWN"));}
             }).exceptionally(failure->error(original,"OUTCOME_UNKNOWN"));
         }catch(RuntimeException invalid){return CompletableFuture.completedFuture(error(original,"OUTCOME_UNKNOWN"));}
+    }
+    private CompletionStage<SessionReply> readSession(SessionCommand session,CallCommand command,ProofBindings.TrustedHome home,boolean relay,long end){
+        var cache=relayCache;if(!relay||cache==null)return network.session(session,remaining(end));
+        var work=cache.get(command,home,remaining(end),()->{
+            var original=((TrackedNetwork)network).sessionTracked(session,remaining(end));
+            var logical=original.logical().thenApply(reply->{
+                if(!reply.getOperationId().equals(session.getOperationId())||reply.getAckCommitted()||!reply.getErrorCode().isEmpty()||!reply.getStatus().equals("READ"))throw new CompletionException(new IllegalStateException("Native relay proof unavailable"));
+                try{return JSON.readValue(reply.getResult().toByteArray(),String.class);}catch(java.io.IOException invalid){throw new CompletionException(invalid);}
+            });
+            return new RpcOperation<>(logical,original.physicalCompletion());
+        });
+        // Cached proof keeps its signed original native checkedAt/proofUntil; READ is internal correlation only.
+        return work.logical().thenApply(proof->SessionReply.newBuilder().setOperationId(session.getOperationId()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode(proof))).build());
     }
     private static Duration remaining(long end){long left=end-System.nanoTime();if(left<=0)throw new CompletionException(new TimeoutException());return Duration.ofNanos(left);}
     private static boolean same(SessionRepository.Route r,AuthenticatedSession s){return r.user().equals(s.userId())&&r.key().equals(s.key())&&r.incarnation().equals(s.incarnation())&&r.connectionGeneration()==s.connectionGeneration()&&r.connectionId().equals(s.connectionId());}

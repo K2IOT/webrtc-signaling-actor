@@ -111,3 +111,14 @@ composition's real shard grant and live clock/safety gate. A non-hosting process
 cannot refresh relay authority. Existing hosted work may settle through the
 business drain before membership and safety sources stop. Complete process
 startup and gateway proof reuse remain required.
+
+`NativeGatewayCommands.network(client)` exposes the original tracked session RPC
+receipt. Install `relayProofCache(cache)` before ingress starts; logical-only
+network adapters cannot install a warm cache. `NativeRelaySessionProofCache`
+verifies only pinned public Ed25519 trust, keeps the original R1 expiry, and uses
+a live local safety callback plus monotonic expiry. Configure at most 4,096
+entries and 64 concurrent refreshes; each retained entry is charged 16 KiB.
+UNKNOWN refresh cleanup holds its slot and drain receipt. The gateway's existing
+ingress/delivery security checks still apply to every bound session. These caps
+are starting limits; complete launcher installation and measured capacity remain
+required.
