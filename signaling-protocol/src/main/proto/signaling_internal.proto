@@ -88,3 +88,10 @@ message SessionReply {
  string operation_id=1; bool ack_committed=2; string status=3; string error_code=4; bytes result=5;
 }
 service SessionIngress { rpc MutateSession(SessionCommand) returns (SessionReply); }
+
+// Dedicated volatile gateway lane. Full boot identity prevents routing into a restarted process.
+message GatewayRelayRequest {
+ int32 schema_major=1; string destination_cell=2; string gateway_id=3; bytes boot_id=4;
+ string operation_id=5; bytes payload=6; int64 remaining_budget_ms=7;
+}
+service GatewayRelayIngress { rpc DeliverRelay(GatewayRelayRequest) returns (InternalReply); }
