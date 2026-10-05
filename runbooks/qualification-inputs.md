@@ -7,7 +7,8 @@ receipts from test fixtures.
 ## Implementation still open
 
 The Spring launcher currently selects and validates a plane; it does not assemble
-and start a complete gateway, actor or control process. Native actor composition,
+and start a complete gateway, actor or control process. Its startup guard now
+rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are
 locally exercised. They must be joined in the launcher using explicit enrolled
 sources and policies. A runtime Secret mounted by Helm is not, by itself, evidence
@@ -48,3 +49,30 @@ Only an enrolled external collector root can attest the bundle. Run
 `qualification/scenarios/verify-evidence.sh` with that explicit trust file; missing
 or failed gates retain NOT_QUALIFIED. No production qualification run has been
 collected in this workspace.
+
+## Local image and OCI integrity checks
+
+Build the already verified executable with `./mvnw -pl signaling-app -am package`.
+The Dockerfile accepts `SOURCE_COMMIT` for its immutable revision label and pins
+its linux/amd64 JRE21.0.8+9 base by native manifest digest. The build context allows
+only that executable; runtime Secrets and inventories never enter the image.
+Build locally with Docker buildx `--load`, then run
+`bash qualification/scenarios/image-contract.sh LOCAL_IMAGE`. It checks actual
+native metadata/JRE and runs all three profiles without a network, as UID10001,
+with a read-only root. Missing identity and absent native composition must each
+fail through their distinct bounded diagnostic code. Successful negative startup
+smoke does not prove a complete native launcher.
+
+Docker's classic exporter may report the image/config ID under its digest field.
+That ID is not an OCI manifest digest. Preserve `docker save LOCAL_IMAGE -o
+ORIGINAL.tar`, then run `python3 qualification/scenarios/export-native-image.py
+ORIGINAL.tar NEW_OCI_DIRECTORY --source-commit FULL_SOURCE_COMMIT`. The exporter
+retains original config/layer bytes, validates source/platform/layer identities,
+rejects unsafe/multiple/unbounded inputs and never overwrites an existing layout.
+It writes actual OCI manifest/index descriptors and always reports NOT_QUALIFIED.
+Keep original archives and layouts outside git. Compare the exported config digest
+to the original native Docker image ID and verify every descriptor hash/size.
+
+`qualification/evidence/20261005-2302-e3630d9-3d330291c09f` records one local
+TEST_ONLY build and negative startup smoke. Its intentionally incomplete manifest
+fails the verifier. It contains no production qualification measurements.

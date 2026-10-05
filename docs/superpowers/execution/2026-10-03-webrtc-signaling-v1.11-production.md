@@ -171,3 +171,22 @@ staged source populations use exact integer arithmetic. Native Main, security
 drivers and genuine staged qualification remain open. Required external inputs
 and the remaining implementation are listed in `runbooks/qualification-inputs.md`.
 Tasks 22–24 remain in progress; release remains **NOT_QUALIFIED**.
+
+Fresh full verification at `e3630d9` passed **557 tests in 131 fresh reports**,
+zero failures, errors or skips (2026-10-05T22:59:49Z, 5m02s). All Python tests
+passed **63**; the native image smoke passed for all three profiles. The launcher
+now refuses a configuration-only context even with valid issuer/audience and
+emits bounded diagnostic codes without exception/private values. This is a
+startup guard, not complete native Main assembly.
+
+The original local build was exported to a verified OCI layout, preserving actual
+Docker config/layer bytes and checking the original native config identity and
+all blob hashes/sizes. Native OCI manifest digest is
+`sha256:3d330291c09faa4a5a0946dcaf2bab1cc0c4d60d7900af0d93e4cb9172b93b64`;
+it is distinct from the Docker image/config ID. Local candidate
+`20261005-2302-e3630d9-3d330291c09f` contains only TEST_ONLY build/startup records
+and an explicit **NOT_QUALIFIED** decision. Its incomplete manifest fails the
+qualification verifier; no trusted signature, enrollment fingerprint, native
+production gate, source inventory or measured capacity is invented. No image
+was pushed or deployment performed. Complete Main, six security drivers and
+genuine staged/drill qualification remain open; Tasks 22–24 remain in progress.

@@ -1,0 +1,22 @@
+manifestVersion: 1
+candidateId: 20261005-2302-e3630d9-3d330291c09f
+gitCommit: e3630d92a5dea58cf00d8af928f05c0031ae36d5
+imageDigests:
+  actor: sha256:3d330291c09faa4a5a0946dcaf2bab1cc0c4d60d7900af0d93e4cb9172b93b64
+  gateway: sha256:3d330291c09faa4a5a0946dcaf2bab1cc0c4d60d7900af0d93e4cb9172b93b64
+  control: sha256:3d330291c09faa4a5a0946dcaf2bab1cc0c4d60d7900af0d93e4cb9172b93b64
+testOnly: true
+builtAt: '2026-10-05T23:02:12.520328+00:00'
+evidenceValidUntil: '2026-10-06T23:02:12.520328+00:00'
+artifacts:
+  local-build.json:
+    sha256: ab36aa6a41563ae5910846c9aae1930ca65ed659b05797a9fbe0199aae8371a7
+    bytes: 1035
+  release-decision.md:
+    sha256: ca3f5a132fad2f29bbcf24cd3c11f9b684ba0052d4a54acd8fe124ac52df3bae
+    bytes: 1896
+gates: {}
+environment:
+  scope: LOCAL_NATIVE_BUILD
+  testOnly: true
+declaredEnvelope: {}

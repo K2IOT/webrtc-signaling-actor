@@ -1,0 +1,33 @@
+{
+  "candidateId": "20261005-2302-e3630d9-3d330291c09f",
+  "sourceCommit": "e3630d92a5dea58cf00d8af928f05c0031ae36d5",
+  "testOnly": true,
+  "scope": "LOCAL_BUILD_AND_NEGATIVE_STARTUP_SMOKE",
+  "platform": "linux/amd64",
+  "manifestDigest": "sha256:3d330291c09faa4a5a0946dcaf2bab1cc0c4d60d7900af0d93e4cb9172b93b64",
+  "configDigest": "sha256:653dbcd9571343893180e52ed74ac9cd455d65b0708fde852c3c3641df2418ae",
+  "baseDigest": "sha256:cddd554e8d69b48b46e8b0c9d1ce72ae5fe8d84819dcdb7131328531e9cc100b",
+  "nativeImageSmoke": {
+    "nonroot": true,
+    "readOnlyRoot": true,
+    "network": "none",
+    "jre": "21.0.8+9",
+    "profiles": [
+      "actor",
+      "gateway",
+      "control"
+    ],
+    "missingIdentity": "CONFIGURATION_REJECTED",
+    "validIdentityWithoutNativePlane": "NATIVE_RUNTIME_NOT_INSTALLED"
+  },
+  "localVerification": {
+    "javaTests": 557,
+    "javaReports": 131,
+    "pythonTests": 63,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "qualificationRunsCollected": false,
+  "status": "NOT_QUALIFIED"
+}
