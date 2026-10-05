@@ -1,6 +1,8 @@
 package io.webrtc.signaling.storage;
 import static org.assertj.core.api.Assertions.*;
 import io.webrtc.signaling.rpc.*;
+import io.webrtc.signaling.gateway.*;
+import io.webrtc.signaling.actors.relay.RelayBufferBudget;
 import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.*;
@@ -36,8 +38,8 @@ class NativeActorCompositionIT {
     @Test void realEntityRefsSelectNativeRootsAndCommitThroughInstalledBackendFactories()throws Exception {
         var systems=new ArrayList<ActorSystem<Void>>();var compositions=new ArrayList<NativeActorComposition>();
         var f=new LocalInviteAtomicIT.Fixture();
-        try(var verifier=new BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
-            var caller=f.sender("composition-caller");var callee=f.sender("composition-callee");
+        try(var recipientGateway=new RelayGatewayFixture(f);var verifier=new BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
+            var caller=recipientGateway.register("composition-caller");var callee=recipientGateway.register("composition-callee");
             var key=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",key.getPrivate(),Map.of("c001/test",key.getPublic()));
             for(var zone:List.of("a","a","b","c")){
                 var system=ActorSystem.<Void>create(Behaviors.empty(),"native-composition-c001",config(zone));systems.add(system);
@@ -77,7 +79,7 @@ class NativeActorCompositionIT {
                 public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){return callTracked(op,c,b).logical();}
                 public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){
                     assertThat(c.getPayload().size()).isLessThan(37000);
-                    return target.get().executeTracked(op,c,new CellRpcServer.Peer("c001","actor"),b);
+                    return target.get().executeTracked(op,c,new CellRpcServer.Peer("c001","actor","TEST_ONLY_NATIVE_ACTOR"),b);
                 }
             };
             var backend=host.backend(network,r->CompletableFuture.failedFuture(new AssertionError("Legacy relay must stay unused")));target.set(backend);
@@ -95,6 +97,23 @@ class NativeActorCompositionIT {
             var authorized=relay.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);relay.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
             assertThat(authorized.sender()).isEqualTo(caller);assertThat(authorized.recipient()).isEqualTo(callee);assertThat(authorized.group()).isEqualTo(token);
             assertThat(authorized.callVersion()).isEqualTo(5);assertThat(authorized.negotiationId()).isEqualTo(1);
+            // Joined TEST_ONLY native PostgreSQL + EntityRef authority + actual TLS RPC + Netty write.
+            try(var gatewayClient=recipientGateway.client();var producer=host.relayProducer(network,4,new RelayBufferBudget(262144),gatewayClient)){
+                backend.nativeRelay(producer);
+                var protocol=new ProtocolValidator(ProtocolLimits.v1());
+                for(var type:List.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES)){
+                    var sender=type==SignalEnvelope.Type.ANSWER?callee:caller;var destination=sender.equals(caller)?callee:caller;
+                    String payload=switch(type){case OFFER,ANSWER->"{\"sdp\":\"v=0\\r\\n"+"x".repeat(16384)+"\"}";case ICE_CANDIDATES->"{\"startSequence\":\"1\",\"candidates\":[{\"candidate\":\"candidate:1 1 UDP 1 127.0.0.1 9 typ host\",\"sdpMid\":\"0\",\"usernameFragment\":\"TEST_ONLY_UFRAG\"}]}";case END_OF_CANDIDATES->"{\"terminalSequence\":\"2\"}";default->throw new AssertionError();};
+                    var originalRelay=protocol.bind(new SignalEnvelope(1,type,new RequestId(UUID.randomUUID()),call,new NegotiationId(1),new IceGeneration(1),payload),sender);
+                    var nativeSender=currentSession(registry,SessionAuthReadIT.route(f,sender));
+                    var receipt=publicRelay(backend,originalRelay,proofs.relaySessionProofs().issue(nativeSender,originalRelay));
+                    assertThat(receipt.matches(originalRelay)).isTrue();assertThat(receipt.callVersion()).isEqualTo(5);
+                    var delivered=recipientGateway.take(destination);assertThat(delivered.path("type").asText()).isEqualTo(type.name());assertThat(delivered.path("payload")).isEqualTo(new com.fasterxml.jackson.databind.ObjectMapper().readTree(payload));
+                    assertThat(delivered.path("sessionIncarnation").asText()).isEqualTo(destination.incarnation().value().toString());
+                    if(type==SignalEnvelope.Type.OFFER){assertThat(publicRelay(backend,originalRelay,proofs.relaySessionProofs().issue(nativeSender,originalRelay))).isEqualTo(receipt);assertThat(recipientGateway.empty(destination)).isTrue();}
+                }
+                assertThat(gatewayClient.channelCount()).isEqualTo(2);
+            }
             var nonhost=compositions.stream().filter(c->c!=host).findFirst().orElseThrow();
             String offerProof=proofs.relaySessionProofs().issue(auth,offer);
             assertThatThrownBy(()->nonhost.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
@@ -111,6 +130,26 @@ class NativeActorCompositionIT {
             cell.readiness().beginDrain();new NativeClusterMembership(cell.system(),cell.readiness(),Set.of("az-a","az-b","az-c")).refresh();assertThat(cell.readiness().snapshot().draining()).isTrue();assertThat(cell.readiness().businessReady()).isFalse();
 
         }finally{for(var system:systems)system.terminate();for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);for(var composition:compositions)composition.drainRoots().toCompletableFuture().get(8,TimeUnit.SECONDS);f.close();}
+    }
+    /** TEST_ONLY boot/security adapters; native current sessions/routes and TLS/Netty writes are real. */
+    static final class RelayGatewayFixture implements AutoCloseable {
+        final LocalInviteAtomicIT.Fixture f;final GatewayLeaseRepository.Boot boot;final ConnectionRegistry connections;final Map<UserId,io.netty.channel.embedded.EmbeddedChannel> channels=new HashMap<>();final GatewayRelayRpcServer server;
+        RelayGatewayFixture(LocalInviteAtomicIT.Fixture f)throws Exception {this.f=f;boot=f.sessions.startGatewayBoot("gw-1",UUID.randomUUID(),"TEST_ONLY",UUID.randomUUID()).toCompletableFuture().join();connections=new ConnectionRegistry("gw-1",boot.bootId(),8,16);
+            var services=new GatewayServices(){public boolean currentBoot(){return true;}public AuthorizationStatus cachedSecurity(AuthPrincipal p,Instant now){return AuthorizationStatus.ALLOWED;}public CompletionStage<AuthPrincipal> verify(String t,Instant n){throw new AssertionError();}public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID c,Duration b){throw new AssertionError();}public CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route r,AuthPrincipal p,Duration b){throw new AssertionError();}public CompletionStage<Void> close(SessionRepository.Route r){throw new AssertionError();}public CompletionStage<String> command(CallCommand c,Duration b){throw new AssertionError();}};
+            var stream=new GatewayRelayStream(connections,services,Clock.systemUTC(),Runnable::run,new RpcAdmission(8,1048576,8,1048576),()->true);
+            server=new GatewayRelayRpcServer("c001","gw-1",boot.bootId(),"test",0,RpcTlsContexts.gatewayServer("test","c001","gw-1",cert("ca.crt"),cert("gateway.crt"),cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576),stream::send).start();
+        }
+        static java.io.File cert(String name){return new java.io.File(Objects.requireNonNull(NativeActorCompositionIT.class.getResource("/test-only-pki/relay/"+name)).getFile());}
+        AuthenticatedSession register(String name){var channel=new io.netty.channel.embedded.EmbeddedChannel(new OutboundAdmissionHandler(new DeliveryCreditController(64,1048576,8,131072)));var id=connections.attach(channel);var principal=new AuthPrincipal(new UserId(name),new SessionKey("TEST_ONLY",UUID.randomUUID().toString()),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(600),Instant.now(),"TEST_ONLY",1);var route=f.sessions.registerSession(principal,boot,id,1).toCompletableFuture().join();assertThat(connections.bind(id,route,principal)).isTrue();channels.put(route.user(),channel);return new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),route.connectionId());}
+        GatewayRelayRpcClient client()throws Exception {return new GatewayRelayRpcClient("test",2,Map.of(new GatewayRelayRpcClient.Target("c001","gw-1",boot.bootId()),new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.gatewayClients("test",cert("ca.crt"),cert("actor.crt"),cert("actor.key")),new RpcAdmission(8,1048576,8,1048576));}
+        com.fasterxml.jackson.databind.JsonNode take(AuthenticatedSession recipient)throws Exception {var frame=(io.netty.handler.codec.http.websocketx.TextWebSocketFrame)channels.get(recipient.userId()).readOutbound();assertThat(frame).isNotNull();try{return new com.fasterxml.jackson.databind.ObjectMapper().readTree(frame.text());}finally{frame.release();}}
+        boolean empty(AuthenticatedSession recipient){return channels.get(recipient.userId()).outboundMessages().isEmpty();}
+        public void close()throws Exception {server.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);channels.values().forEach(io.netty.channel.embedded.EmbeddedChannel::finishAndReleaseAll);}
+    }
+    private static RelayWriteReceipt publicRelay(RpcBusinessHandler backend,CallCommand command,String proof)throws Exception {
+        java.util.function.Function<UUID,com.google.protobuf.ByteString> uuid=id->com.google.protobuf.ByteString.copyFrom(java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array());var sender=command.sender();
+        var wire=io.webrtc.signaling.protocol.internal.InternalCommand.newBuilder().setSchemaMajor(1).setType(command.type().name()).setOperationId(command.requestId().value().toString()).setCallId(command.callId().value()).setCommandScope(command.scope().value()).setDestinationCell("c001").setRemainingBudgetMs(1000).setPayloadHash(com.google.protobuf.ByteString.copyFrom(HexFormat.of().parseHex(command.intentHash()))).setPayload(com.google.protobuf.ByteString.copyFrom(RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,proof)))).setSender(io.webrtc.signaling.protocol.internal.SessionIdentity.newBuilder().setUserId(sender.userId().value()).setIssuer(sender.key().issuer()).setJti(sender.key().jti()).setIncarnation(uuid.apply(sender.incarnation().value())).setConnectionGeneration(sender.connectionGeneration()).setConnectionId(uuid.apply(sender.connectionId()))).build();
+        var operation=backend.executeTracked(CellRpcServer.Operation.RELAY,wire,new CellRpcServer.Peer("c001","gateway","gw-1"),Duration.ofSeconds(1));var reply=operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(reply.getAckCommitted()).isFalse();assertThat(reply.getStatus()).describedAs(reply.getErrorCode()).isEqualTo("WRITE_COMPLETED");return new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().readValue(reply.getResult().toByteArray(),RelayWriteReceipt.class);
     }
     /** Fixture eligibility read: known native contention retries within one original read budget. */
     private static SessionRegistryService.SessionProofView currentSession(SessionRegistryService registry,SessionRepository.Route route)throws Exception {

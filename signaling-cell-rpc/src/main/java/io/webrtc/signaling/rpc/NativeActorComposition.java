@@ -74,6 +74,15 @@ public final class NativeActorComposition {
         return new NativeRelayAuthorization(commands,new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock()),inputs.proofs(),inputs.homes(),
             call->local(HomeParticipationService.group(call)),inputs.clock(),()->inputs.trustedClock().getAsBoolean()&&readiness.safetyReady());
     }
+    /** Caller owns lifecycle; install with backend.nativeRelay before opening the RPC listener. */
+    public NativeRelayProducer relayProducer(NativeSagaEffects.Network network,int capacity,
+            io.webrtc.signaling.actors.relay.RelayBufferBudget memory,GatewayRelayRpcClient gateway){
+        Objects.requireNonNull(gateway);Objects.requireNonNull(memory);
+        BooleanSupplier trusted=()->inputs.trustedClock().getAsBoolean()&&readiness.safetyReady();
+        Function<CallId,Optional<AuthoritySql.GroupToken>> owner=call->local(HomeParticipationService.group(call));
+        var rounds=new NativeRelayRoundCache(capacity,Math.min(capacity,64),relayAuthorization(network),System::nanoTime,trusted,owner);
+        return new NativeRelayProducer(rounds,capacity,System::nanoTime,trusted,owner,memory,gateway::send);
+    }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.proofs().relaySessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
     /** Invoke after framework handoff/leave, while the native database remains available. */
