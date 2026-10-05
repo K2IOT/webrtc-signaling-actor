@@ -30,7 +30,7 @@ public final class NegotiationRelay implements AutoCloseable {
     @FunctionalInterface public interface Transport {ActorOperation<Void> send(Description message);}
     private static final class Retained {
         final Description message;final RelayBufferBudget.Ticket credit;
-        CompletableFuture<Void> result;boolean physicalPending,closed;
+        CompletableFuture<Void> result;CompletionStage<Void> physical;boolean physicalPending,closed;
         Retained(Description message,RelayBufferBudget.Ticket credit){this.message=message;this.credit=credit;}
         void close(){closed=true;if(!physicalPending)credit.close();}
     }
@@ -58,49 +58,61 @@ public final class NegotiationRelay implements AutoCloseable {
         }else if(lanes.size()>=capacity)return false;
         lanes.put(grant.call(),new Lane(grant,clock.getAsLong()));return true;
     }
-    public synchronized CompletionStage<Void> send(Description message,Duration budget){
+    public CompletionStage<Void> send(Description message,Duration budget){return sendTracked(message,budget).logical();}
+    public synchronized ActorOperation<Void> sendTracked(Description message,Duration budget){
         if(budget.isZero()||budget.isNegative()||budget.compareTo(Duration.ofSeconds(2))>0)
-            return CompletableFuture.failedFuture(new IllegalArgumentException("Invalid relay budget"));
+            return rejected(new IllegalArgumentException("Invalid relay budget"));
         expire();var lane=lanes.get(message.call());
         if(closed||lane==null||lane.grant.negotiationId()!=message.negotiationId()
                 ||lane.grant.iceGeneration()!=message.iceGeneration()
                 ||!message.sender().equals(message.kind()==Kind.OFFER?lane.grant.offerer():lane.grant.answerer())
                 ||message.kind()==Kind.ANSWER&&(lane.offer==null||lane.offer.result==null||!successful(lane.offer.result)))
-            return CompletableFuture.failedFuture(new IllegalStateException("RESYNC_REQUIRED"));
+            return rejected(new IllegalStateException("RESYNC_REQUIRED"));
         Retained retained=message.kind()==Kind.OFFER?lane.offer:lane.answer;
-        if(retained!=null){if(!retained.message.equals(message))return CompletableFuture.failedFuture(new IllegalArgumentException("SDP retry identity conflict"));
-            if(retained.physicalPending||successful(retained.result))return retained.result;
+        if(retained!=null){if(!retained.message.equals(message))return rejected(new IllegalArgumentException("SDP retry identity conflict"));
+            if(retained.physicalPending||successful(retained.result))return view(retained,budget);
         }else{
             try{retained=new Retained(message,memory.acquire(256+message.body().getBytes(StandardCharsets.UTF_8).length));}
-            catch(RuntimeException overloaded){return CompletableFuture.failedFuture(overloaded);}
+            catch(RuntimeException overloaded){return rejected(overloaded);}
             if(message.kind()==Kind.OFFER)lane.offer=retained;else lane.answer=retained;
             if(lane.expiry==null){long delay=Math.min(lane.grant.untilNanos()-clock.getAsLong(),Duration.ofSeconds(30).toNanos()-(clock.getAsLong()-lane.created));
                 lane.expiry=RelayExpiry.schedule(()->expireLane(lane),delay);}
 
         }
         final Retained attempt=retained;var result=new CompletableFuture<Void>();attempt.result=result;
+        var scope=new ReceiptScope();attempt.physical=scope.completion.minimalCompletionStage();attempt.physicalPending=true;
+        scope.completion.whenComplete((v,e)->{if(e==null)synchronized(this){attempt.physicalPending=false;if(attempt.closed)attempt.credit.close();}});
+        result.whenComplete((v,e)->{synchronized(this){scope.release();}});
         long started=clock.getAsLong();
-        cache.refresh(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget,
-            ()->authority.load(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget))
-            .whenComplete((snapshot,error)->{
+        var authorization=cache.refreshTracked(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget,
+            ()->authority.load(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget));
+        scope.track(authorization.physicalCompletion());
+        authorization.logical().whenComplete((snapshot,error)->{
                 synchronized(this){
                     if(error!=null){result.completeExceptionally(error);return;}
                     long remaining=budget.toNanos()-(clock.getAsLong()-started);
-                    if(lane.closed||attempt.closed||expired(lane)||remaining<=0||!snapshot.group().equals(lane.grant.group())||!snapshot.activationId().equals(lane.grant.activationId())||snapshot.callVersion()!=lane.grant.callVersion()
+                    if(result.isDone()||lane.closed||attempt.closed||expired(lane)||remaining<=0||!snapshot.group().equals(lane.grant.group())||!snapshot.activationId().equals(lane.grant.activationId())||snapshot.callVersion()!=lane.grant.callVersion()
                             ||!snapshot.recipient().equals(message.kind()==Kind.OFFER?lane.grant.answerer():lane.grant.offerer())){
                         result.completeExceptionally(new IllegalStateException("RESYNC_REQUIRED"));return;
                     }
-                    attempt.physicalPending=true;
+                    var originalWriteReceipt=new CompletableFuture<Void>();scope.track(originalWriteReceipt);
                     final ActorOperation<Void> operation;
                     try{operation=Objects.requireNonNull(transport.send(message));}
                     catch(Throwable failure){result.completeExceptionally(failure);return;}
                     result.orTimeout(remaining,TimeUnit.NANOSECONDS);
                     operation.logical().whenComplete((ignored,failure)->{if(failure==null)result.complete(null);else result.completeExceptionally(failure);});
-                    operation.physicalCompletion().whenComplete((ignored,failure)->{if(failure==null)synchronized(this){attempt.physicalPending=false;if(attempt.closed)attempt.credit.close();}});
+                    operation.physicalCompletion().whenComplete((ignored,failure)->{if(failure==null)originalWriteReceipt.complete(null);});
                 }
             });
-        return result;
+        return view(attempt,budget);
     }
+    private static final class ReceiptScope {
+        private int retained=1;final CompletableFuture<Void> completion=new CompletableFuture<>();
+        synchronized void track(CompletionStage<Void> original){if(completion.isDone())throw new IllegalStateException("Relay receipt scope already closed");retained++;original.whenComplete((v,e)->{if(e==null)release();});}
+        synchronized void release(){if(--retained==0)completion.complete(null);}
+    }
+    private static ActorOperation<Void> rejected(Throwable error){return new ActorOperation<>(CompletableFuture.failedFuture(error),CompletableFuture.completedFuture(null));}
+    private static ActorOperation<Void> view(Retained attempt,Duration budget){return new ActorOperation<>(attempt.result.thenApply(v->v).orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS).minimalCompletionStage(),attempt.physical);}
     private static boolean successful(CompletableFuture<?> stage){return stage!=null&&stage.isDone()&&!stage.isCompletedExceptionally()&&!stage.isCancelled();}
     private boolean expired(Lane lane){long now=clock.getAsLong();return now-lane.grant.untilNanos()>=0||now-lane.created>=Duration.ofSeconds(30).toNanos();}
     private synchronized void expireLane(Lane lane){if(lanes.get(lane.grant.call())==lane&&expired(lane)){lanes.remove(lane.grant.call());lane.close();cache.invalidate(lane.grant.call());}}

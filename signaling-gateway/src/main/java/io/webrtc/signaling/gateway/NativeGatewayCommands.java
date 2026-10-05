@@ -47,8 +47,8 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
             var call=invite?CallId.create(home.cell(),routingEpoch):original.callId();
             if(!lookup&&call==null)return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
             var command=invite?new CallCommand(original.type(),original.sender(),original.requestId(),call,original.scope(),original.target(),original.negotiationId(),original.iceGeneration(),original.payloadJson(),original.intentHash()):original;
-            long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());
             boolean relay=Set.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES).contains(command.type());
+            long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(relay?1:2).toNanos());
             if(relay&&!RelaySessionAuthorizationProof.supports(command))return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
             var proofCommand=relay?new CallCommand(command.type(),command.sender(),command.requestId(),command.callId(),command.scope(),null,command.negotiationId(),command.iceGeneration(),"{}",command.intentHash()):command;
             var request=new NativeSessionHandler.Request(lookup?"READ_INVITE_RESULT":relay?"READ_RELAY_PROOF":"READ_PROOF",gateway,token,route,null,home.directoryEpoch(),0,command.requestId().value(),proofCommand);

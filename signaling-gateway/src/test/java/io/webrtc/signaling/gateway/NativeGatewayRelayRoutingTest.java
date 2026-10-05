@@ -29,6 +29,8 @@ class NativeGatewayRelayRoutingTest {
         var lane=new AtomicReference<CellRpcServer.Operation>();var dispatched=new AtomicReference<InternalCommand>();
         var network=new NativeGatewayCommands.Network(){
             public CompletionStage<SessionReply> session(SessionCommand command,Duration remaining){
+                assertThat(remaining).isLessThanOrEqualTo(Duration.ofSeconds(1));
+                assertThat(command.getRemainingBudgetMs()).isBetween(1L,1000L);
                 assertThat(command.getType()).isEqualTo("READ_RELAY_PROOF");assertThat(command.getDestinationCell()).isEqualTo("c001");
                 try{var request=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().readValue(command.getPayload().toByteArray(),NativeSessionHandler.Request.class);assertThat(request.proofCommand().payloadJson()).isEqualTo("{}");}catch(java.io.IOException invalid){throw new AssertionError(invalid);}
                 return CompletableFuture.completedFuture(SessionReply.newBuilder().setOperationId(command.getOperationId()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode("TEST_ONLY_WIRE_PROOF"))).build());

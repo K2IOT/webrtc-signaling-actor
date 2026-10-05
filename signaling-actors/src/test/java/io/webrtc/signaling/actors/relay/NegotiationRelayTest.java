@@ -42,4 +42,27 @@ class NegotiationRelayTest {
         assertThat(relay.send(offer,Duration.ofSeconds(1)).toCompletableFuture()).isCompletedExceptionally();assertThat(started).hasValue(1);
         long retained=memory.retainedBytes();relay.close();assertThat(retained).isPositive();assertThat(memory.retainedBytes()).isEqualTo(retained);
     }
+    @Test void trackedSdpWaitsForBothOriginalAuthorizationAndTransportCleanup(){
+        var authorizationCleanup=new CompletableFuture<Void>();var writeCleanup=new CompletableFuture<Void>();var cache=cacheForTest();
+        var relay=new NegotiationRelay(4,now::get,memory,cache,(c,s,r,i,b)->new ActorOperation<>(CompletableFuture.completedFuture(snapshot(s,r,i)),authorizationCleanup),m->new ActorOperation<>(CompletableFuture.completedFuture(null),writeCleanup));
+        relay.install(grant(1,1));var message=offer(UUID.randomUUID(),"v=0",1,1);var work=relay.sendTracked(message,Duration.ofSeconds(1));
+        assertThat(work.logical().toCompletableFuture()).isDone();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();writeCleanup.complete(null);assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();
+        authorizationCleanup.complete(null);assertThat(work.physicalCompletion().toCompletableFuture()).isDone();relay.close();assertThat(memory.retainedBytes()).isZero();
+    }
+    @Test void trackedUnknownSdpFactoryNeverInventsAWriteCleanupReceipt(){
+        var relay=new NegotiationRelay(4,now::get,memory,cacheForTest(),(c,s,r,i,b)->new ActorOperation<>(CompletableFuture.completedFuture(snapshot(s,r,i)),CompletableFuture.completedFuture(null)),m->{throw new IllegalStateException("TEST_ONLY_UNKNOWN_START");});
+        relay.install(grant(1,1));var work=relay.sendTracked(offer(UUID.randomUUID(),"v=0",1,1),Duration.ofSeconds(1));
+        assertThat(work.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();relay.close();assertThat(memory.retainedBytes()).isPositive();
+    }
+    @Test void duplicateSdpDuringPendingAuthorizationUsesOneOriginalWrite(){
+        var authorization=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var cleanup=new CompletableFuture<Void>();var sends=new AtomicInteger();
+        var relay=new NegotiationRelay(4,now::get,memory,cacheForTest(),(c,s,r,i,b)->new ActorOperation<>(authorization,cleanup),m->{sends.incrementAndGet();return new ActorOperation<>(CompletableFuture.completedFuture(null),CompletableFuture.completedFuture(null));});
+        relay.install(grant(1,1));var message=offer(UUID.randomUUID(),"v=0",1,1);var first=relay.sendTracked(message,Duration.ofSeconds(1));var duplicate=relay.sendTracked(message,Duration.ofSeconds(1));
+        authorization.complete(snapshot(caller,1,1));assertThat(sends).hasValue(1);assertThat(first.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(duplicate.physicalCompletion().toCompletableFuture()).isNotDone();cleanup.complete(null);relay.close();assertThat(memory.retainedBytes()).isZero();
+    }
+    @Test void authorizationCleanupAlsoRetainsTheDescriptionCreditAfterLogicalWrite(){
+        var cleanup=new CompletableFuture<Void>();var relay=new NegotiationRelay(4,now::get,memory,cacheForTest(),(c,s,r,i,b)->new ActorOperation<>(CompletableFuture.completedFuture(snapshot(s,r,i)),cleanup),m->new ActorOperation<>(CompletableFuture.completedFuture(null),CompletableFuture.completedFuture(null)));
+        relay.install(grant(1,1));var work=relay.sendTracked(offer(UUID.randomUUID(),"v=0",1,1),Duration.ofSeconds(1));relay.close();
+        assertThat(memory.retainedBytes()).isPositive();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();cleanup.complete(null);assertThat(memory.retainedBytes()).isZero();
+    }
 }
