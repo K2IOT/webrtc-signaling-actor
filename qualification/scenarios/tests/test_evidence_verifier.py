@@ -113,6 +113,29 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         self.assertIn('INVALID_PERCENTILE_ORDER:p2:control',errors)
         self.assertIn('MISSING_RAW_PERCENTILES:p2:relay',errors)
 
+    def test_resource_strings_booleans_and_negative_counts_are_not_measurements(self):
+        context,gate=self.gate('capacity')
+        for bad in ('healthy',True,-1,float('inf')):
+            stages={name:{'resourceMeasurements':{field:bad for field in verifier.RESOURCE_METRICS}} for name in verifier.STAGES}
+            gate['metrics']={'stages':stages}
+            self.assertIn('INVALID_RESOURCE_MEASUREMENTS:p2',verifier._capacity(self.root,gate,context,{}))
+
+    def test_resource_nested_labels_need_bounded_finite_numeric_leaves(self):
+        context,gate=self.gate('capacity')
+        stages={name:{'resourceMeasurements':{field:{'c001':{'actor':1}} for field in verifier.RESOURCE_METRICS}} for name in verifier.STAGES}
+        stages['p2']['resourceMeasurements']['dbPools']={'c001':{'safety':'usable'}}
+        gate['metrics']={'stages':stages}
+        self.assertIn('INVALID_RESOURCE_MEASUREMENTS:p2',verifier._capacity(self.root,gate,context,{}))
+        self.assertNotIn('INVALID_RESOURCE_MEASUREMENTS:10k',verifier._capacity(self.root,gate,context,{}))
+
+    def test_cpu_and_preservation_ratios_cannot_exceed_one(self):
+        context,gate=self.gate('capacity')
+        stages={name:{'resourceMeasurements':{field:0 for field in verifier.RESOURCE_METRICS}} for name in verifier.STAGES}
+        stages['p2']['resourceMeasurements']['cpu']=1.01
+        stages['p2']['resourceMeasurements']['activeCallPreservation']={'c001':2}
+        gate['metrics']={'stages':stages}
+        self.assertIn('INVALID_RESOURCE_MEASUREMENTS:p2',verifier._capacity(self.root,gate,context,{}))
+
     def envelope(self,sockets=10000000):
         return {'name':'TEST_ONLY_UNIT_ENVELOPE','sockets':sockets,'distinctUsers':int(sockets*.8),'establishedCalls':int(sockets*.3),'callAttemptsPerSecond':int(sockets/1000),'meanCallSeconds':300,'inboundSetupFramesPerSecond':int(sockets/20),'registrationsPerSecond':int(sockets/500),'crossCellRatio':.98}
     def test_lower_measured_envelope_requires_indexed_capacity_adr_and_never_claims_10m(self):

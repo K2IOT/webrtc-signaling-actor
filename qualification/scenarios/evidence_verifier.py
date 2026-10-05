@@ -251,6 +251,12 @@ def worker_errors(root,worker,manifest,records):
     except Exception:errors.append('INVALID_OR_MISSING_WORKER_ARTIFACT')
     return list(dict.fromkeys(errors))
 
+def resource_metric_valid(value,maximum=None,depth=0):
+    if depth>4:return False
+    if isinstance(value,dict):
+        return 0<len(value)<=256 and all(isinstance(label,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}',label) and resource_metric_valid(metric,maximum,depth+1) for label,metric in value.items())
+    return number(value,0) and (maximum is None or value<=maximum)
+
 def _capacity(root,gate,manifest,records):
     errors=[];metrics=gate.get('metrics',{});stages=metrics.get('stages',{}) if isinstance(metrics,dict) else {}
     if not isinstance(stages,dict) or set(stages)!=set(required_stages(manifest)):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
@@ -281,6 +287,7 @@ def _capacity(root,gate,manifest,records):
             except Exception:errors.append('INVALID_RAW_HISTOGRAM:'+name+':'+kind)
         resource=stage.get('resourceMeasurements',{})
         if not isinstance(resource,dict) or any(k not in resource or resource[k] is None for k in RESOURCE_METRICS):errors.append('MISSING_RESOURCE_MEASUREMENTS:'+name)
+        elif any(not resource_metric_valid(resource[field],1 if field in ('cpu','activeCallPreservation') else None) for field in RESOURCE_METRICS):errors.append('INVALID_RESOURCE_MEASUREMENTS:'+name)
         workers=stage.get('workers',[])
         if not isinstance(workers,list) or not workers:errors.append('MISSING_WORKER_EVIDENCE:'+name)
         else:

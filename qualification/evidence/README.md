@@ -54,3 +54,13 @@ summary peak, rejects counter regression and rejects any counter exceeding its o
 summary. Samples must cover the start and entire duration without hidden gaps.
 Simultaneous stage capacity still requires the actual collector to align all worker
 intervals and native cell measurements; separate peaks do not establish P2 concurrency.
+
+`resourceMeasurements` requires all sixteen native resource metrics. Each value is a
+finite nonnegative number, or a map of cell/plane/pool labels with numeric leaves;
+maps have at most256 labels per level and at most four nested levels. Strings,
+booleans, empty maps, negative values and nonfinite values are rejected. `cpu` is a
+fraction of the enrolled CPU limit and `activeCallPreservation` is a preserved-call
+fraction, both in0..1. Memory values use bytes, FD uses counts, network/WAL/storage
+use bytes/s, row rate uses rows/s, DB pools use counts, and queue/lag/reconnect values
+use milliseconds. These type checks do not establish raw collector provenance,
+simultaneous P2 load or any production gate on their own.
