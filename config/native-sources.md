@@ -122,3 +122,12 @@ UNKNOWN refresh cleanup holds its slot and drain receipt. The gateway's existing
 ingress/delivery security checks still apply to every bound session. These caps
 are starting limits; complete launcher installation and measured capacity remain
 required.
+
+Native gateway relay authorization and transmission share the original one-second
+relay budget, including a cold home-proof read. A positive `RelayWriteReceipt`
+projects `COMMAND_RESULT` with `status:VOLATILE`, `code:WRITE_COMPLETED` and
+`ackCommitted:false`; its request, call, frame kind, call version, negotiation and
+ICE generation must match the original operation. This is a transport write
+result, not peer ICE application or a durable journal entry. The native delivery
+producer must supply the original receipt; the complete launcher/delivery binding
+remains required.

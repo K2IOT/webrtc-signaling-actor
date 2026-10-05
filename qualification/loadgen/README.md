@@ -64,3 +64,10 @@ never disconnects production infrastructure or revokes real identities on its ow
 Run `bash qualification/scenarios/loadgen-contract.sh` and the module's contract tests
 before starting a workload. Keep the resulting release status NOT_QUALIFIED until every
 applicable same-candidate gate passes the final evidence verifier.
+
+Worker `finishedAt` is the original workload stop, captured before socket/executor
+cleanup. `observed.workloadDurationNanos` measures that same stop from the original
+monotonic start; `cleanupFinishedAt` records teardown separately. The evidence
+verifier requires their original UTC/monotonic windows to agree within250ms and
+rejects missing stop metadata or cleanup finishing before the workload. Cleanup
+time cannot enlarge the measured stage duration.
