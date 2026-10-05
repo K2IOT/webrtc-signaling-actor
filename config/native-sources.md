@@ -164,3 +164,18 @@ receipt through timeout or unknown close. A WRITE_COMPLETED result remains
 volatile. Native coordinator producer, cache/retry integration and complete
 process startup still require installation and end-to-end validation; these
 components alone are not deployment or qualification evidence.
+
+`NativeActorComposition.relayProducer(network, capacity, memory, gatewayClient)`
+now builds the native source-backed round cache and producer. Install it once
+with `backend.nativeRelay(producer)` before opening coordinator RPC ingress.
+Every native CallActor invokes the installed producer's invalidation callback
+before acknowledging committed terminal, resumed or new-negotiation results;
+terminal/binding/round hydration and actor Stop also retire volatile state.
+The callback does not renew authority or retire unknown original writes.
+
+The joined local test exercises real PostgreSQL, hosting EntityRefs, both signed
+ACTIVE homes, TLS1.3 gateway RPC and original Netty writes for all four relay
+kinds, including same-SDP receipt reuse and immediate rejection after HANGUP.
+Gateway boot/security adapters in that test remain TEST_ONLY. Full process
+startup, authenticated production sources and deployment qualification remain
+required.

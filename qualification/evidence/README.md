@@ -88,3 +88,17 @@ the independently required original UTC run and retained dataset still span>=864
 These discrete source observations supplement the approved native collectors. They
 do not establish actual media preservation, distinct-user measurements, call-lifetime
 mean or physical cluster topology, which still require original native evidence.
+
+Indexed drill receipts (`faultTimeline`, `physicalFenceReceipt`,
+`acknowledgedWalReceipt`, `outsideBackupEpochHighWaterReceipt`) must be bounded
+JSON objects. Their root carries `testOnly:false`, the full candidate ID, source
+commit, three image digests and all five fingerprints matching the manifest.
+An original nested `testOnly:true` blocks qualification even when the manifest
+is signed and its own flag is false. These provenance checks do not replace
+validation of native fencing, WAL, epoch or drill timeline semantics.
+
+`tests/complete_bundle_fixture.py` creates a complete, temporary unit input for
+the verifier's 12-gate positive path, including bounded HDR and source samples.
+Its disposable signing key and production-shaped flags are parser test inputs;
+its measurements and drill payloads are synthetic. The fixture is never an
+enrolled collector or a candidate evidence bundle.

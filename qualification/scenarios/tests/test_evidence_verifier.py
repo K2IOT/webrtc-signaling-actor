@@ -371,4 +371,27 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_WORKLOAD_STOP_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
+    def test_complete_ephemeral_unit_bundle_and_test_only_flag(self):
+        from complete_bundle_fixture import complete_bundle
+        manifest,trust,seal=complete_bundle(verifier,self.root,self.now)
+        report=verifier.verify(self.root,trust,self.now)
+        self.assertEqual(report['errors'],[])
+        self.assertEqual(report['decision'],'PRODUCTION_QUALIFIED:TEST_ONLY_UNIT_ENVELOPE')
+        # The approved manifest cannot override an original receipt's TEST_ONLY marker.
+        import json,hashlib
+        raw=self.root/'raw-drill.json';raw.write_text(json.dumps({**{key:manifest[key] for key in verifier.IDENTITY_BINDINGS},'testOnly':True,'purpose':'UNIT_FIXTURE_ONLY'}))
+        manifest['artifacts']['raw-drill.json']={'sha256':hashlib.sha256(raw.read_bytes()).hexdigest(),'bytes':raw.stat().st_size};seal()
+        rejected_receipt=verifier.verify(self.root,trust,self.now)
+        self.assertEqual(rejected_receipt['decision'],'NOT_QUALIFIED')
+        self.assertIn('TEST_ONLY_DRILL_RECEIPT:n-minus-one:faultTimeline',rejected_receipt['errors'])
+        raw.write_text(json.dumps({**{key:manifest[key] for key in verifier.IDENTITY_BINDINGS},'testOnly':False,'gitCommit':'b'*40}))
+        manifest['artifacts']['raw-drill.json']={'sha256':hashlib.sha256(raw.read_bytes()).hexdigest(),'bytes':raw.stat().st_size};seal()
+        rejected_binding=verifier.verify(self.root,trust,self.now)
+        self.assertEqual(rejected_binding['decision'],'NOT_QUALIFIED')
+        self.assertIn('DRILL_RECEIPT_BINDING_MISMATCH:dr-restore:physicalFenceReceipt',rejected_binding['errors'])
+        manifest['testOnly']=True;seal()
+        rejected=verifier.verify(self.root,trust,self.now)
+        self.assertEqual(rejected['decision'],'NOT_QUALIFIED')
+        self.assertIn('TEST_ONLY_CANDIDATE',rejected['errors'])
+
 if __name__=='__main__':unittest.main()

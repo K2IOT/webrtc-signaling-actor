@@ -108,3 +108,23 @@ Original cleanup, relay wire and workload-stop baseline at `250a7ea`: full clean
 Gateway route/TLS/stream baseline at `9808dc0`: full clean verification **501 tests / 120 reports, zero failures/errors/skips** (2026-10-05T14:25:09Z). Python verifier **46 tests passing**; loadgen contract passes. ACTIVE v2 seals native recipient gateway/boot; dedicated gateway relay ingress checks exact target process and original deadline. Real local TLS proves exact gateway role/cell/workload, two independent TCP relay connections and original stream cleanup. Gateway Netty writes retain original expiry/binding/physical receipts. Native coordinator cache/producer, complete startup and production qualification remain open; TEST_ONLY fixtures do not supply release evidence.
 
 Native round cache / SDP baseline at `abb2b54`: full clean verification **510 tests / 121 reports, zero failures/errors/skips** (2026-10-05T14:58:59Z). Native cached rounds preserve source gateway/boot/expiry, committed SDP roles and original negotiation deadline; native PostgreSQL confirms repeated frames reuse the original two home reads. SDP retains the exact immutable command under physical byte credits and propagates remaining budget/original descriptor through transport/authorization adapters. Native coordinator producer, complete startup and external qualification remain open.
+
+## Native producer and committed terminal checkpoint
+
+At `7224113`, fresh `clean verify` passed **514 tests across 122 reports**,
+zero failures, errors or skips, in 4:37, finished 2026-10-05T15:35:56Z.
+NativeRelayProducer now retains original SDP receipts/physical cleanup and
+forwards ICE payloads through the boot-enrolled gateway client. A deterministic
+concurrency regression exposed and removed a producer/SDP callback lock cycle.
+The joined PostgreSQL/EntityRef/TLS/Netty test passed all four relay kinds and
+SDP retry. A real committed HANGUP regression first returned a stale successful
+receipt; native actor invalidation now rejects it before acknowledging terminal
+state, preserving original write cleanup.
+
+The Python verifier passed 47 unit tests, including an ephemeral complete
+12-gate parser fixture. An original TEST_ONLY drill receipt initially survived a
+signed manifest; it now blocks release, as do receipt candidate binding mismatches.
+The loadgen contract check also passed. These fixtures provide local verification;
+complete native Main installation, loadgen recovery/skew/abuse behavior and real
+staged production/HA/DR evidence remain open. Tasks 22–24 remain in progress and
+release remains **NOT_QUALIFIED**.

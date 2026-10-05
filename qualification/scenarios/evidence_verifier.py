@@ -412,6 +412,28 @@ def _capacity(root,gate,manifest,records):
         if name=='soak-24h' and not number(stage.get('durationSeconds'),86400):errors.append('SOAK_DURATION_INSUFFICIENT')
     return errors
 
+def drill_receipt_errors(root,gate,name,manifest,records):
+    """An indexed digest alone cannot override original receipt provenance."""
+    errors=[]
+    for kind in ('faultTimeline','physicalFenceReceipt','acknowledgedWalReceipt','outsideBackupEpochHighWaterReceipt'):
+        path=gate.get(kind)
+        if not path or path not in records:continue
+        try:
+            receipt=_json(artifact_path(root,path))
+            if not isinstance(receipt,dict):raise ValueError('Receipt must be a bounded object')
+            stack=[receipt];test_only=receipt.get('testOnly') is not False
+            while stack:
+                node=stack.pop()
+                if isinstance(node,dict):
+                    if node.get('testOnly') is True:test_only=True
+                    stack.extend(node.values())
+                elif isinstance(node,list):stack.extend(node)
+            if test_only:errors.append('TEST_ONLY_DRILL_RECEIPT:'+name+':'+kind)
+            if any(receipt.get(key)!=manifest.get(key) or key not in receipt for key in IDENTITY_BINDINGS):
+                errors.append('DRILL_RECEIPT_BINDING_MISMATCH:'+name+':'+kind)
+        except Exception:errors.append('INVALID_DRILL_RECEIPT:'+name+':'+kind)
+    return errors
+
 def _verify(root,trust_file=None,now=None):
     root=Path(root);now=now or datetime.now(timezone.utc);report={'decision':'NOT_QUALIFIED','candidateId':root.name,'errors':[]};errors=report['errors']
     manifest_file=root/'manifest.yaml'
@@ -448,6 +470,7 @@ def _verify(root,trust_file=None,now=None):
             if artifact not in records:errors.append('UNINDEXED_GATE_ARTIFACT:'+name)
         for receipt in ('faultTimeline','physicalFenceReceipt','acknowledgedWalReceipt','outsideBackupEpochHighWaterReceipt'):
             if gate.get(receipt) and gate[receipt] not in records:errors.append('UNINDEXED_RECEIPT:'+name+':'+receipt)
+        errors.extend(drill_receipt_errors(root,gate,name,manifest,records))
         if name=='capacity':errors.extend(_capacity(root,gate,manifest,records))
     metadata=manifest.get('environment',{})
     if not isinstance(metadata,dict) or any(not metadata.get(k) for k in ('instanceTypes','kernel','jvm','podRequestsLimits','topology','dependencyVersions','datasetCardinalities','generatorModel','seedScenario','originalFaultTimelines')):errors.append('MISSING_ENVIRONMENT_METADATA')
