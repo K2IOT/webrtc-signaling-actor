@@ -25,7 +25,9 @@ connection pool and no additional executor. Its fixed SAFETY scheduler job runs 
 one second inside the original job budget. Delayed reports do not acquire a fresh
 five-second window. An unavailable or invalid source invalidates cached trust.
 Drain stops new polls, invalidates trust immediately and waits for the admitted poll
-and its owned socket to finish. Register this owner with the native runtime drain
+and its owned socket to finish. An error while closing the TLS socket retains the
+physical receipt and admitted slot as UNKNOWN; a failed close never permits a replacement
+poll or reports successful drain. Register this owner with the native runtime drain
 hooks when installing the concrete process launcher.
 
 Revocation, directory, peer/compatibility sources and complete native launcher binding
