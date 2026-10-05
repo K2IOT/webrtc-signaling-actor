@@ -69,4 +69,16 @@ class LoadGeneratorTlsTest {
         assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
     }
 
+    @Test void actualTlsUpgradeRetryAfterSurvivesHandshakeFailure()throws Exception {
+        var serverTls=SslContextBuilder.forServer(cert("server.crt"),cert("server.key")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();var clientTls=SslContextBuilder.forClient().trustManager(cert("ca.crt")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
+        var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);var sources=new NioEventLoopGroup(1);Channel server=null;VirtualClient client=null;
+        try{
+            server=new ServerBootstrap().group(boss,children).channel(NioServerSocketChannel.class).childHandler(new ChannelInitializer<Channel>(){protected void initChannel(Channel c){c.pipeline().addLast(serverTls.newHandler(c.alloc()),new HttpServerCodec(),new HttpObjectAggregator(81920),new SimpleChannelInboundHandler<FullHttpRequest>(){protected void channelRead0(ChannelHandlerContext ctx,FullHttpRequest request){var reply=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.SERVICE_UNAVAILABLE);reply.headers().set(HttpHeaderNames.CONTENT_LENGTH,0).set(HttpHeaderNames.RETRY_AFTER,"12");ctx.writeAndFlush(reply).addListener(ChannelFutureListener.CLOSE);}});}}).bind("127.0.0.1",0).sync().channel();
+            int port=((InetSocketAddress)server.localAddress()).getPort();client=new VirtualClient(0,"TEST_ONLY","c001",URI.create("wss://localhost:"+port+"/ws"),new InetSocketAddress("127.0.0.1",0),clientTls,sources,new VirtualClient.Credits(4,327680),new EvidenceWriter(),()->{throw new AssertionError("AUTH must not start on rejected upgrade");},(c,e)->{});
+            var original=client;assertThatThrownBy(()->original.connect(System.nanoTime()).toCompletableFuture().get(3,TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class);assertThat(client.retryAfterNanos()).isBetween(Duration.ofSeconds(10).toNanos(),Duration.ofSeconds(12).toNanos());client.close().toCompletableFuture().get(2,TimeUnit.SECONDS);
+            var runner=new ScenarioRunner();var stateType=Class.forName(ScenarioRunner.class.getName()+"$State");var constructor=stateType.getDeclaredConstructor(VirtualClient.class);constructor.setAccessible(true);var state=constructor.newInstance(client);var schedule=ScenarioRunner.class.getDeclaredMethod("scheduleReconnect",stateType,long.class);schedule.setAccessible(true);schedule.invoke(runner,state,client.generation());var deadline=stateType.getDeclaredField("reconnectAt");deadline.setAccessible(true);long originalDeadline=deadline.getLong(state);assertThat(originalDeadline-System.nanoTime()).isBetween(Duration.ofSeconds(10).toNanos(),Duration.ofSeconds(12).toNanos());schedule.invoke(runner,state,client.generation());assertThat(deadline.getLong(state)).isEqualTo(originalDeadline);var attempts=stateType.getDeclaredField("reconnectAttempt");attempts.setAccessible(true);assertThat(attempts.getInt(state)).isEqualTo(1);
+
+        }finally{if(client!=null)client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();sources.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+    }
+
 }
