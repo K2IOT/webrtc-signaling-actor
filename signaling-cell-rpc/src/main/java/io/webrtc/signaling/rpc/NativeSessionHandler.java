@@ -18,7 +18,7 @@ public final class NativeSessionHandler {
         @Override public String toString(){return "SessionRequest[type="+type+", operation="+operation+"]";}
     }
     @FunctionalInterface public interface Operations {RpcOperation<SessionReply> execute(Request request,Duration budget);}
-    private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(81920).maxNumberLength(64).build()).enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build()).findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+    private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(81920).maxNumberLength(64).build()).enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build()).findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final String cell;private final long epoch;private final BiPredicate<CellRpcServer.Peer,GatewayIdentity> workloads;private final Operations operations;
     public NativeSessionHandler(String cell,long epoch,BiPredicate<CellRpcServer.Peer,GatewayIdentity> workloads,Operations operations){this.cell=Objects.requireNonNull(cell);if(epoch<=0)throw new IllegalArgumentException("Invalid storage epoch");this.epoch=epoch;this.workloads=Objects.requireNonNull(workloads);this.operations=Objects.requireNonNull(operations);}
     public RpcOperation<SessionReply> execute(SessionCommand command,CellRpcServer.Peer peer,Duration budget){

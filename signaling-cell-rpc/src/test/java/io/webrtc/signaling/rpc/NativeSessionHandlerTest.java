@@ -41,6 +41,15 @@ class NativeSessionHandlerTest {
         assertThat(admitted.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(count).hasValue(1);cleanup.complete(null);
         assertThat(admitted.physicalCompletion().toCompletableFuture()).isDone();
     }
+    @Test void secondJsonRootAfterRelayMetadataIsRejectedBeforeProducerAdmission(){
+        var count=new AtomicInteger();var fixture=new RelaySessionAuthorizationProofTest();var route=fixture.route;
+        var g=new NativeSessionHandler.GatewayIdentity(route.gatewayId(),route.bootId(),"c001",1,"TEST_ONLY");
+        var command=fixture.command(io.webrtc.signaling.protocol.SignalEnvelope.Type.OFFER,fixture.sender,fixture.call,1,1,"{}");
+        var request=new NativeSessionHandler.Request("READ_RELAY_PROOF",g,"TEST_ONLY_TOKEN",route,null,1,0,command.requestId().value(),command);
+        var wire=SessionCommand.newBuilder().setSchemaMajor(1).setDestinationCell("c001").setType(request.type()).setOperationId(request.operation().toString()).setRemainingBudgetMs(1000).setPayload(ByteString.copyFromUtf8(new String(RpcBusinessHandler.encode(request),java.nio.charset.StandardCharsets.UTF_8)+"{}")).build();
+        var handler=new NativeSessionHandler("c001",1,(p,gateway)->true,(r,b)->{count.incrementAndGet();return new RpcOperation<>(CompletableFuture.completedFuture(SessionReply.newBuilder().setStatus("READ").build()),CompletableFuture.completedFuture(null));});
+        assertThat(handler.execute(wire,new CellRpcServer.Peer("c001","gateway",g.gatewayId()),Duration.ofSeconds(1)).logical().toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");assertThat(count).hasValue(0);
+    }
     @Test void independentPhysicalCompletionIsPreservedForAnAdmittedSessionOperation(){
         var logical=new CompletableFuture<SessionReply>();var physical=new CompletableFuture<Void>();
         var handler=new NativeSessionHandler("c002",1,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),(request,budget)->new RpcOperation<>(logical,physical));
