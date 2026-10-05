@@ -47,7 +47,8 @@ class NativeSetupCommandIT {
                 public RpcOperation<CallWorkflowService.Outcome> progressTracked(CallWorkflowService.Transition t,Instant until,int bytes){var work=workflow.apply(t,Duration.between(clock.instant(),until));return new RpcOperation<>(work.logical().thenApply(v->{current.set(v.snapshot());return v;}),work.physicalCompletion());}
             };
             var bridge=new RpcBusinessHandler("c001",actors,bindings,proofs,u->new ProofBindings.TrustedHome("c001",1,1),r->CompletableFuture.failedFuture(new AssertionError()),r->CompletableFuture.failedFuture(new AssertionError()),clock,issuer).businessAdmission(()->true);
-            var network=new NativeSagaEffects.Network(){public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){return callTracked(op,c,b).logical();}public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){return bridge.executeTracked(op,c,new CellRpcServer.Peer("c001","actor"),b);}};
+            var nativeRoundHomeReads=new AtomicInteger();
+            var network=new NativeSagaEffects.Network(){public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){return callTracked(op,c,b).logical();}public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){if(c.getType().equals("QueryParticipation"))nativeRoundHomeReads.incrementAndGet();return bridge.executeTracked(op,c,new CellRpcServer.Peer("c001","actor"),b);}};
             var executor=new NativeSetupCommandExecutor(commands,new NativeHomeProofClient(actors,network,clock),actors,network,u->new ProofBindings.TrustedHome("c001",1,1),"c001",1,clock);
             var accept=AcceptCompletionIT.accept(callee,call);var route=SessionAuthReadIT.route(f,callee);var nativeSession=NativeProofSagaIT.done(new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true).readCurrentSessionTracked(route,SessionAuthReadIT.principal(route),1,Duration.ofSeconds(2)));var signed=proofs.sessionProofs().issue(nativeSession,accept);
             bridge.nativeSetup(executor);
@@ -70,7 +71,9 @@ class NativeSetupCommandIT {
                 var authority=new NativeRelayAuthorization(commands,new NativeHomeProofClient(actors,network,clock),proofs,u->new ProofBindings.TrustedHome("c001",1,1),c->owned.get()?Optional.of(group):Optional.empty(),clock,trusted::get);
                 var offer=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"sdp\":\"v=0\\r\\n\"}","b".repeat(64));
                 var offerProof=proofs.relaySessionProofs().issue(nativeCaller,offer);
-                var observed=authority.loadRound(offer,offerProof,Duration.ofSeconds(2));
+                nativeRoundHomeReads.set(0);
+                var roundCache=new NativeRelayRoundCache(4,2,authority,System::nanoTime,trusted::get,c->owned.get()?Optional.of(group):Optional.empty());
+                var observed=roundCache.load(offer,offerProof,Duration.ofSeconds(2));
                 var authorizedRound=observed.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);var snapshot=authorizedRound.authorization();
                 var committedGrant=authorizedRound.grant();
                 var destination=authorizedRound.destination();
@@ -81,6 +84,8 @@ class NativeSetupCommandIT {
                 assertThat(committedGrant.negotiationId()).isEqualTo(1);assertThat(committedGrant.iceGeneration()).isEqualTo(1);
                 assertThat(committedGrant.untilNanos()-snapshot.checkedAtNanos()).isPositive().isLessThanOrEqualTo(Duration.ofSeconds(20).toNanos());
                 observed.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                var retryOffer=new CallCommand(offer.type(),offer.sender(),new RequestId(UUID.randomUUID()),offer.callId(),offer.scope(),null,offer.negotiationId(),offer.iceGeneration(),offer.payloadJson(),offer.intentHash());
+                var cached=roundCache.load(retryOffer,offerProof,Duration.ofSeconds(1));assertThat(cached.logical().toCompletableFuture().get(2,TimeUnit.SECONDS)).isSameAs(authorizedRound);cached.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(nativeRoundHomeReads).hasValue(2);roundCache.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);
                 assertThat(snapshot.callId()).isEqualTo(call);assertThat(snapshot.activationId()).isEqualTo(current.get().activationId());
                 assertThat(snapshot.negotiationId()).isEqualTo(1);assertThat(snapshot.iceGeneration()).isEqualTo(1);
                 assertThat(snapshot.sender()).isEqualTo(caller);assertThat(snapshot.recipient()).isEqualTo(callee);assertThat(snapshot.group()).isEqualTo(group);
