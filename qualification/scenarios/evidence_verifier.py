@@ -254,6 +254,11 @@ def worker_errors(root,worker,manifest,records):
             if decoded['count']!=phase['samples'] or any(phase.get(key+'Ms')!=decoded[key] for key in ('p50','p95','p99','p999')):errors.append('WORKER_RAW_PHASE_MISMATCH')
         if phase_count!=attempts:errors.append('WORKER_PHASE_ACCOUNTING_MISMATCH')
         run_seconds=(utc(summary['finishedAt'])-utc(observed['scheduledStartAt'])).total_seconds()
+        workload_nanos=observed.get('workloadDurationNanos')
+        try:
+            if type(workload_nanos) is not int or workload_nanos<1 or abs(workload_nanos-run_seconds*1000000000)>250000000 or utc(summary['cleanupFinishedAt'])<utc(summary['finishedAt']):
+                errors.append('WORKER_WORKLOAD_STOP_MISMATCH')
+        except Exception:errors.append('WORKER_WORKLOAD_STOP_MISMATCH')
         duration=observed.get('durationSeconds')
         if type(duration) is not int or duration<1 or not 0<=run_seconds-duration<=1.25:errors.append('WORKER_CLOCK_WINDOW_MISMATCH')
         samples=artifact_path(root,worker['generatorSamplesArtifact'])

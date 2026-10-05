@@ -182,6 +182,8 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (directory/'config.json').write_text(json.dumps(config));(directory/'scenario.yaml').write_text(json.dumps(scenario))
         summary.update({'seed':42,'scenario':scenario['name'],'requestedTargets':scenario['targets'],'configHash':hashlib.sha256((directory/'config.json').read_bytes()).hexdigest(),'scenarioHash':hashlib.sha256((directory/'scenario.yaml').read_bytes()).hexdigest(),'startedAt':(self.now-timedelta(minutes=2)).isoformat(),'finishedAt':(self.now-timedelta(seconds=59)).isoformat()})
         summary['observed']['scheduledStartAt']=scheduled
+        summary['observed']['workloadDurationNanos']=1000000000
+        summary['cleanupFinishedAt']=(self.now-timedelta(seconds=58)).isoformat()
         (directory/'summary.json').write_text(json.dumps(summary));(directory/'generator.jsonl').write_text(json.dumps(sample)+'\n')
         descriptor={'workerIndex':0,'workerCount':1,'hostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketStart':0,'socketEnd':4,'summaryArtifact':'worker/summary.json','rawHistogramArtifact':'worker/latency.hdr','generatorSamplesArtifact':'worker/generator.jsonl','phaseArtifacts':{'CONTROL':'worker/control.hdr'},'configArtifact':'worker/config.json','scenarioArtifact':'worker/scenario.yaml'}
         records={name:{} for name in ('worker/summary.json','worker/latency.hdr','worker/generator.jsonl','worker/control.hdr','worker/config.json','worker/scenario.yaml')}
@@ -347,5 +349,26 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         context,worker,records,summary,sample=self.worker_fixture();summary['finishedAt']=(self.now+timedelta(seconds=10)).isoformat()
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_CLOCK_WINDOW_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_missing_original_workload_stop_never_qualifies(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        del summary['observed']['workloadDurationNanos']
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_WORKLOAD_STOP_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_cleanup_cannot_finish_before_original_workload_stop(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        summary['cleanupFinishedAt']=(self.now-timedelta(seconds=60)).isoformat()
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_WORKLOAD_STOP_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_monotonic_workload_stop_must_match_original_wall_window(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture()
+        summary['observed']['workloadDurationNanos']=3000000000
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_WORKLOAD_STOP_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
 if __name__=='__main__':unittest.main()

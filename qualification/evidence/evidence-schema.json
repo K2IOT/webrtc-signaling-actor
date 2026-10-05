@@ -135,6 +135,10 @@
       "enum": [
         "source-scenario.yaml"
       ]
+    },
+    "cleanupFinishedAt": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "required": [
@@ -165,6 +169,7 @@
     "hardwareFingerprint",
     "sourceIp",
     "sourceConfig",
-    "sourceScenario"
+    "sourceScenario",
+    "cleanupFinishedAt"
   ]
 }
