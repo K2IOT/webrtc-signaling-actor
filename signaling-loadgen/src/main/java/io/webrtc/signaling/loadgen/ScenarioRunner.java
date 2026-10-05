@@ -34,6 +34,10 @@ public final class ScenarioRunner {
         if(!round.matches("[1-9][0-9]{0,18}")||!ice.matches("[1-9][0-9]{0,18}"))throw new IllegalArgumentException("Native round IDs required");
         Long.parseLong(round);Long.parseLong(ice);return Optional.of(new RoundIds(round,ice));
     }
+    static long effectiveUsers(long stageSockets,long requestedSockets,long distinctUsers){
+        if(stageSockets<1||requestedSockets<1||requestedSockets>10000000||stageSockets>requestedSockets||distinctUsers<1||distinctUsers>requestedSockets)throw new IllegalArgumentException("Invalid native source population");
+        return (Math.multiplyExact(stageSockets,distinctUsers)+requestedSockets-1)/requestedSockets;
+    }
     public static long arrivalNanos(long start,long ordinal,long rate){if(ordinal<0||rate<1)throw new IllegalArgumentException("Invalid open-loop arrival");long seconds=ordinal/rate,remainder=ordinal%rate;return Math.addExact(start,Math.addExact(Math.multiplyExact(seconds,1_000_000_000L),Math.multiplyExact(remainder,1_000_000_000L)/rate));}
     public static long burstArrivalNanos(long start,long ordinal,long rate,long multiplier,long seconds){
         if(multiplier<1||seconds<0)throw new IllegalArgumentException("Invalid burst");long accelerated=Math.multiplyExact(rate,multiplier),first=Math.multiplyExact(accelerated,seconds);
@@ -85,7 +89,7 @@ public final class ScenarioRunner {
         worker=config.path("workerIndex").asInt();workers=config.path("workerCount").asInt();seed=config.path("seed").asLong();long sockets=config.path("stageSockets").asLong();
         if(worker>=workers||config.path("sourceIps").size()!=workers||sockets>targets.path("sockets").asLong()||scenario.path("durationSeconds").asLong()<1||scenario.path("durationSeconds").asLong()>86400)throw new IllegalArgumentException("Invalid distributed stage");
         range=DistributedLoadGenerator.partition(sockets,worker,workers);if(range.size()>config.path("localSocketLimit").asLong())throw new IllegalArgumentException("Local socket budget insufficient");
-        users=Math.max(1,Math.min(targets.path("distinctUsers").asLong(),(long)Math.ceil(sockets*((double)targets.path("distinctUsers").asLong()/targets.path("sockets").asLong()))));
+        users=effectiveUsers(sockets,targets.path("sockets").asLong(),targets.path("distinctUsers").asLong());
         InetAddress source=InetAddress.getByName(config.path("sourceIps").get(worker).asText());if(NetworkInterface.getByInetAddress(source)==null||!config.path("testOnly").asBoolean()&&source.isLoopbackAddress())throw new IllegalArgumentException("Source IP must belong to approved worker");
         resourceMonitor=new GeneratorResources(NetworkInterface.getByInetAddress(source).getName(),config.path("nicCapacityBytesPerSecond").asLong());
         var seenIps=new HashSet<String>();for(var ip:config.path("sourceIps"))if(!seenIps.add(InetAddress.getByName(ip.asText()).getHostAddress()))throw new IllegalArgumentException("Duplicate source IP");
