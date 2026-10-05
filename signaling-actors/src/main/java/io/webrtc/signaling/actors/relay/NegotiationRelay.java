@@ -33,6 +33,7 @@ public final class NegotiationRelay implements AutoCloseable {
     }
     @FunctionalInterface public interface NativeAuthorization {
         ActorOperation<RelayAuthorizationCache.Snapshot> load(CallId call,AuthenticatedSession sender,long round,long ice,Duration budget);
+        default ActorOperation<RelayAuthorizationCache.Snapshot> load(Description description,Duration budget){return load(description.call(),description.sender(),description.negotiationId(),description.iceGeneration(),budget);}
     }
     @FunctionalInterface public interface Transport {ActorOperation<Void> send(Description message);default ActorOperation<Void> send(Description message,Duration remainingBudget){return send(message);}}
     private static final class Retained {
@@ -92,7 +93,7 @@ public final class NegotiationRelay implements AutoCloseable {
         result.whenComplete((v,e)->{synchronized(this){scope.release();}});
         long started=clock.getAsLong();
         var authorization=cache.refreshTracked(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget,
-            ()->authority.load(message.call(),message.sender(),message.negotiationId(),message.iceGeneration(),budget));
+            ()->authority.load(message,budget));
         scope.track(authorization.physicalCompletion());
         authorization.logical().whenComplete((snapshot,error)->{
                 synchronized(this){
