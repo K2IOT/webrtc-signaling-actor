@@ -73,7 +73,7 @@ public final class RelayAuthorizationCache {
         var result=new CompletableFuture<Snapshot>();pending.put(key,result);
         final ActorOperation<Snapshot> operation;
         try {operation=Objects.requireNonNull(loader.get());}
-        catch(Throwable failure) {pending.remove(key);result.completeExceptionally(failure);return result;}
+        catch(Throwable failure) {result.completeExceptionally(failure);return result;}
         result.orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS);
         operation.logical().whenComplete((value,failure)->{
             synchronized(this) {

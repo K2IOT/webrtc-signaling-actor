@@ -34,4 +34,12 @@ class NegotiationRelayTest {
         long retained=memory.retainedBytes();assertThat(retained).isPositive();physical.completeExceptionally(new IllegalStateException("TEST_ONLY_CLEANUP_UNKNOWN"));
         assertThat(memory.retainedBytes()).isEqualTo(retained);
     }
+    @Test void throwingTransportCannotAssertPhysicalRetirementOrDuplicateItsAttempt(){
+        var cache=cacheForTest();var started=new AtomicInteger();
+        var relay=new NegotiationRelay(4,now::get,memory,cache,(c,s,r,i,b)->new ActorOperation<>(CompletableFuture.completedFuture(snapshot(s,r,i)),CompletableFuture.completedFuture(null)),message->{started.incrementAndGet();throw new IllegalStateException("TEST_ONLY_THROW_AFTER_START");});
+        relay.install(grant(1,1));var offer=offer(UUID.randomUUID(),"v=0",1,1);
+        assertThat(relay.send(offer,Duration.ofSeconds(1)).toCompletableFuture()).isCompletedExceptionally();
+        assertThat(relay.send(offer,Duration.ofSeconds(1)).toCompletableFuture()).isCompletedExceptionally();assertThat(started).hasValue(1);
+        long retained=memory.retainedBytes();relay.close();assertThat(retained).isPositive();assertThat(memory.retainedBytes()).isEqualTo(retained);
+    }
 }

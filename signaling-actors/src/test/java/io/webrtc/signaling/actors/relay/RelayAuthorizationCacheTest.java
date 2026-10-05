@@ -29,4 +29,10 @@ class RelayAuthorizationCacheTest {
         assertThat(cache.pending()).isEqualTo(1);
         assertThat(cache.refresh(call,sender,2,2,Duration.ofSeconds(1),()->{throw new AssertionError("Unknown physical work cannot admit replacement");}).toCompletableFuture()).isCompletedExceptionally();
     }
+    @Test void throwingFactoryDoesNotProveNativeWorkNeverStarted(){
+        var cache=cache();var started=new AtomicInteger();
+        var operation=cache.refresh(call,sender,1,1,Duration.ofSeconds(1),()->{started.incrementAndGet();throw new IllegalStateException("TEST_ONLY_THROW_AFTER_START");});
+        assertThat(operation.toCompletableFuture()).isCompletedExceptionally();assertThat(started).hasValue(1);assertThat(cache.pending()).isEqualTo(1);
+        assertThat(cache.refresh(call,sender,2,2,Duration.ofSeconds(1),()->{throw new AssertionError("Physical start was not disproven");}).toCompletableFuture()).isCompletedExceptionally();
+    }
 }

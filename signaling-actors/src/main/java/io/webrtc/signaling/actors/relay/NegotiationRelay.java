@@ -93,7 +93,7 @@ public final class NegotiationRelay implements AutoCloseable {
                     attempt.physicalPending=true;
                     final ActorOperation<Void> operation;
                     try{operation=Objects.requireNonNull(transport.send(message));}
-                    catch(Throwable failure){attempt.physicalPending=false;result.completeExceptionally(failure);if(attempt.closed)attempt.credit.close();return;}
+                    catch(Throwable failure){result.completeExceptionally(failure);return;}
                     result.orTimeout(remaining,TimeUnit.NANOSECONDS);
                     operation.logical().whenComplete((ignored,failure)->{if(failure==null)result.complete(null);else result.completeExceptionally(failure);});
                     operation.physicalCompletion().whenComplete((ignored,failure)->{if(failure==null)synchronized(this){attempt.physicalPending=false;if(attempt.closed)attempt.credit.close();}});
