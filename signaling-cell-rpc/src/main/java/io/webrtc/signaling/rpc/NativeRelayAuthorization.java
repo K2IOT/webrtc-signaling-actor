@@ -14,9 +14,9 @@ import java.util.function.*;
 /** Traffic-driven cache-miss producer: native committed round, hosting grant and both signed ACTIVE homes. */
 public final class NativeRelayAuthorization {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper(com.fasterxml.jackson.core.JsonFactory.builder().enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(com.fasterxml.jackson.core.StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(8192).build()).build()).findAndRegisterModules().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    public record AuthorizedRound(RelayAuthorizationCache.Snapshot authorization,NegotiationRelay.Grant grant) {
+    public record AuthorizedRound(RelayAuthorizationCache.Snapshot authorization,NegotiationRelay.Grant grant,Instant authorizationUntil) {
         public AuthorizedRound {
-            Objects.requireNonNull(authorization);Objects.requireNonNull(grant);
+            Objects.requireNonNull(authorization);Objects.requireNonNull(grant);Objects.requireNonNull(authorizationUntil);
             if(!authorization.callId().equals(grant.call())||!authorization.activationId().equals(grant.activationId())||authorization.callVersion()!=grant.callVersion()||authorization.negotiationId()!=grant.negotiationId()||authorization.iceGeneration()!=grant.iceGeneration()||!authorization.group().equals(grant.group())
                 ||!(authorization.sender().equals(grant.offerer())&&authorization.recipient().equals(grant.answerer())||authorization.sender().equals(grant.answerer())&&authorization.recipient().equals(grant.offerer())))throw new IllegalArgumentException("Round grant differs from native authorization");
         }
@@ -57,7 +57,7 @@ public final class NativeRelayAuthorization {
                         long until=deadline(started,startedWall,min(caller.expiresAt(),winner.expiresAt()));
                         long reservation=deadline(started,startedWall,min(caller.participantUntil(),winner.participantUntil()).minusSeconds(5));
                         var authorization=new RelayAuthorizationCache.Snapshot(snapshot.callId(),snapshot.activationId(),snapshot.version(),command.negotiationId().value(),command.iceGeneration().value(),snapshot.state(),command.sender(),recipient,token,started,until,reservation,until,Math.min(until,started+Duration.ofSeconds(5).minus(CLOCK_MARGIN).toNanos()));
-                        return new AuthorizedRound(authorization,committedGrant(snapshot,token,started,startedWall));
+                        return new AuthorizedRound(authorization,committedGrant(snapshot,token,started,startedWall),min(caller.expiresAt(),winner.expiresAt()));
                     }));
             });
         }catch(RuntimeException denied){logical=CompletableFuture.failedFuture(denied);}
