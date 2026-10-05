@@ -56,10 +56,20 @@ public final class ScenarioRunner {
     private JsonNode config,scenario,targets;private String[] buckets;private Map<String,List<URI>> endpoints;private String offer,answer;private JsonNode candidates;private long seed;private long users;private int worker,workers;
     private GeneratorResources resourceMonitor;private VirtualClient.Credits credits;private NioEventLoopGroup loops;private final AtomicReference<Map<Long,Token>> inventory=new AtomicReference<>(Map.of());
     private Rs256TokenVerifier verifier;private DistributedLoadGenerator.Range range;private final List<String> failures=new CopyOnWriteArrayList<>();private final AtomicLong eventLoopLag=new AtomicLong();
+    /** Requested labels must never be substituted with ordinary traffic and reported as executed. */
+    static void requireImplementedWorkload(JsonNode scenario){
+        if(scenario.has("abuse")&&(!scenario.path("abuse").isArray()||!scenario.path("abuse").isEmpty())||scenario.has("abuseFraction")&&scenario.path("abuseFraction").asDouble(-1)!=0)
+            throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");
+        if(scenario.has("burst")){
+            var burst=scenario.path("burst");if(!burst.isObject())throw new IllegalArgumentException("Invalid burst profile");
+            for(var name:List.of("hotDestinationMultiplier","hotBucketMultiplier"))if(burst.has(name)&&(!burst.path(name).isIntegralNumber()||!burst.path(name).canConvertToLong()||burst.path(name).longValue()!=1))
+                throw new IllegalArgumentException("SKEW_PROFILE_NOT_IMPLEMENTED");
+        }
+    }
     public void run(Path scenarioFile,Path configFile,Path output)throws Exception {
         if(Files.exists(output))throw new IllegalArgumentException("Evidence directory must be new");Files.createDirectories(output);
         byte[] configBytes=boundedBytes(configFile,524288),scenarioBytes=boundedBytes(scenarioFile,65536);
-        config=JSON.readTree(configBytes);scenario=YAML.readTree(scenarioBytes);targets=scenario.path("targets");
+        config=JSON.readTree(configBytes);scenario=YAML.readTree(scenarioBytes);requireImplementedWorkload(scenario);targets=scenario.path("targets");
         try(var schema=getClass().getResourceAsStream("/config.schema.json")){if(schema==null)throw new IOException("Worker schema missing");validate(config,JSON.readTree(schema),"config");}
         Files.write(output.resolve("source-config.json"),configBytes,StandardOpenOption.CREATE_NEW);Files.write(output.resolve("source-scenario.yaml"),scenarioBytes,StandardOpenOption.CREATE_NEW);
         worker=config.path("workerIndex").asInt();workers=config.path("workerCount").asInt();seed=config.path("seed").asLong();long sockets=config.path("stageSockets").asLong();
