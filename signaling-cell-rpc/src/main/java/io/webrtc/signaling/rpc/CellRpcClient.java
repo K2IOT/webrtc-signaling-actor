@@ -20,7 +20,7 @@ public final class CellRpcClient implements AutoCloseable {
     private synchronized ManagedChannel channel(String cell,RpcAdmission.Lane lane){if(closed)throw new IllegalStateException("RPC client draining");Endpoint endpoint=destinations.get(cell);if(endpoint==null)throw new IllegalArgumentException("Unknown destination");return channels.computeIfAbsent(new ChannelKey(cell,lane),key->NettyChannelBuilder.forAddress(endpoint.host(),endpoint.port()).overrideAuthority(endpoint.tlsAuthority()).sslContext(tls.context(cell)).disableRetry().maxInboundMessageSize(98304).executor(callbacks).intercept(new ClientInterceptor(){@Override public <Q,A> ClientCall<Q,A> interceptCall(MethodDescriptor<Q,A> method,CallOptions options,Channel next){var delegate=next.newCall(method,options);return new ForwardingClientCall.SimpleForwardingClientCall<>(delegate){@Override public void start(ClientCall.Listener<A> listener,Metadata headers){super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(listener){boolean rejected;@Override public void onHeaders(Metadata metadata){var peer=RpcTlsIdentity.extract(delegate.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION),environment);if(peer==null||!peer.cell().equals(cell)||!peer.role().equals("actor")){rejected=true;delegate.cancel("UNAUTHORIZED",null);}else super.onHeaders(metadata);}@Override public void onMessage(A message){if(!rejected)super.onMessage(message);}@Override public void onClose(Status status,Metadata trailers){super.onClose(rejected?Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"):status,trailers);}},headers);}};}}).build());}
     private final ScheduledThreadPoolExecutor retryTimers=new ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("cell-rpc-retry").factory());
     private final Set<Flight<?>> active = new HashSet<>();
-    private final CompletableFuture<Void> drained = new CompletableFuture<>();
+    private final CompletableFuture<Void> drained = new CompletableFuture<>(), settled = new CompletableFuture<>();
     private final class Flight<T> {
         final RpcAdmission.Ticket ticket;
         final CompletableFuture<T> logical = new CompletableFuture<>();
@@ -34,7 +34,7 @@ public final class CellRpcClient implements AutoCloseable {
             synchronized (CellRpcClient.this) {
                 active.remove(this);
                 physical.complete(null);
-                if (closed && active.isEmpty()) drained.complete(null);
+                if (closed && active.isEmpty()) settled.complete(null);
             }
         }
         RpcOperation<T> operation() { return new RpcOperation<>(logical.minimalCompletionStage(), physical.minimalCompletionStage()); }
@@ -160,8 +160,8 @@ public final class CellRpcClient implements AutoCloseable {
         if (!closed) {
             closed = true;
             channels.values().forEach(ManagedChannel::shutdown);
-            drained.whenComplete((v,e)->{callbacks.shutdown();retryTimers.shutdown();});
-            if (active.isEmpty()) drained.complete(null);
+            RpcTransportDrain.await(settled,List.copyOf(channels.values()),drained,callbacks,retryTimers);
+            if (active.isEmpty()) settled.complete(null);
         }
         return drained.minimalCompletionStage();
     }

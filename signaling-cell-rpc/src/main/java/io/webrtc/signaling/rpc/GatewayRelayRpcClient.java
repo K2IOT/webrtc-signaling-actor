@@ -19,7 +19,7 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
     private record ChannelKey(Target target,int stripe){}
     private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(81920).build()).build()).findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final String environment;private final Map<Target,CellRpcClient.Endpoint> destinations;private final RpcTlsContexts.GatewayClientTls tls;private final RpcAdmission admission;
-    private final Map<ChannelKey,ManagedChannel> channels=new HashMap<>();private final Set<Flight> active=new HashSet<>();private final AtomicInteger stripe=new AtomicInteger();private final CompletableFuture<Void> drained=new CompletableFuture<>();private boolean closed;
+    private final Map<ChannelKey,ManagedChannel> channels=new HashMap<>();private final Set<Flight> active=new HashSet<>();private final AtomicInteger stripe=new AtomicInteger();private final CompletableFuture<Void> drained=new CompletableFuture<>(),settled=new CompletableFuture<>();private boolean closed;
     private final ExecutorService callbacks=new ThreadPoolExecutor(4,4,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(256),Thread.ofPlatform().daemon().name("gateway-relay-client-",0).factory(),new ThreadPoolExecutor.AbortPolicy());
     public GatewayRelayRpcClient(String environment,int maximumDestinations,Map<Target,CellRpcClient.Endpoint> destinations,RpcTlsContexts.GatewayClientTls tls,RpcAdmission admission){
         if(environment==null||!environment.matches("[a-z0-9-]{1,32}")||maximumDestinations<1||maximumDestinations>16384||destinations.size()>maximumDestinations)throw new IllegalArgumentException("Invalid bounded gateway topology");
@@ -44,7 +44,7 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
         final RpcAdmission.Ticket ticket;final CompletableFuture<RelayWriteReceipt> logical=new CompletableFuture<>();final CompletableFuture<Void> physical=new CompletableFuture<>();int retained=2;
         Flight(RpcAdmission.Ticket ticket){this.ticket=ticket;logical.whenComplete((v,e)->ended());}
         synchronized void opened(){retained++;}
-        void ended(){boolean done;synchronized(this){done=--retained==0;}if(done){ticket.close();synchronized(GatewayRelayRpcClient.this){active.remove(this);physical.complete(null);if(closed&&active.isEmpty())drained.complete(null);}}}
+        void ended(){boolean done;synchronized(this){done=--retained==0;}if(done){ticket.close();synchronized(GatewayRelayRpcClient.this){active.remove(this);physical.complete(null);if(closed&&active.isEmpty())settled.complete(null);}}}
         RpcOperation<RelayWriteReceipt> operation(){return new RpcOperation<>(logical.minimalCompletionStage(),physical.minimalCompletionStage());}
     }
     private synchronized Flight begin(int bytes){if(closed)throw new IllegalStateException("Gateway relay client draining");var flight=new Flight(admission.acquire(RpcAdmission.Lane.RELAY,bytes));active.add(flight);return flight;}
@@ -78,6 +78,6 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
         return flight.operation();
     }
     public synchronized CompletionStage<Void> settleAdmitted(){return CompletableFuture.allOf(active.stream().map(f->f.physical).toArray(CompletableFuture[]::new)).minimalCompletionStage();}
-    public synchronized CompletionStage<Void> drain(){if(!closed){closed=true;channels.values().forEach(ManagedChannel::shutdown);drained.whenComplete((v,e)->callbacks.shutdown());if(active.isEmpty())drained.complete(null);}return drained.minimalCompletionStage();}
+    public synchronized CompletionStage<Void> drain(){if(!closed){closed=true;channels.values().forEach(ManagedChannel::shutdown);RpcTransportDrain.await(settled,List.copyOf(channels.values()),drained,callbacks);if(active.isEmpty())settled.complete(null);}return drained.minimalCompletionStage();}
     @Override public void close(){drain();}
 }

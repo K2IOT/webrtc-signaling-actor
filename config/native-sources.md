@@ -189,3 +189,9 @@ retiring volatile producer state and draining the gateway client; register this
 owner in the runtime source drain list. The joined test now crosses both actual
 mTLS RPC legs before the original Netty write. This factory is a concrete startup
 component; Spring Main enrollment and complete process composition remain open.
+
+Both outbound RPC client drains now join original stream settlement, actual
+ManagedChannel termination and callback executor termination. One shutdown
+waiter uses a shared2s transport/executor budget after stream settlement. An
+unproven close fails drain and cannot authorize database closure; an original
+stream with unknown cleanup continues to hold the barrier without a new deadline.
