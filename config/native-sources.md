@@ -72,3 +72,21 @@ waits for all original SQL receipts and socket cleanup. A throwing socket factor
 or unsuccessful close supplies no physical receipt and keeps admission UNKNOWN.
 The actual mTLS/PostgreSQL tests use explicit TEST_ONLY enrollment and PKI. Installing
 this source in the complete process launcher and gateway security feed remains open.
+
+`NativeActorSafetySources` binds the three concrete source owners and genuine Pekko
+membership to an actor process. The launcher must provide its approved cluster
+fingerprint and enrolled AZ-role set. A fingerprint mismatch rejects construction;
+no source, topology or production identity is inferred. Its four fixed SAFETY jobs
+run every100ms: clock, primary, revocation and membership refresh. Atomic safety
+updates preserve native region registration and membership facts. The installed
+one-time admission gate checks the live cached source expirations on every admission,
+so a paused polling job cannot keep a stale successful snapshot ready. Healthy sources
+alone do not set local Up, quorum or region registration.
+
+Compose `sources.jobs()` with the remaining bounded native maintenance jobs, and
+register `sources::drain` with `NativeActorRuntimeHooks` source owners. Sources must
+continue safety work during framework handoff and drain after native root release.
+The native fixture obtains healthy admission from four genuine TCP peers, actual
+region registration, mTLS signed source reads and PostgreSQL. Its TEST_ONLY loopback
+AZ roles do not attest physical AZ placement. Complete process startup, the directory
+and peer/security feeds, relay and remaining native worker installation are still open.
