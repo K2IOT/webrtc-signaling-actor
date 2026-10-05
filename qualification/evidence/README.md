@@ -64,3 +64,11 @@ fraction, both in0..1. Memory values use bytes, FD uses counts, network/WAL/stor
 use bytes/s, row rate uses rows/s, DB pools use counts, and queue/lag/reconnect values
 use milliseconds. These type checks do not establish raw collector provenance,
 simultaneous P2 load or any production gate on their own.
+
+Every worker descriptor also indexes `configArtifact` and `scenarioArtifact` containing
+the exact original source input bytes. Their SHA-256 values must match the original
+worker summary's `configHash` and `scenarioHash`. The verifier independently binds the
+source candidate, host, literal source IP, seed, test-only flag, deterministic partition,
+local socket limit, requested scenario targets and original scheduled start. Preserve
+input paths as originally used; copying or redacting the file must not change the bytes
+behind those hashes. Token inventory contents are separate secrets and are not indexed.

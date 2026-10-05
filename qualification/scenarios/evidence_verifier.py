@@ -195,11 +195,42 @@ def resource_headroom(sample):
         and number(max_pending,1) and number(pending,0,max_pending*.8) and number(max_bytes,1) and number(queued,0,max_bytes*.8)
         and number(sample.get('sampleIntervalNanos'),1,2000000000))
 
+def worker_source_errors(root,worker,summary,manifest,records):
+    errors=[]
+    for artifact,digest in (('configArtifact','configHash'),('scenarioArtifact','scenarioHash')):
+        path=worker.get(artifact)
+        if not isinstance(path,str) or path not in records:errors.append('WORKER_SOURCE_INPUTS_NOT_RETAINED');continue
+        if not isinstance(summary.get(digest),str) or not re.fullmatch(r'[a-f0-9]{64}',summary[digest]) or _sha(artifact_path(root,path))!=summary[digest]:errors.append('WORKER_SOURCE_INPUT_HASH_MISMATCH')
+    if errors:return errors
+    config=_json(artifact_path(root,worker['configArtifact']),524288)
+    scenario=yaml.load(_read(artifact_path(root,worker['scenarioArtifact']),65536),Loader=StrictYaml)
+    if not isinstance(config,dict) or not isinstance(scenario,dict):return ['WORKER_SOURCE_CONFIGURATION_MISMATCH']
+    index,count,total,limit=(config.get(key) for key in ('workerIndex','workerCount','stageSockets','localSocketLimit'))
+    if any(type(value) is not int for value in (index,count,total,limit)) or not 1<=count<=4096 or not 0<=index<count or not 1<=total<=10000000 or not 1<=limit<=200000:return ['WORKER_SOURCE_CONFIGURATION_MISMATCH']
+    quotient,remainder=divmod(total,count);start=quotient*index+min(index,remainder);stop=start+quotient+(index<remainder)
+    sources=config.get('sourceIps');seed=config.get('seed')
+    valid=(all(config.get(key)==manifest.get(key) for key in IDENTITY_BINDINGS)
+        and config.get('testOnly') is False and type(seed) is int and 0<=seed<=9223372036854775807 and summary.get('seed')==seed
+        and summary.get('workerIndex')==index and summary.get('workerCount')==count and summary.get('workerHostId')==config.get('workerHostId')
+        and worker.get('socketStart')==start and worker.get('socketEnd')==stop and stop-start<=limit
+        and isinstance(sources,list) and len(sources)==count and all(isinstance(ip,str) for ip in sources) and len(set(sources))==count
+        and config.get('scheduledStartAt')==mapping(summary.get('observed')).get('scheduledStartAt')
+        and scenario.get('name')==summary.get('scenario') and scenario.get('targets')==summary.get('requestedTargets'))
+    if valid:
+        import ipaddress
+        try:
+            valid=(ipaddress.ip_address(sources[index])==ipaddress.ip_address(summary.get('sourceIp'))
+                and utc(summary['startedAt'])<utc(config['scheduledStartAt'])<utc(summary['finishedAt']))
+        except Exception:valid=False
+    if not valid:errors.append('WORKER_SOURCE_CONFIGURATION_MISMATCH')
+    return errors
+
 def worker_errors(root,worker,manifest,records):
     errors=[]
     try:
         summary=_json(artifact_path(root,worker['summaryArtifact']))
         if not isinstance(summary,dict):return ['INVALID_WORKER_SUMMARY']
+        errors.extend(worker_source_errors(root,worker,summary,manifest,records))
         if summary.get('status')!='PASSED' or summary.get('testOnly') is not False or summary.get('failures')!=[]:errors.append('WORKER_RUN_NOT_PASSED')
         if any(summary.get(key)!=manifest.get(key) or key not in summary for key in IDENTITY_BINDINGS):errors.append('WORKER_CANDIDATE_BINDING_MISMATCH')
         if summary.get('sourceIp')!=worker.get('sourceIp') or summary.get('workerHostId')!=worker.get('hostId') or summary.get('workerIndex')!=worker.get('workerIndex') or summary.get('workerCount')!=worker.get('workerCount'):errors.append('WORKER_SOURCE_BINDING_MISMATCH')

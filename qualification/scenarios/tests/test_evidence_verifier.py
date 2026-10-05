@@ -170,15 +170,21 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         with self.assertRaises(ValueError):verifier.hdr_metrics(malformed)
 
     def worker_fixture(self):
-        import json,shutil
+        import json,shutil,hashlib
         context,_=self.gate('capacity');directory=self.root/'worker';directory.mkdir()
         histogram=MODULE.parent/'tests'/'fixtures'/'TEST_ONLY_latency.hdr';shutil.copyfile(histogram,directory/'latency.hdr');shutil.copyfile(histogram,directory/'control.hdr')
         summary={**context,'status':'PASSED','testOnly':False,'workerIndex':0,'workerCount':1,'workerHostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketRange':{'start':0,'end':4},'rawHistogram':'latency.hdr','generatorSamples':'generator.jsonl','failures':[],'observed':{'attempts':4,'successes':4,'failures':0,'missedIntendedArrivals':0,'lateDispatches':0,'peakAuthenticatedSockets':4,'peakEstablishedCallerCalls':0,'callAttempts':0,'crossCellAttempts':0,'relayFrames':0,'registrations':4,'reconnects':0,'durationSeconds':1,'latencies':{'CONTROL':{'samples':4,'p50Ms':2.0,'p95Ms':20.015,'p99Ms':20.015,'p999Ms':20.015}}}}
         sample={'elapsedNanos':1000000000,'sampleIntervalNanos':1000000000,'cpu':.1,'nicReceiveBytesPerSecond':1,'nicTransmitBytesPerSecond':1,'nicCapacityBytesPerSecond':1000,'fd':1,'fdSoftLimit':100,'eventLoopLagNanos':0,'pendingOperations':0,'maxPendingOperations':100,'pendingBytes':0,'maxPendingBytes':1000,'headroom':{key:True for key in ('cpu','nic','fd','eventLoop','pendingOperations','pendingBytes')}}
         sample['workload']={'authenticatedSockets':4,'establishedCallerCalls':0,'callAttempts':0,'crossCellAttempts':0,'relayFrames':0,'registrations':4,'reconnects':0}
+        scheduled=(self.now-timedelta(minutes=1)).isoformat()
+        config={**context,'testOnly':False,'seed':42,'workerIndex':0,'workerCount':1,'stageSockets':4,'localSocketLimit':4,'sourceIps':['192.0.2.1'],'workerHostId':'TEST_ONLY_HOST','scheduledStartAt':scheduled}
+        scenario={'name':'TEST_ONLY_UNIT_SCENARIO','targets':{'sockets':4},'durationSeconds':1}
+        (directory/'config.json').write_text(json.dumps(config));(directory/'scenario.yaml').write_text(json.dumps(scenario))
+        summary.update({'seed':42,'scenario':scenario['name'],'requestedTargets':scenario['targets'],'configHash':hashlib.sha256((directory/'config.json').read_bytes()).hexdigest(),'scenarioHash':hashlib.sha256((directory/'scenario.yaml').read_bytes()).hexdigest(),'startedAt':(self.now-timedelta(minutes=2)).isoformat(),'finishedAt':(self.now-timedelta(seconds=59)).isoformat()})
+        summary['observed']['scheduledStartAt']=scheduled
         (directory/'summary.json').write_text(json.dumps(summary));(directory/'generator.jsonl').write_text(json.dumps(sample)+'\n')
-        descriptor={'workerIndex':0,'workerCount':1,'hostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketStart':0,'socketEnd':4,'summaryArtifact':'worker/summary.json','rawHistogramArtifact':'worker/latency.hdr','generatorSamplesArtifact':'worker/generator.jsonl','phaseArtifacts':{'CONTROL':'worker/control.hdr'}}
-        records={name:{} for name in ('worker/summary.json','worker/latency.hdr','worker/generator.jsonl','worker/control.hdr')}
+        descriptor={'workerIndex':0,'workerCount':1,'hostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketStart':0,'socketEnd':4,'summaryArtifact':'worker/summary.json','rawHistogramArtifact':'worker/latency.hdr','generatorSamplesArtifact':'worker/generator.jsonl','phaseArtifacts':{'CONTROL':'worker/control.hdr'},'configArtifact':'worker/config.json','scenarioArtifact':'worker/scenario.yaml'}
+        records={name:{} for name in ('worker/summary.json','worker/latency.hdr','worker/generator.jsonl','worker/control.hdr','worker/config.json','worker/scenario.yaml')}
         return context,descriptor,records,summary,sample
     def test_worker_original_samples_override_a_declared_headroom_boolean(self):
         import json
@@ -245,5 +251,28 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         sample['workload']['establishedCallerCalls']=False
         (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
         self.assertIn('WORKER_WORKLOAD_MEASUREMENT_INVALID',verifier.worker_errors(self.root,worker,context,records))
+
+
+    def test_original_source_config_and_scenario_must_be_retained(self):
+        context,worker,records,summary,sample=self.worker_fixture();records.pop('worker/config.json')
+        self.assertIn('WORKER_SOURCE_INPUTS_NOT_RETAINED',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_original_source_hash_cannot_be_replaced_by_a_declared_config_fingerprint(self):
+        context,worker,records,summary,sample=self.worker_fixture()
+        (self.root/'worker/config.json').write_text('{}')
+        self.assertIn('WORKER_SOURCE_INPUT_HASH_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_source_config_test_only_and_native_partition_override_summary_claims(self):
+        import json,hashlib
+        context,worker,records,summary,sample=self.worker_fixture()
+        path=self.root/'worker/config.json';config=json.loads(path.read_text());config['testOnly']=True;config['stageSockets']=5;path.write_text(json.dumps(config))
+        summary['configHash']=hashlib.sha256(path.read_bytes()).hexdigest();(self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_SOURCE_CONFIGURATION_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_common_source_start_cannot_be_changed_after_original_run(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture();summary['observed']['scheduledStartAt']=(self.now-timedelta(seconds=30)).isoformat()
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_SOURCE_CONFIGURATION_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
 if __name__=='__main__':unittest.main()
