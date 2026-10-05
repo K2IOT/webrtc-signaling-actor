@@ -81,6 +81,28 @@ class CallActorStateMachineTest {
         var result=results.receiveMessage();assertThat(result.code()).isEqualTo("UNKNOWN");assertThat(result.issued()).isNull();
     }
 
+    @Test void knownWarmHydrationOverloadRetriesAfterCleanupWithoutDiscardingTheActor()throws Exception {
+        var loads=new ArrayBlockingQueue<Pending<Optional<Snapshot>>>(4);var cold=new AtomicInteger();var commandWork=new Pending<CallCommandService.Outcome>();
+        CallActor.Backend nativeFault=new CallActor.Backend(){
+            public DbOperation<Optional<Snapshot>> loadCold(CallId c,AuthoritySql.GroupToken t,Duration b){cold.incrementAndGet();return new DbOperation<>(CompletableFuture.completedFuture(Optional.of(snapshot("RINGING",1))),CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.FINISHED));}
+            public DbOperation<Optional<Snapshot>> load(CallId c,AuthoritySql.GroupToken t,Duration b){assertThat(b).isLessThanOrEqualTo(Duration.ofSeconds(2));var work=new Pending<Optional<Snapshot>>();assertThat(loads.offer(work)).isTrue();return work.handle();}
+            public DbOperation<CallCommandService.Outcome> command(io.webrtc.signaling.protocol.CallCommand c,AuthoritySql.GroupToken t,long v,String p,Duration b){return commandWork.handle();}
+            public DbOperation<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition t,Duration b){throw new AssertionError();}
+            public DbOperation<CallWorkflowService.Outcome> expire(CallId c,AuthoritySql.GroupToken t,long v,Duration b){throw new AssertionError();}
+        };
+        var actor=kit.spawn(CallActor.create(CALL,nativeFault,()->Optional.of(TOKEN),Clock.fixed(NOW,ZoneOffset.UTC)));
+        var observer=kit.<Optional<Snapshot>>createTestProbe();actor.tell(new CallActor.GetSnapshot(observer.ref()));observer.receiveMessage();
+        var command=new io.webrtc.signaling.protocol.CallCommand(io.webrtc.signaling.protocol.SignalEnvelope.Type.NEGOTIATE_REQUEST,new AuthenticatedSession(new UserId("alice"),new SessionKey("TEST_ONLY","caller"),new SessionIncarnation(new UUID(0,2)),1,UUID.randomUUID()),new RequestId(UUID.randomUUID()),CALL,CommandScope.call(CALL),null,null,null,"{}","a".repeat(64));
+        var result=kit.<CallCommandService.Outcome>createTestProbe();actor.tell(new CallActor.Execute(command,"TEST_ONLY",result.ref(),NOW.plusSeconds(2),1024));
+        commandWork.done(new CallCommandService.Outcome("FINAL","NEGOTIATION_GRANTED",CALL,2,"CONNECTING",List.of()));result.receiveMessage();
+        var first=Objects.requireNonNull(loads.poll(1,TimeUnit.SECONDS));first.logical.completeExceptionally(new DbOverloadedException());
+        assertThat(loads.poll(50,TimeUnit.MILLISECONDS)).isNull();first.physical.complete(DbOperation.PhysicalCompletion.FINISHED);
+        // Observe processing of cleanup before advancing the actor's retry timer.
+        actor.tell(new CallActor.GetSnapshot(observer.ref()));time.timePasses(Duration.ofMillis(50));
+        var retry=loads.poll(1,TimeUnit.SECONDS);assertThat(retry).describedAs("Known NOT_STARTED hydration must retry on the same actor").isNotNull();
+        retry.done(Optional.of(snapshot("CONNECTING",2)));assertThat(observer.receiveMessage()).contains(snapshot("CONNECTING",2));assertThat(cold).hasValue(1);kit.stop(actor);
+    }
+
     @Test void promotedNativeRootHydratesOldRoutingIdentityAndProcessesExistingCall()throws Exception {
         var promoted=new AuthoritySql.GroupToken(TOKEN.cell(),2,TOKEN.hashVersion(),TOKEN.group(),3,TOKEN.node(),TOKEN.incarnation());
         var actor=kit.spawn(CallActor.create(CALL,backend,()->Optional.of(promoted),Clock.fixed(NOW,ZoneOffset.UTC)));

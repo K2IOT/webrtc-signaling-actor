@@ -32,6 +32,8 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     private record Completed(UUID actor,UUID operation,AuthoritySql.GroupToken token,Object value,Throwable error) implements CallMessage {}
     private record Cleaned(UUID actor,UUID operation) implements CallMessage {}
     private record Expire(UUID actor,AuthoritySql.GroupToken token,long version) implements CallMessage {}
+    private record RetryHydration(UUID actor,AuthoritySql.GroupToken token) implements CallMessage {}
+    private long hydrationEnd;private int hydrationAttempts;private boolean retryHydration;
     private enum Retire implements CallMessage {INSTANCE}
     private static void check(Instant deadline,int bytes){Objects.requireNonNull(deadline);if(bytes<1||bytes>96*1024)throw new IllegalArgumentException("Invalid command size");}
     public static Behavior<CallMessage> create(CallId call,Backend backend,Supplier<Optional<AuthoritySql.GroupToken>> gate,Clock clock){return create(call,backend,gate,clock,null);}
@@ -42,7 +44,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     private CallActor(ActorContext<CallMessage> c,TimerScheduler<CallMessage> t,CallId call,Backend backend,Supplier<Optional<AuthoritySql.GroupToken>> gate,Clock clock,ActorRef<ClusterSharding.ShardCommand> shard){super(c);this.call=Objects.requireNonNull(call);this.backend=Objects.requireNonNull(backend);this.gate=Objects.requireNonNull(gate);this.clock=Objects.requireNonNull(clock);timers=t;this.shard=shard;
         var token=current();if(token.isEmpty()){unknown=true;ready=true;return;}pending=new Pending(null,token.get());submit(()->backend.loadCold(call,pending.token,Duration.ofSeconds(2)));
     }
-    @Override public Receive<CallMessage> createReceive(){return newReceiveBuilder().onMessage(GrantToHome.class,this::enqueue).onMessage(Progress.class,this::enqueue).onMessage(Execute.class,this::enqueue).onMessage(WakeCall.class,this::enqueue).onMessage(GetSnapshot.class,this::observe).onMessage(Completed.class,this::completed).onMessage(Cleaned.class,this::cleaned).onMessage(Expire.class,this::expire).onMessage(Retire.class,r->retire()).onMessage(Stop.class,r->stop()).build();}
+    @Override public Receive<CallMessage> createReceive(){return newReceiveBuilder().onMessage(GrantToHome.class,this::enqueue).onMessage(Progress.class,this::enqueue).onMessage(Execute.class,this::enqueue).onMessage(WakeCall.class,this::enqueue).onMessage(GetSnapshot.class,this::observe).onMessage(Completed.class,this::completed).onMessage(Cleaned.class,this::cleaned).onMessage(Expire.class,this::expire).onMessage(RetryHydration.class,this::retryHydration).onMessage(Retire.class,r->retire()).onMessage(Stop.class,r->stop()).build();}
     private Optional<AuthoritySql.GroupToken> current(){return gate.get().filter(t->call.coordinatorCell().equals(t.cell())&&t.hashVersion()==1&&t.group()==HomeParticipationService.group(call));}
     private Behavior<CallMessage> enqueue(CallMessage request){
         if(current().isEmpty()){reject(request,"FENCED");return this;}if(stopping||passivating||unknown){reject(request,"UNAVAILABLE");return this;}
@@ -59,11 +61,13 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     private void submit(Supplier<DbOperation<?>> action){UUID operation=pending.id;var token=pending.token;var receipt=receipt(pending.request);try{var handle=action.get();if(receipt!=null)handle.physicalCompletion().whenComplete((done,error)->receipt.signal());getContext().pipeToSelf(handle.logical(),(v,e)->new Completed(incarnation,operation,token,v,e));getContext().pipeToSelf(handle.physicalCompletion(),(v,e)->new Cleaned(incarnation,operation));}catch(RuntimeException e){if(receipt!=null)receipt.signal();getContext().getSelf().tell(new Completed(incarnation,operation,token,null,e));getContext().getSelf().tell(new Cleaned(incarnation,operation));}}
     private Behavior<CallMessage> completed(Completed e){
         if(!incarnation.equals(e.actor())||pending==null||!pending.id.equals(e.operation())||!pending.token.equals(e.token())||pending.logical)return this;pending.logical=true;
-        if(e.error()!=null){String code=classify(e.error());unknown=code.equals("UNKNOWN")||pending.request==null;if(pending.request!=null)reply(pending.request,code);}
+        if(e.error()!=null){String code=classify(e.error());
+            retryHydration=pending.request==null&&code.equals("OVERLOADED")&&hydrationEnd!=0&&System.nanoTime()-hydrationEnd<0&&hydrationAttempts<16;
+            unknown=!retryHydration&&(code.equals("UNKNOWN")||pending.request==null);if(pending.request!=null)reply(pending.request,code);}
         else if(!current().filter(e.token()::equals).isPresent()){unknown=true;if(pending.request!=null)reply(pending.request,"UNKNOWN");}
         else try{
             if(e.value() instanceof CoordinatorGrantService.Issued value){if(pending.request instanceof GrantToHome g)g.replyTo().tell(new GrantReply("GRANTED",value,backend.sealGrant(g.request(),g.destination(),value)));}
-            else if(e.value() instanceof Optional<?> loaded){setSnapshot(loaded.map(v->(Snapshot)v));ready=true;if(pending.request instanceof WakeCall w)w.replyTo().tell(snapshot.isPresent());}
+            else if(e.value() instanceof Optional<?> loaded){setSnapshot(loaded.map(v->(Snapshot)v));ready=true;hydrationEnd=0;hydrationAttempts=0;retryHydration=false;if(pending.request instanceof WakeCall w)w.replyTo().tell(snapshot.isPresent());}
             else if(e.value() instanceof CallWorkflowService.Outcome value){setSnapshot(Optional.of(value.snapshot()));if(pending.request instanceof Progress p)p.replyTo().tell(value);}
             else if(e.value() instanceof CallCommandService.Outcome value){if(pending.request instanceof Execute r)r.replyTo().tell(value);/* Re-read primary after the command before serving another mutation. */ready=false;}
             else throw new IllegalArgumentException("Invalid committed DTO");
@@ -73,9 +77,22 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     private void setSnapshot(Optional<Snapshot> value){if(value.isPresent()){Snapshot s=value.get();if(!call.equals(s.callId())||snapshot.isPresent()&&s.version()<snapshot.get().version())throw new IllegalArgumentException("Stale hydration");}snapshot=value;timers.cancel("deadline");timers.cancel(Retire.INSTANCE);if(snapshot.isPresent()){var s=snapshot.get();if(s.terminalAt()!=null)timers.startSingleTimer(Retire.INSTANCE,Duration.ofMinutes(2));else {Duration d=DurableDeadlineScheduler.delay(s,clock);if(d!=null)timers.startSingleTimer("deadline",new Expire(incarnation,pending.token,s.version()),d);}}}
     private Behavior<CallMessage> cleaned(Cleaned e){if(incarnation.equals(e.actor())&&pending!=null&&pending.id.equals(e.operation())){pending.physical=true;finish();}return next();}
     private void finish(){if(pending==null||!pending.logical||!pending.physical)return;if(pending.request!=null)bytes-=size(pending.request);pending=null;
-        if(unknown||stopping){while(!queue.isEmpty()){var r=queue.remove();bytes-=size(r);reject(r,"UNAVAILABLE");}}
-        else if(!ready){var token=current();if(token.isEmpty()){unknown=true;finishUnavailable();return;}pending=new Pending(null,token.get());submit(()->backend.load(call,pending.token,Duration.ofSeconds(2)));}
+        if(unknown||stopping){retryHydration=false;while(!queue.isEmpty()){var r=queue.remove();bytes-=size(r);reject(r,"UNAVAILABLE");}}
+        else if(retryHydration){retryHydration=false;var token=current();if(token.isEmpty()){unknown=true;finishUnavailable();return;}timers.startSingleTimer("hydrate-retry",new RetryHydration(incarnation,token.get()),Duration.ofMillis(25));}
+        else if(!ready)warmHydration(true);
         else start();
+    }
+    /** Retry known warm-read overload only after cleanup, within the original budget and bounded attempts. */
+    private void warmHydration(boolean original){
+        if(original){hydrationEnd=System.nanoTime()+Duration.ofSeconds(2).toNanos();hydrationAttempts=0;}
+        var token=current();long remaining=hydrationEnd-System.nanoTime();
+        if(token.isEmpty()||remaining<=0||hydrationAttempts>=16){unknown=true;finishUnavailable();return;}
+        hydrationAttempts++;pending=new Pending(null,token.get());submit(()->backend.load(call,pending.token,Duration.ofNanos(remaining)));
+    }
+    private Behavior<CallMessage> retryHydration(RetryHydration retry){
+        if(!retry.actor().equals(incarnation)||pending!=null||ready||unknown||stopping)return this;
+        if(current().filter(retry.token()::equals).isEmpty()){unknown=true;finishUnavailable();return next();}
+        warmHydration(false);return next();
     }
     private void finishUnavailable(){while(!queue.isEmpty()){var r=queue.remove();bytes-=size(r);reject(r,"UNAVAILABLE");}}
     private Behavior<CallMessage> expire(Expire e){if(!incarnation.equals(e.actor())||unknown||stopping||snapshot.isEmpty()||snapshot.get().version()!=e.version()||!current().filter(e.token()::equals).isPresent())return this;
@@ -84,7 +101,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     }
     private Behavior<CallMessage> observe(GetSnapshot r){if(ready||unknown)r.replyTo().tell(snapshot);else if(observers.size()<16)observers.add(r.replyTo());else r.replyTo().tell(Optional.empty());return this;}
     private Behavior<CallMessage> retire(){if(pending!=null||!queue.isEmpty()){timers.startSingleTimer(Retire.INSTANCE,Duration.ofSeconds(1));return this;}if(shard==null)return Behaviors.stopped();passivating=true;shard.tell(new ClusterSharding.Passivate<>(getContext().getSelf()));return this;}
-    private Behavior<CallMessage> stop(){stopping=true;finishUnavailable();return next();}
+    private Behavior<CallMessage> stop(){timers.cancel("hydrate-retry");retryHydration=false;stopping=true;finishUnavailable();return next();}
     private Behavior<CallMessage> next(){if(pending==null&&stopping)return Behaviors.stopped();if(pending==null&&unknown)return shard==null?Behaviors.stopped():retire();return this;}
     private static int size(CallMessage r){return switch(r){case GrantToHome g->g.encodedBytes();case Progress p->p.encodedBytes();case Execute e->e.encodedBytes();default->128;};}
     private static Instant deadline(CallMessage r){return switch(r){case GrantToHome g->g.deadline();case Progress p->p.deadline();case Execute e->e.deadline();case WakeCall w->w.deadline();default->throw new IllegalArgumentException("Not queued work");};}
