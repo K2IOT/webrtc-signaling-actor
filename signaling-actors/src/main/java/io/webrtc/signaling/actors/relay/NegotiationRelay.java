@@ -18,7 +18,8 @@ public final class NegotiationRelay implements AutoCloseable {
             if(callVersion<1||negotiationId<1||iceGeneration<1||offerer.equals(answerer))throw new IllegalArgumentException("Invalid round grant");}
     }
     public record Description(CallId call,long negotiationId,long iceGeneration,AuthenticatedSession sender,
-            UUID requestId,Kind kind,String body) {
+            UUID requestId,Kind kind,String body,io.webrtc.signaling.protocol.CallCommand original) {
+        public Description(CallId call,long negotiationId,long iceGeneration,AuthenticatedSession sender,UUID requestId,Kind kind,String body){this(call,negotiationId,iceGeneration,sender,requestId,kind,body,null);}
         public Description {Objects.requireNonNull(call);Objects.requireNonNull(sender);Objects.requireNonNull(requestId);Objects.requireNonNull(kind);Objects.requireNonNull(body);
             if(negotiationId<1||iceGeneration<1||body.isBlank()||body.getBytes(StandardCharsets.UTF_8).length>65536
                     ||body.codePoints().anyMatch(c->c>=0xd800&&c<=0xdfff))throw new IllegalArgumentException("Invalid bounded description");}
@@ -27,7 +28,7 @@ public final class NegotiationRelay implements AutoCloseable {
     @FunctionalInterface public interface NativeAuthorization {
         ActorOperation<RelayAuthorizationCache.Snapshot> load(CallId call,AuthenticatedSession sender,long round,long ice,Duration budget);
     }
-    @FunctionalInterface public interface Transport {ActorOperation<Void> send(Description message);}
+    @FunctionalInterface public interface Transport {ActorOperation<Void> send(Description message);default ActorOperation<Void> send(Description message,Duration remainingBudget){return send(message);}}
     private static final class Retained {
         final Description message;final RelayBufferBudget.Ticket credit;
         CompletableFuture<Void> result;CompletionStage<Void> physical;boolean physicalPending,closed;
@@ -72,7 +73,7 @@ public final class NegotiationRelay implements AutoCloseable {
         if(retained!=null){if(!retained.message.equals(message))return rejected(new IllegalArgumentException("SDP retry identity conflict"));
             if(retained.physicalPending||successful(retained.result))return view(retained,budget);
         }else{
-            try{retained=new Retained(message,memory.acquire(256+message.body().getBytes(StandardCharsets.UTF_8).length));}
+            try{retained=new Retained(message,memory.acquire(256+message.body().getBytes(StandardCharsets.UTF_8).length+(message.original()==null?0:message.original().payloadJson().getBytes(StandardCharsets.UTF_8).length+64)));}
             catch(RuntimeException overloaded){return rejected(overloaded);}
             if(message.kind()==Kind.OFFER)lane.offer=retained;else lane.answer=retained;
             if(lane.expiry==null){long delay=Math.min(lane.grant.untilNanos()-clock.getAsLong(),Duration.ofSeconds(30).toNanos()-(clock.getAsLong()-lane.created));
@@ -97,7 +98,7 @@ public final class NegotiationRelay implements AutoCloseable {
                     }
                     var originalWriteReceipt=new CompletableFuture<Void>();scope.track(originalWriteReceipt);
                     final ActorOperation<Void> operation;
-                    try{operation=Objects.requireNonNull(transport.send(message));}
+                    try{operation=Objects.requireNonNull(transport.send(message,Duration.ofNanos(remaining)));}
                     catch(Throwable failure){result.completeExceptionally(failure);return;}
                     result.orTimeout(remaining,TimeUnit.NANOSECONDS);
                     operation.logical().whenComplete((ignored,failure)->{if(failure==null)result.complete(null);else result.completeExceptionally(failure);});
