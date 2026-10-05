@@ -1,6 +1,7 @@
 package io.webrtc.signaling.rpc;
 
 import io.webrtc.signaling.actors.relay.RelayAuthorizationCache;
+import io.webrtc.signaling.actors.relay.NegotiationRelay;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.storage.*;
@@ -12,6 +13,14 @@ import java.util.function.*;
 
 /** Traffic-driven cache-miss producer: native committed round, hosting grant and both signed ACTIVE homes. */
 public final class NativeRelayAuthorization {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper(com.fasterxml.jackson.core.JsonFactory.builder().enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(com.fasterxml.jackson.core.StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(8192).build()).build()).findAndRegisterModules().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    public record AuthorizedRound(RelayAuthorizationCache.Snapshot authorization,NegotiationRelay.Grant grant) {
+        public AuthorizedRound {
+            Objects.requireNonNull(authorization);Objects.requireNonNull(grant);
+            if(!authorization.callId().equals(grant.call())||!authorization.activationId().equals(grant.activationId())||authorization.callVersion()!=grant.callVersion()||authorization.negotiationId()!=grant.negotiationId()||authorization.iceGeneration()!=grant.iceGeneration()||!authorization.group().equals(grant.group())
+                ||!(authorization.sender().equals(grant.offerer())&&authorization.recipient().equals(grant.answerer())||authorization.sender().equals(grant.answerer())&&authorization.recipient().equals(grant.offerer())))throw new IllegalArgumentException("Round grant differs from native authorization");
+        }
+    }
     // Maximum enrolled pair uncertainty plus 1,000ppm drift over the five-second cache lifetime.
     private static final Duration CLOCK_MARGIN=Duration.ofMillis(255);
     private final CallCommandService commands;private final NativeHomeProofClient homes;private final HomeAuthorizationProof proofs;
@@ -23,8 +32,11 @@ public final class NativeRelayAuthorization {
         this.directory=Objects.requireNonNull(directory);this.currentGroup=Objects.requireNonNull(currentGroup);this.clock=Objects.requireNonNull(clock);this.trusted=Objects.requireNonNull(trusted);
     }
     public RpcOperation<RelayAuthorizationCache.Snapshot> load(CallCommand command,String sessionProof,Duration budget){
+        var original=loadRound(command,sessionProof,budget);return new RpcOperation<>(original.logical().thenApply(AuthorizedRound::authorization),original.physicalCompletion());
+    }
+    public RpcOperation<AuthorizedRound> loadRound(CallCommand command,String sessionProof,Duration budget){
         var scope=new PhysicalScope();long started=System.nanoTime();var startedWall=clock.instant();
-        CompletionStage<RelayAuthorizationCache.Snapshot> logical;
+        CompletionStage<AuthorizedRound> logical;
         try{
             if(budget==null||budget.isZero()||budget.isNegative()||budget.compareTo(Duration.ofSeconds(2))>0)throw new IllegalArgumentException("Invalid relay refresh budget");
             var token=local(command.callId());long end=started+budget.toNanos();
@@ -44,11 +56,22 @@ public final class NativeRelayAuthorization {
                         var recipient=new AuthenticatedSession(peer.user(),peer.session(),peer.incarnation(),peer.generation(),peer.connectionId());
                         long until=deadline(started,startedWall,min(caller.expiresAt(),winner.expiresAt()));
                         long reservation=deadline(started,startedWall,min(caller.participantUntil(),winner.participantUntil()).minusSeconds(5));
-                        return new RelayAuthorizationCache.Snapshot(snapshot.callId(),snapshot.activationId(),snapshot.version(),command.negotiationId().value(),command.iceGeneration().value(),snapshot.state(),command.sender(),recipient,token,started,until,reservation,until,Math.min(until,started+Duration.ofSeconds(5).minus(CLOCK_MARGIN).toNanos()));
+                        var authorization=new RelayAuthorizationCache.Snapshot(snapshot.callId(),snapshot.activationId(),snapshot.version(),command.negotiationId().value(),command.iceGeneration().value(),snapshot.state(),command.sender(),recipient,token,started,until,reservation,until,Math.min(until,started+Duration.ofSeconds(5).minus(CLOCK_MARGIN).toNanos()));
+                        return new AuthorizedRound(authorization,committedGrant(snapshot,token,started,startedWall));
                     }));
             });
         }catch(RuntimeException denied){logical=CompletableFuture.failedFuture(denied);}
         return scope.seal(logical);
+    }
+    private static NegotiationRelay.Grant committedGrant(CallSnapshotRepository.Snapshot snapshot,AuthoritySql.GroupToken token,long started,Instant startedWall){
+        try{
+            if(snapshot.deadlines()==null||snapshot.deadlines().getBytes(java.nio.charset.StandardCharsets.UTF_8).length>32768)throw new AuthoritySql.FencedException();
+            var metadata=JSON.readTree(snapshot.deadlines());
+            var offerer=JSON.treeToValue(metadata.get("offerer"),AuthenticatedSession.class);var answerer=JSON.treeToValue(metadata.get("answerer"),AuthenticatedSession.class);
+            long ice=Long.parseLong(metadata.path("iceGeneration").asText());long until=deadline(started,startedWall,Instant.parse(metadata.path("negotiationUntil").asText()));
+            if(System.nanoTime()-until>=0)throw new AuthoritySql.FencedException();
+            return new NegotiationRelay.Grant(snapshot.callId(),snapshot.activationId(),snapshot.version(),snapshot.negotiationId(),ice,offerer,answerer,until,token);
+        }catch(Exception invalid){throw new AuthoritySql.FencedException();}
     }
     private AuthoritySql.GroupToken local(CallId call){if(call==null||!trusted.getAsBoolean())throw new AuthoritySql.FencedException();return currentGroup.apply(call).orElseThrow(AuthoritySql.FencedException::new);}
     private Request template(CallCommand command,CallCommandService.CriticalContext context,CallSnapshotRepository.Participant participant,ProofBindings.TrustedHome home){
