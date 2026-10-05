@@ -90,3 +90,18 @@ The native fixture obtains healthy admission from four genuine TCP peers, actual
 region registration, mTLS signed source reads and PostgreSQL. Its TEST_ONLY loopback
 AZ roles do not attest physical AZ placement. Complete process startup, the directory
 and peer/security feeds, relay and remaining native worker installation are still open.
+
+`NativeRelayAuthorization` is the traffic-driven relay cache-miss producer. It
+reads the guarded committed native round and original INVITE identity, checks the
+original S1 proof and selected participant binding, obtains a fresh hosting-actor
+grant and reads both ACTIVE homes under one original deadline (at most two seconds).
+Large SDP/ICE bodies remain outside proof requests; those carry the original hash
+and bounded command metadata. The resulting process-local snapshot starts at the
+original monotonic request and subtracts255ms from absolute expiry (maximum enrolled
+250ms pair uncertainty plus five milliseconds of drift). Missing current native
+local tenure or trustworthy clock bounds denies the read. Every SQL/home operation
+retains its independent physical receipt. The PostgreSQL fixture exercises setup,
+activation and negotiation before this read, including connection-generation loss.
+Its direct ingress and enrollment remain TEST_ONLY. Installing this producer at the
+actual hosting composition, bounded warm gateway proof reuse and volatile transport
+are still required; this helper alone does not implement end-to-end relay.
