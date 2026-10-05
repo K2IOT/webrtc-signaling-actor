@@ -91,12 +91,12 @@ class NativeActorCompositionIT {
             assertThat(critical.code()).isEqualTo("NEGOTIATION_GRANTED");
             auth=currentSession(registry,route);
             var offer=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"sdp\":\""+"x".repeat(65536)+"\"}","c".repeat(64));
-            var relay=host.relayAuthorization(network).load(offer,proofs.sessionProofs().issue(auth,offer),Duration.ofSeconds(2));
+            var relay=host.relayAuthorization(network).load(offer,proofs.relaySessionProofs().issue(auth,offer),Duration.ofSeconds(2));
             var authorized=relay.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);relay.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
             assertThat(authorized.sender()).isEqualTo(caller);assertThat(authorized.recipient()).isEqualTo(callee);assertThat(authorized.group()).isEqualTo(token);
             assertThat(authorized.callVersion()).isEqualTo(5);assertThat(authorized.negotiationId()).isEqualTo(1);
             var nonhost=compositions.stream().filter(c->c!=host).findFirst().orElseThrow();
-            String offerProof=proofs.sessionProofs().issue(auth,offer);
+            String offerProof=proofs.relaySessionProofs().issue(auth,offer);
             assertThatThrownBy(()->nonhost.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
             host.readiness().beginDrain();
             assertThat(host.readiness().businessReady()).isFalse();

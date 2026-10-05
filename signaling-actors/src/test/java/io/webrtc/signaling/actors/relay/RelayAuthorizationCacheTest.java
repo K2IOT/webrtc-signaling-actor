@@ -35,4 +35,35 @@ class RelayAuthorizationCacheTest {
         assertThat(operation.toCompletableFuture()).isCompletedExceptionally();assertThat(started).hasValue(1);assertThat(cache.pending()).isEqualTo(1);
         assertThat(cache.refresh(call,sender,2,2,Duration.ofSeconds(1),()->{throw new AssertionError("Physical start was not disproven");}).toCompletableFuture()).isCompletedExceptionally();
     }
+    @Test void trackedRefreshExposesTheOriginalReceiptAcrossSuccessfulLogicalAuthorization(){
+        var cache=cache();var logical=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var physical=new CompletableFuture<Void>();
+        var work=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(logical,physical));
+        logical.complete(snapshot(30000000000L,30000000000L,30000000000L));assertThat(work.logical().toCompletableFuture()).isDone();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();
+        physical.complete(null);assertThat(work.physicalCompletion().toCompletableFuture()).isDone();assertThat(cache.pending()).isZero();
+    }
+    @Test void trackedThrowingRefreshKeepsUnknownPhysicalOwnership(){
+        var cache=cache();var work=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->{throw new IllegalStateException("TEST_ONLY_UNKNOWN_FACTORY");});
+        assertThat(work.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(cache.pending()).isEqualTo(1);
+    }
+    @Test void coalescedRefreshKeepsEachOriginalCallerDeadline()throws Exception{
+        var cache=cache();var logical=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var physical=new CompletableFuture<Void>();
+        var first=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(logical,physical));
+        var shorter=cache.refreshTracked(call,sender,1,1,Duration.ofMillis(40),()->{throw new AssertionError("Single flight required");});
+        try{shorter.logical().toCompletableFuture().get(250,TimeUnit.MILLISECONDS);fail("Expected shorter original deadline");}catch(ExecutionException e){assertThat(e).hasCauseInstanceOf(TimeoutException.class);}
+        assertThat(first.logical().toCompletableFuture()).isNotDone();logical.completeExceptionally(new TimeoutException("TEST_ONLY_ORIGINAL"));physical.complete(null);
+    }
+    @Test void knownInvalidationCannotRepopulateAuthorityFromAnOlderPendingRead(){
+        var cache=cache();var logical=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var physical=new CompletableFuture<Void>();
+        var work=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(logical,physical));
+        cache.invalidate(call);logical.complete(snapshot(30000000000L,30000000000L,30000000000L));
+        assertThat(work.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(cache.get(call,sender,1,1)).isEmpty();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();
+        physical.complete(null);assertThat(work.physicalCompletion().toCompletableFuture()).isDone();
+    }
+    @Test void observedClockLossClosesCoalescedAdmissionAndInvalidatesItsPendingProof(){
+        var cache=cache();var logical=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var physical=new CompletableFuture<Void>();
+        var first=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(logical,physical));trusted.set(false);
+        var denied=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->{throw new AssertionError("No new native read");});
+        assertThat(denied.logical().toCompletableFuture()).isCompletedExceptionally();trusted.set(true);logical.complete(snapshot(30000000000L,30000000000L,30000000000L));
+        assertThat(first.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(cache.get(call,sender,1,1)).isEmpty();physical.complete(null);assertThat(cache.pending()).isZero();
+    }
 }

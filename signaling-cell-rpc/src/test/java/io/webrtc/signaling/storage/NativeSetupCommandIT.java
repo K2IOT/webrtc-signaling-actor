@@ -69,7 +69,7 @@ class NativeSetupCommandIT {
                 var owned=new AtomicBoolean(true);var trusted=new AtomicBoolean(true);
                 var authority=new NativeRelayAuthorization(commands,new NativeHomeProofClient(actors,network,clock),proofs,u->new ProofBindings.TrustedHome("c001",1,1),c->owned.get()?Optional.of(group):Optional.empty(),clock,trusted::get);
                 var offer=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"sdp\":\"v=0\\r\\n\"}","b".repeat(64));
-                var offerProof=proofs.sessionProofs().issue(nativeCaller,offer);
+                var offerProof=proofs.relaySessionProofs().issue(nativeCaller,offer);
                 var observed=authority.load(offer,offerProof,Duration.ofSeconds(2));
                 var snapshot=observed.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);
                 observed.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
