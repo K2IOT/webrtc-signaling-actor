@@ -19,10 +19,11 @@ class CoordinatorGrantIT {
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var caller=f.sender("grant-floor-caller");var callee=f.sender("grant-floor-callee");var invite=f.invite(caller,callee.userId());var call=f.service().executeCallCommand(invite).toCompletableFuture().join().callId();var token=f.token(call);var now=Instant.now();
             var request=new HomeParticipationService.Request(caller.userId(),call,invite.requestId().value(),invite.intentHash(),1,HomeParticipationService.Phase.RINGING,new HomeParticipationService.Grant("c001",1,1,token.group(),token.epoch(),1,UUID.randomUUID(),now,now.plusSeconds(5),"UNSIGNED"));
-            var release=new java.util.concurrent.CountDownLatch(1);var entered=new java.util.concurrent.CountDownLatch(8);var admitted=new ArrayList<DbOperation<Boolean>>();
+            f.runtime.boundary.settleAdmitted().toCompletableFuture().get(3,java.util.concurrent.TimeUnit.SECONDS);
+            var release=new java.util.concurrent.CountDownLatch(1);var admitted=new ArrayList<DbOperation<Boolean>>();
             try{
-                for(int n=0;n<8;n++)admitted.add(f.runtime.boundary.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),()->{entered.countDown();release.await();return true;}));
-                assertThat(entered.await(1,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                for(int n=0;n<8;n++)admitted.add(f.runtime.boundary.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),()->{release.await();return true;}));
+                for(var work:admitted){assertThat(work.logical().toCompletableFuture()).isNotDone();assertThat(work.physicalCompletion().toCompletableFuture()).isNotDone();}
                 var issued=done(new CoordinatorGrantService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER").issue(request,new HomeParticipationService.AuthorizationIntent("RENEW",null,0,null,0,null,null),token,1,1,Duration.ofSeconds(1)));
                 assertThat(issued.snapshot().callId()).isEqualTo(call);
             }finally{release.countDown();for(var work:admitted)work.physicalCompletion().toCompletableFuture().get(3,java.util.concurrent.TimeUnit.SECONDS);}
