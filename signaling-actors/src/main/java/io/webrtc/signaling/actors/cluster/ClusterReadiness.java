@@ -8,6 +8,10 @@ public final class ClusterReadiness {
     public void update(Snapshot snapshot){java.util.Objects.requireNonNull(snapshot);state.updateAndGet(previous->new Snapshot(snapshot.localUp(),snapshot.regionsRegistered(),snapshot.fingerprintValid(),snapshot.cellActive(),snapshot.safetyPoolUsable(),snapshot.clockBoundValid(),snapshot.upActors(),snapshot.reachableAzCount(),previous.draining()||snapshot.draining()));}
     public void beginDrain(){state.updateAndGet(s->new Snapshot(s.localUp(),s.regionsRegistered(),s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),s.upActors(),s.reachableAzCount(),true));}
     public Snapshot snapshot(){return state.get();}
+    public void updateMembership(boolean localUp,int upActors,int reachableAzCount){
+        if(upActors<0||reachableAzCount<0)throw new IllegalArgumentException("Invalid membership counts");
+        state.updateAndGet(s->new Snapshot(localUp,s.regionsRegistered(),s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),upActors,reachableAzCount,s.draining()));
+    }
     private static boolean safety(Snapshot s){return s.localUp()&&s.regionsRegistered()&&s.fingerprintValid()&&s.cellActive()&&s.safetyPoolUsable()&&s.clockBoundValid();}
     public boolean safetyReady(){return safety(state.get());}
     public boolean businessReady(){var s=state.get();return safety(s)&&!s.draining()&&s.upActors()>=4&&s.reachableAzCount()>=2;}

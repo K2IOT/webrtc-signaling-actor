@@ -45,9 +45,20 @@ class NativeActorCompositionIT {
                 var inputs=new NativeActorComposition.Inputs(f.runtime.sql,"c001",1,1,UUID.randomUUID(),proofs,u->new ProofBindings.TrustedHome("c001",1,1),(c,p)->true,(c,u)->true,(c,from,to)->false,verifier,CallAuthorizationPolicy.denyAll(),Clock.systemUTC(),()->true,(c,r)->true);
                 compositions.add(new NativeActorComposition(system,inputs,readiness));
             }
+            for(var composition:compositions){
+                var membership=new NativeClusterMembership(composition.system(),composition.readiness(),Set.of("az-a","az-b","az-c"));
+                membership.refresh();assertThat(composition.readiness().snapshot().localUp()).isFalse();assertThat(composition.readiness().businessReady()).isFalse();
+            }
             var seed=Cluster.get(systems.getFirst()).selfMember().address();for(var system:systems)Cluster.get(system).manager().tell(new JoinSeedNodes(List.of(seed)));
             org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(25)).until(()->systems.stream().allMatch(s->Cluster.get(s).selfMember().status().equals(MemberStatus.up())));
-            for(var composition:compositions){composition.readiness().update(new ClusterReadiness.Snapshot(true,false,true,true,true,true,4,3,false));composition.register();}
+            for(var composition:compositions){
+                var membership=new NativeClusterMembership(composition.system(),composition.readiness(),Set.of("az-a","az-b","az-c"));
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(10)).until(()->{membership.refresh();return composition.readiness().snapshot().upActors()==4&&composition.readiness().snapshot().reachableAzCount()==3;});
+                assertThat(composition.readiness().businessReady()).isFalse();composition.register();assertThat(composition.readiness().businessReady()).isTrue();
+                var incompleteEnrollment=new NativeClusterMembership(composition.system(),composition.readiness(),Set.of("az-a"));
+                incompleteEnrollment.refresh();assertThat(composition.readiness().snapshot().upActors()).isEqualTo(2);assertThat(composition.readiness().snapshot().reachableAzCount()).isEqualTo(1);assertThat(composition.readiness().businessReady()).isFalse();
+                membership.refresh();assertThat(composition.readiness().businessReady()).isTrue();
+            }
             var cell=compositions.getLast();var call=CallId.create("c001",1);var original=f.invite(caller,callee.userId());
             var command=new CallCommand(original.type(),caller,original.requestId(),call,original.scope(),callee.userId(),null,null,"{}",original.intentHash());
             var route=SessionAuthReadIT.route(f,caller);var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var auth=CoordinatorGrantIT.done(registry.readCurrentSessionTracked(route,SessionAuthReadIT.principal(route),1,Duration.ofSeconds(2)));var signed=proofs.sessionProofs().issue(auth,command);
@@ -64,6 +75,7 @@ class NativeActorCompositionIT {
             cell.ingress().drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
             var anotherIngress=new ShardedActorIngress(cell.system(),Clock.systemUTC());
             assertThatThrownBy(()->anotherIngress.grantTracked(template,queryAction,"c001",Instant.now().plusSeconds(2),100)).isInstanceOf(io.webrtc.signaling.actors.admission.EntityAdmission.Overloaded.class);
+            cell.readiness().beginDrain();new NativeClusterMembership(cell.system(),cell.readiness(),Set.of("az-a","az-b","az-c")).refresh();assertThat(cell.readiness().snapshot().draining()).isTrue();assertThat(cell.readiness().businessReady()).isFalse();
 
         }finally{for(var system:systems)system.terminate();for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);for(var composition:compositions)composition.drainRoots().toCompletableFuture().get(8,TimeUnit.SECONDS);f.close();}
     }
