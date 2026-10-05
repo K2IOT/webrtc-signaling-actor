@@ -30,7 +30,7 @@ physical receipt and admitted slot as UNKNOWN; a failed close never permits a re
 poll or reports successful drain. Register this owner with the native runtime drain
 hooks when installing the concrete process launcher.
 
-Revocation, directory, peer/compatibility sources and complete native launcher binding
+Directory, peer/compatibility sources and complete native launcher binding
 remain separate required integrations. This adapter does not stand in for those
 sources or for production qualification.
 
@@ -43,3 +43,32 @@ SQL. Drain invalidates cached health, stops new polls and retains admitted nativ
 until its independent physical receipt and cache processing finish. A throwing factory
 without a physical receipt remains UNKNOWN. These health facts grant no mutation or
 relay authority and do not replace clock, revocation or compatibility admission.
+
+`NativeRevocationSource` reads the actual durable cursor through the RECOVERY safety
+pool, requests one enrolled source page with `X-Signaling-Source-Offset`, verifies
+its Ed25519 proof, and commits it through `RevocationReconciler` on the native
+MAINTENANCE pool. These three steps share the original poll budget, at most two
+seconds. The canonical HTTPS endpoint, workload TLS identity, source verifier and
+native reconciler must be supplied explicitly. Clock and revocation adapters share
+the bounded TLS/framing transport; neither follows redirects or infers trust.
+
+The response is exactly the existing seven-field `RevocationReconciler.Batch` JSON
+record: `fromOffset`, `highWater`, `events`, `checkedAt`, `sourceProof`, `retiredKeys`
+and `currentSourceHighWater`. All fields must be present, no unknown/duplicate keys
+are accepted, and the original complete page contains at most16 combined events
+and key retirements. `sourceProof` uses the enrolled key identifier and unpadded
+base64url signature of `RevocationSourceVerifier.signingBytes(cell,issuer,batch)`.
+The source must attest complete cell-filtered coverage; deployments with multiple
+issuers need an approved complete-source enrollment and cursor scheme. This adapter
+does not infer that one issuer page covers another issuer.
+
+Its SAFETY job polls at100ms–1s, with one physically owned invocation. A partial
+page can commit revocations while `usable()` remains false. Only a caught-up native
+commit can populate the bounded cached health fact; it expires within the configured native reconciliation freshness bound (at most
+five seconds) of both the original monotonic request and signed source check. SQL authorization
+still independently checks durable progress, security epochs and retired keys.
+The cached fact does not authorize sessions. Drain invalidates it immediately and
+waits for all original SQL receipts and socket cleanup. A throwing socket factory
+or unsuccessful close supplies no physical receipt and keeps admission UNKNOWN.
+The actual mTLS/PostgreSQL tests use explicit TEST_ONLY enrollment and PKI. Installing
+this source in the complete process launcher and gateway security feed remains open.

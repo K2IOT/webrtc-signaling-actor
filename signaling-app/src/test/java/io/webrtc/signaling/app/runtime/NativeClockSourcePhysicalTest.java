@@ -12,6 +12,16 @@ import org.junit.jupiter.api.Test;
 
 /** Injects the OS/TLS close-error signal; an uncertain close is not a physical cleanup receipt. */
 class NativeClockSourcePhysicalTest {
+    @Test void socketFactoryThrowCannotProveThatNoPhysicalEffectsStarted()throws Exception {
+        var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var pod=UUID.randomUUID();var boot=UUID.randomUUID();
+        var monitor=new ClockSafetyMonitor("c001",1,pod,boot,Map.of("TEST_ONLY",keys.getPublic()),Clock.systemUTC(),System::nanoTime);
+        try(var source=new NativeClockSource(URI.create("https://localhost/v1/clock-bound"),new CloseErrorContext(true),monitor,pod,boot)) {
+            var operation=source.job(Duration.ofSeconds(1)).run().apply(Duration.ofSeconds(1));
+            assertThat(operation.logical().toCompletableFuture()).isCompletedExceptionally();
+            assertThat(operation.physicalCompletion().toCompletableFuture()).isNotDone();
+            assertThat(source.drain().toCompletableFuture()).isNotDone();
+        }
+    }
     @Test void socketCloseErrorRetainsTheAdmittedSourceUntilCleanupCanBeProven()throws Exception {
         var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var pod=UUID.randomUUID();var boot=UUID.randomUUID();
         var monitor=new ClockSafetyMonitor("c001",1,pod,boot,Map.of("TEST_ONLY",keys.getPublic()),Clock.systemUTC(),System::nanoTime);
@@ -23,13 +33,16 @@ class NativeClockSourcePhysicalTest {
         }
     }
     private static final class CloseErrorContext extends SSLContext {
-        CloseErrorContext(){super(new CloseErrorSpi(),new Provider("TEST_ONLY_CLOSE_ERROR","1","Failure injection"){},"TLSv1.3");}
+        CloseErrorContext(){this(false);}
+        CloseErrorContext(boolean factoryThrow){super(new CloseErrorSpi(factoryThrow),new Provider("TEST_ONLY_CLOSE_ERROR","1","Failure injection"){},"TLSv1.3");}
     }
     private static final class CloseErrorSpi extends SSLContextSpi {
+        private final boolean factoryThrow;
+        CloseErrorSpi(boolean factoryThrow){this.factoryThrow=factoryThrow;}
         protected void engineInit(KeyManager[] k,TrustManager[] t,SecureRandom r){}
         protected SSLSocketFactory engineGetSocketFactory(){return new SSLSocketFactory(){
             public String[] getDefaultCipherSuites(){return new String[0];}public String[] getSupportedCipherSuites(){return new String[0];}
-            public java.net.Socket createSocket(){return new CloseErrorSocket();}
+            public java.net.Socket createSocket()throws IOException{if(factoryThrow)throw new IOException("TEST_ONLY factory effects unknown");return new CloseErrorSocket();}
             public java.net.Socket createSocket(java.net.Socket s,String h,int p,boolean a){throw new UnsupportedOperationException();}
             public java.net.Socket createSocket(String h,int p){throw new UnsupportedOperationException();}
             public java.net.Socket createSocket(String h,int p,InetAddress l,int lp){throw new UnsupportedOperationException();}
