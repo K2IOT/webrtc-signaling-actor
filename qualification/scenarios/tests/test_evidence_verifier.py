@@ -389,6 +389,27 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         stage,envelope,_,_=self.burst_skew_window_fixture()
         self.assertEqual(verifier.skew_burst_window_errors(self.root,stage,envelope),[])
 
+    def test_native_skew_window_joins_all_workers_at_the_same_clock(self):
+        import json,copy
+        stage,envelope,samples,stream=self.burst_skew_window_fixture()
+        first=copy.deepcopy(samples);second=copy.deepcopy(samples)
+        for collection in (first,second):
+            for sample in collection:
+                workload=sample['workload'];workload['authenticatedSockets']=20
+                for key in ('callAttempts','relayFrames'):workload[key]//=2
+                for key in ('destinationAttempts','bucketAttempts','totalAttempts'):workload['skew'][key]//=2
+        other=self.root/'generator-two.jsonl';other.write_text(''.join(json.dumps(sample)+'\n' for sample in second))
+        stream.write_text(''.join(json.dumps(sample)+'\n' for sample in first))
+        stage['workers'].append(dict(generatorSamplesArtifact='generator-two.jsonl',scenarioArtifact='scenario.yaml'))
+        self.assertEqual(verifier.skew_burst_window_errors(self.root,stage,envelope),[])
+        # Each worker's peak is genuine; they never overlap to reach two live callers.
+        envelope['establishedCalls']=2;path=self.root/'scenario.yaml';scenario=json.loads(path.read_text());scenario['targets']=envelope;path.write_text(json.dumps(scenario))
+        for a,b in zip(first,second):
+            a['workload']['establishedCallerCalls']=int(a['elapsedNanos']<=300000000000)
+            b['workload']['establishedCallerCalls']=int(b['elapsedNanos']>300000000000)
+        stream.write_text(''.join(json.dumps(sample)+'\n' for sample in first));other.write_text(''.join(json.dumps(sample)+'\n' for sample in second))
+        self.assertIn('NO_SIMULTANEOUS_NATIVE_5X_SOURCE_WINDOW',verifier.skew_burst_window_errors(self.root,stage,envelope))
+
     def test_native_profile_targets_bind_envelope_with_source_refresh_fields(self):
         import json
         stage,envelope,_,_=self.burst_skew_window_fixture()

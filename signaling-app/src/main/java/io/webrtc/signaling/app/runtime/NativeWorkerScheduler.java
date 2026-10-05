@@ -33,11 +33,20 @@ public final class NativeWorkerScheduler implements AutoCloseable {
     private final ScheduledThreadPoolExecutor timers=new ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("native-worker-timer").factory());
     private final ExecutorService tasks=Executors.newVirtualThreadPerTaskExecutor();
     private boolean started,shed,draining;
+    private final CompletableFuture<Void> settled=new CompletableFuture<>();
     private final CompletableFuture<Void> drained=new CompletableFuture<>();
     public NativeWorkerScheduler(List<Job> jobs,Consumer<Event> events){
         if(jobs==null||jobs.isEmpty()||jobs.size()>16||jobs.stream().map(Job::name).distinct().count()!=jobs.size())throw new IllegalArgumentException("Workers require 1..16 distinct fixed jobs");
         this.events=Objects.requireNonNull(events);slots=List.copyOf(jobs).stream().map(Slot::new).toList();
         timers.setRemoveOnCancelPolicy(true);
+        settled.whenComplete((ignored,failure)->Thread.startVirtualThread(()->{
+            long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+            try {
+                for(var executor:List.of(tasks,timers)){long left=end-System.nanoTime();if(left<=0||!executor.awaitTermination(left,TimeUnit.NANOSECONDS))throw new TimeoutException("Native worker executor termination unproven");}
+                drained.complete(null);
+            }catch(InterruptedException interrupted){Thread.currentThread().interrupt();drained.completeExceptionally(interrupted);}
+            catch(Exception unknown){drained.completeExceptionally(unknown);}
+        }));
     }
     public synchronized void start(){
         if(started||draining)throw new IllegalStateException("Workers already started or drained");started=true;
@@ -67,14 +76,14 @@ public final class NativeWorkerScheduler implements AutoCloseable {
         boolean complete;
         synchronized(this){if(slot.active!=invocation)return;slot.active=null;complete=draining&&slots.stream().allMatch(s->s.active==null);}
         invocation.physical.complete(null);
-        if(complete){timers.shutdown();drained.complete(null);}
+        if(complete){timers.shutdown();settled.complete(null);}
     }
     public synchronized void shedNormal(){shed=true;for(var slot:slots)if(slot.job.priority()!=Priority.SAFETY&&slot.periodic!=null)slot.periodic.cancel(false);}
     public synchronized CompletionStage<Void> settleAdmitted(){return CompletableFuture.allOf(slots.stream().filter(s->s.active!=null).map(s->s.active.physical).toArray(CompletableFuture[]::new)).minimalCompletionStage();}
     public CompletionStage<Void> drain(){
         boolean complete;
         synchronized(this){draining=true;for(var slot:slots)if(slot.periodic!=null)slot.periodic.cancel(false);tasks.shutdown();complete=slots.stream().allMatch(s->s.active==null);}
-        if(complete){timers.shutdown();drained.complete(null);}return drained.minimalCompletionStage();
+        if(complete){timers.shutdown();settled.complete(null);}return drained.minimalCompletionStage();
     }
     @Override public void close(){drain();}
 }

@@ -36,5 +36,21 @@ class NativeWorkerSchedulerTest {
             workers.start();assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();assertThatThrownBy(()->workers.drain().toCompletableFuture().get(250,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
         }
     }
+    @Test void drainWaitsForOriginalTimerCallbackToTerminate()throws Exception {
+        var logical=new CompletableFuture<String>();var physical=new CompletableFuture<Void>();var factory=new CountDownLatch(1);var callback=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var workers=new NativeWorkerScheduler(List.of(new NativeWorkerScheduler.Job("native_source",NativeWorkerScheduler.Priority.SAFETY,Duration.ofMillis(100),budget->{factory.countDown();return new RpcOperation<>(logical,physical);})),event->{if(event.status()==NativeWorkerScheduler.Status.UNKNOWN){callback.countDown();try{if(!release.await(10,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY callback gate timeout");}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new AssertionError(interrupted);}}})){
+            workers.start();assertThat(factory.await(1,TimeUnit.SECONDS)).isTrue();assertThat(callback.await(3,TimeUnit.SECONDS)).isTrue();
+            var drained=workers.drain().toCompletableFuture();logical.complete("TEST_ONLY_KNOWN_RESULT");physical.complete(null);
+            // Original DB work has settled, but the owned native timer is still executing.
+            assertThat(drained).isNotDone();release.countDown();drained.get(1,TimeUnit.SECONDS);
+        }finally{release.countDown();logical.complete("TEST_ONLY_KNOWN_RESULT");physical.complete(null);}
+    }
+    @Test void drainFailsWhenOriginalTimerTerminationCannotBeProved()throws Exception {
+        var logical=new CompletableFuture<String>();var physical=new CompletableFuture<Void>();var callback=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var workers=new NativeWorkerScheduler(List.of(new NativeWorkerScheduler.Job("native_source",NativeWorkerScheduler.Priority.SAFETY,Duration.ofMillis(100),budget->new RpcOperation<>(logical,physical))),event->{if(event.status()==NativeWorkerScheduler.Status.UNKNOWN){callback.countDown();try{release.await(10,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}}})){
+            workers.start();assertThat(callback.await(3,TimeUnit.SECONDS)).isTrue();var drained=workers.drain().toCompletableFuture();logical.complete("TEST_ONLY_KNOWN_RESULT");physical.complete(null);
+            assertThatThrownBy(()->drained.get(3,TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class).hasCauseInstanceOf(TimeoutException.class);
+        }finally{release.countDown();logical.complete("TEST_ONLY_KNOWN_RESULT");physical.complete(null);}
+    }
     static RpcOperation<String> complete(){return new RpcOperation<>(CompletableFuture.completedFuture("TEST_ONLY"),CompletableFuture.completedFuture(null));}
 }
