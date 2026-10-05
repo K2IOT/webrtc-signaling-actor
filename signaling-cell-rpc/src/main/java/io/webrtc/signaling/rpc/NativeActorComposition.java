@@ -74,7 +74,7 @@ public final class NativeActorComposition {
         return new NativeRelayAuthorization(commands,new NativeHomeProofClient(ingress,Objects.requireNonNull(network),inputs.clock()),inputs.proofs(),inputs.homes(),
             call->local(HomeParticipationService.group(call)),inputs.clock(),()->inputs.trustedClock().getAsBoolean()&&readiness.safetyReady());
     }
-    public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
+    public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.proofs().relaySessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
     /** Invoke after framework handoff/leave, while the native database remains available. */
     public CompletionStage<Void> drainRoots(){return PostgresShardLeaseProvider.drain(Adapter.toClassic(system));}

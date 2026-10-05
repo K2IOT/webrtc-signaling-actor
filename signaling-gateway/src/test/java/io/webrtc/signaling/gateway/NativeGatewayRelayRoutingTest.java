@@ -29,7 +29,8 @@ class NativeGatewayRelayRoutingTest {
         var lane=new AtomicReference<CellRpcServer.Operation>();var dispatched=new AtomicReference<InternalCommand>();
         var network=new NativeGatewayCommands.Network(){
             public CompletionStage<SessionReply> session(SessionCommand command,Duration remaining){
-                assertThat(command.getType()).isEqualTo("READ_PROOF");assertThat(command.getDestinationCell()).isEqualTo("c001");
+                assertThat(command.getType()).isEqualTo("READ_RELAY_PROOF");assertThat(command.getDestinationCell()).isEqualTo("c001");
+                try{var request=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().readValue(command.getPayload().toByteArray(),NativeSessionHandler.Request.class);assertThat(request.proofCommand().payloadJson()).isEqualTo("{}");}catch(java.io.IOException invalid){throw new AssertionError(invalid);}
                 return CompletableFuture.completedFuture(SessionReply.newBuilder().setOperationId(command.getOperationId()).setStatus("READ").setResult(ByteString.copyFrom(RpcBusinessHandler.encode("TEST_ONLY_WIRE_PROOF"))).build());
             }
             public CompletionStage<InternalReply> call(CellRpcServer.Operation operation,InternalCommand command,Duration remaining){
@@ -39,7 +40,7 @@ class NativeGatewayRelayRoutingTest {
             }
         };
         var call=CallId.create("c002",1);var request=new RequestId(UUID.randomUUID());
-        var command=new CallCommand(type,sender,request,call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{}","a".repeat(64));
+        var command=new CallCommand(type,sender,request,call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"large\":\""+"x".repeat(65536)+"\"}","a".repeat(64));
         var commands=new NativeGatewayCommands(gateway,user->new ProofBindings.TrustedHome("c001",1,1),network,Clock.systemUTC());
         String reply=commands.execute(command,route,"TEST_ONLY_VERIFIED_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join();
         assertThat(lane.get()).isEqualTo(CellRpcServer.Operation.RELAY);

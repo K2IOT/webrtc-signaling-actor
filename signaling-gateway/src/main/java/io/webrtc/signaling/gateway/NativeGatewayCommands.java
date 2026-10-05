@@ -43,7 +43,10 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
             if(!lookup&&call==null)return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
             var command=invite?new CallCommand(original.type(),original.sender(),original.requestId(),call,original.scope(),original.target(),original.negotiationId(),original.iceGeneration(),original.payloadJson(),original.intentHash()):original;
             long end=System.nanoTime()+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());
-            var request=new NativeSessionHandler.Request(lookup?"READ_INVITE_RESULT":"READ_PROOF",gateway,token,route,null,home.directoryEpoch(),0,command.requestId().value(),command);
+            boolean relay=Set.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES).contains(command.type());
+            if(relay&&!RelaySessionAuthorizationProof.supports(command))return CompletableFuture.completedFuture(error(original,"INVALID_MESSAGE"));
+            var proofCommand=relay?new CallCommand(command.type(),command.sender(),command.requestId(),command.callId(),command.scope(),null,command.negotiationId(),command.iceGeneration(),"{}",command.intentHash()):command;
+            var request=new NativeSessionHandler.Request(lookup?"READ_INVITE_RESULT":relay?"READ_RELAY_PROOF":"READ_PROOF",gateway,token,route,null,home.directoryEpoch(),0,command.requestId().value(),proofCommand);
             var session=SessionCommand.newBuilder().setSchemaMajor(1).setDestinationCell(home.cell()).setOperationId(request.operation().toString()).setType(request.type()).setRemainingBudgetMs(Math.max(1,remaining(end).toMillis())).setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(request))).build();
             return network.session(session,remaining(end)).thenCompose(reply->{
                 if(!reply.getOperationId().equals(session.getOperationId())||reply.getAckCommitted()||!reply.getErrorCode().isEmpty()||!reply.getStatus().equals("READ"))return CompletableFuture.completedFuture(error(original,reply.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":reply.getErrorCode()));

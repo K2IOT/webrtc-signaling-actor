@@ -23,6 +23,24 @@ class NativeSessionHandlerTest {
         assertThat(handler.execute(command,new CellRpcServer.Peer("c001","gateway","gw-1"),Duration.ofSeconds(2)).logical().toCompletableFuture().join().getAckCommitted()).isFalse();
         assertThat(handler.execute(command,new CellRpcServer.Peer("c002","actor","gw-1"),Duration.ofSeconds(2)).logical().toCompletableFuture().join().getAckCommitted()).isFalse();assertThat(calls).hasValue(0);
     }
+    @Test void reusableRelayPurposeRequiresMetadataOnlyAndKeepsCriticalReadPurposeClosed(){
+        var count=new AtomicInteger();var cleanup=new CompletableFuture<Void>();
+        var handler=new NativeSessionHandler("c001",1,(p,g)->true,(request,budget)->{count.incrementAndGet();return new RpcOperation<>(CompletableFuture.completedFuture(SessionReply.newBuilder().setStatus("READ").build()),cleanup);});
+        var fixture=new RelaySessionAuthorizationProofTest();var r=fixture.route;
+        var g=new NativeSessionHandler.GatewayIdentity(r.gatewayId(),r.bootId(),"c001",1,"TEST_ONLY");
+        var relay=fixture.command(io.webrtc.signaling.protocol.SignalEnvelope.Type.OFFER,fixture.sender,fixture.call,1,1,"{}");
+        java.util.function.BiFunction<String,io.webrtc.signaling.protocol.CallCommand,RpcOperation<SessionReply>> invoke=(type,c)->{
+            var request=new NativeSessionHandler.Request(type,g,"TEST_ONLY_TOKEN",r,null,1,0,c.requestId().value(),c);
+            var wire=SessionCommand.newBuilder().setSchemaMajor(1).setDestinationCell("c001").setOperationId(request.operation().toString()).setType(type).setRemainingBudgetMs(2000).setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(request))).build();
+            return handler.execute(wire,new CellRpcServer.Peer("c001","gateway",g.gatewayId()),Duration.ofSeconds(2));
+        };
+        assertThat(invoke.apply("READ_PROOF",relay).logical().toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");
+        assertThat(invoke.apply("READ_RELAY_PROOF",fixture.command(io.webrtc.signaling.protocol.SignalEnvelope.Type.HANGUP,fixture.sender,fixture.call,1,1,"{}")).logical().toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");
+        assertThat(invoke.apply("READ_RELAY_PROOF",fixture.command(io.webrtc.signaling.protocol.SignalEnvelope.Type.OFFER,fixture.sender,fixture.call,1,1,"{\"sdp\":true}")).logical().toCompletableFuture().join().getErrorCode()).isEqualTo("UNAUTHORIZED");
+        var admitted=invoke.apply("READ_RELAY_PROOF",relay);assertThat(admitted.logical().toCompletableFuture().join().getStatus()).isEqualTo("READ");
+        assertThat(admitted.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(count).hasValue(1);cleanup.complete(null);
+        assertThat(admitted.physicalCompletion().toCompletableFuture()).isDone();
+    }
     @Test void independentPhysicalCompletionIsPreservedForAnAdmittedSessionOperation(){
         var logical=new CompletableFuture<SessionReply>();var physical=new CompletableFuture<Void>();
         var handler=new NativeSessionHandler("c002",1,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),(request,budget)->new RpcOperation<>(logical,physical));
