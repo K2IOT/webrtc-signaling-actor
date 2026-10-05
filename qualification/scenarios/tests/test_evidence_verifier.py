@@ -434,7 +434,7 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         import json
         manifest,_,_=complete_bundle(verifier,self.root,self.now)
         gate=manifest['gates']['dr-restore'];receipt=json.loads((self.root/'acknowledged-wal.json').read_bytes())
-        receipt.update(recoveryMode='PITR_RESTORE',recoveredWalLsn='0/FE',lostAcknowledgedOperations=1,allRestoredNonterminalInvalidated=True)
+        receipt.update(recoveryMode='PITR_RESTORE',recoveredWalLsn='0/FE',recoveredTimelineHistory=[{'timeline':1,'forkLsn':'0/FE'}],lostAcknowledgedOperations=1,allRestoredNonterminalInvalidated=True)
         self.assertEqual(verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'),[])
         receipt['allRestoredNonterminalInvalidated']=False
         self.assertIn('INVALID_ACKNOWLEDGED_WAL:dr-restore',verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'))
@@ -453,5 +453,19 @@ class EvidenceVerifierContractTest(unittest.TestCase):
                 path.write_text(json.dumps(receipt))
                 errors=verifier.drill_receipt_errors(self.root,manifest['gates']['dr-restore'],'dr-restore',manifest,manifest['artifacts'])
                 self.assertIn('DRILL_RECEIPT_SCOPE_MISMATCH:dr-restore',errors)
+
+    def test_larger_wal_lsn_cannot_hide_wrong_timeline_or_system_identity(self):
+        from complete_bundle_fixture import complete_bundle
+        import json,copy
+        manifest,_,_=complete_bundle(verifier,self.root,self.now)
+        original=json.loads((self.root/'acknowledged-wal.json').read_bytes());gate=manifest['gates']['dr-restore']
+        for mutation in ('wrong-system','fork-before-ack','missing-ancestor','nonmonotonic-history'):
+            with self.subTest(mutation=mutation):
+                receipt=copy.deepcopy(original)
+                if mutation=='wrong-system':receipt['recoveredSystemIdentifier']='987654321'
+                elif mutation=='fork-before-ack':receipt['recoveredTimelineHistory'][0]['forkLsn']='0/FE'
+                elif mutation=='missing-ancestor':receipt['recoveredTimelineHistory']=[]
+                else:receipt['recoveredTimelineHistory'].append({'timeline':1,'forkLsn':'1/0'})
+                self.assertIn('INVALID_ACKNOWLEDGED_WAL:dr-restore',verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'))
 
 if __name__=='__main__':unittest.main()

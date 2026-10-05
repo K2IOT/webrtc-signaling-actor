@@ -441,7 +441,7 @@ def native_drill_receipt_errors(receipt,kind,gate,name):
             if kinds[0]!='DRILL_STARTED' or kinds[-1]!='OBSERVATION_COMPLETED' or 'FAULT_INJECTED' not in kinds[1:-1]:raise ValueError('No observed fault interval')
         elif kind in ('physicalFenceReceipt','acknowledgedWalReceipt'):
             writer=receipt.get('oldWriter')
-            if not isinstance(writer,dict) or not isinstance(writer.get('systemIdentifier'),str) or not re.fullmatch('[1-9][0-9]{0,19}',writer['systemIdentifier']):raise ValueError('Original writer')
+            if not isinstance(writer,dict) or not isinstance(writer.get('systemIdentifier'),str) or not re.fullmatch('[1-9][0-9]{0,19}',writer['systemIdentifier']) or int(writer['systemIdentifier'])>18446744073709551615:raise ValueError('Original writer')
             import uuid
             for field in ('podUid','bootId'):uuid.UUID(writer[field])
             if type(writer.get('storageEpoch')) is not int or not 1<=writer['storageEpoch']<=9223372036854775807:raise ValueError('Original writer epoch')
@@ -454,14 +454,26 @@ def native_drill_receipt_errors(receipt,kind,gate,name):
                     if not isinstance(value,str) or not re.fullmatch('[0-9A-F]{1,8}/[0-9A-F]{1,8}',value):raise ValueError('Native WAL LSN')
                     hi,lo=value.split('/');return (int(hi,16)<<32)+int(lo,16)
                 acknowledged,recovered=lsn(receipt.get('acknowledgedWalLsn')),lsn(receipt.get('recoveredWalLsn'))
+                ack_timeline,current_timeline=receipt.get('acknowledgedTimeline'),receipt.get('recoveredTimeline')
+                if any(type(value) is not int or not 1<=value<=4294967295 for value in (ack_timeline,current_timeline)) or receipt.get('recoveredSystemIdentifier')!=writer['systemIdentifier']:raise ValueError('Foreign native WAL lineage')
+                history=receipt.get('recoveredTimelineHistory')
+                if not isinstance(history,list) or len(history)>4096:raise ValueError('Native timeline history required')
+                previous_timeline=0;previous_lsn=0;ancestor_fork=None
+                for entry in history:
+                    if not isinstance(entry,dict):raise ValueError('Native timeline entry')
+                    timeline=entry.get('timeline');fork=lsn(entry.get('forkLsn'))
+                    if type(timeline) is not int or not previous_timeline<timeline<current_timeline or fork<previous_lsn or fork>recovered:raise ValueError('Nonmonotonic native timeline')
+                    previous_timeline=timeline;previous_lsn=fork
+                    if timeline==ack_timeline:ancestor_fork=fork
+                contained=(recovered>=acknowledged if current_timeline==ack_timeline else ancestor_fork is not None and ancestor_fork>=acknowledged)
                 count,reconciled=receipt.get('acknowledgedOperations'),receipt.get('reconciledOperations')
                 if type(count) is not int or type(reconciled) is not int or count<1 or reconciled!=count:raise ValueError('Original operation reconciliation')
                 mode=receipt.get('recoveryMode')
                 if mode=='SYNCHRONOUS_FAILOVER':
-                    if recovered<acknowledged or receipt.get('lostAcknowledgedOperations',0)!=0:raise ValueError('Lost acknowledged critical WAL')
+                    if not contained or type(receipt.get('lostAcknowledgedOperations',0)) is not int or receipt.get('lostAcknowledgedOperations',0)!=0:raise ValueError('Lost acknowledged critical WAL')
                 elif mode=='PITR_RESTORE':
                     lost=receipt.get('lostAcknowledgedOperations')
-                    if type(lost) is not int or not 0<=lost<=count or (recovered<acknowledged and lost==0) or receipt.get('allRestoredNonterminalInvalidated') is not True:raise ValueError('Unaccounted disaster history')
+                    if type(lost) is not int or not 0<=lost<=count or (not contained and lost==0) or (contained and lost!=0) or receipt.get('allRestoredNonterminalInvalidated') is not True:raise ValueError('Unaccounted disaster history')
                 else:raise ValueError('Recovery mode required')
         else:
             backup,high,restored=(receipt.get(key) for key in ('backupStorageEpoch','outsideBackupHighWater','restoredStorageEpoch'))

@@ -41,3 +41,15 @@ placement label alone cannot establish backup independence.
 
 Ephemeral unit fixtures exercise parsing and rejection with disposable keys.
 They are not collected evidence and never authorize production release.
+
+WAL receipts additionally bind `recoveredSystemIdentifier` to the original
+writer and provide integer `acknowledgedTimeline`/`recoveredTimeline` plus
+original `recoveredTimelineHistory` entries (`timeline`, `forkLsn`). Native
+system identifiers fit unsigned64bit and timeline IDs fit unsigned32bit.
+Ancestor IDs strictly increase below the recovered timeline; fork LSNs never
+regress or exceed the original recovered LSN. For a different recovered timeline,
+acknowledged WAL is contained only when its original timeline appears with a
+fork point at or beyond its acknowledged LSN. A numerically larger LSN on a
+foreign branch cannot attest containment. PITR loss accounting follows this
+lineage check and must agree with the declared loss. Native archive integrity
+and independently attested WAL/operation contents remain required evidence.

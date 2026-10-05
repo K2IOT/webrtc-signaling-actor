@@ -98,7 +98,9 @@ def complete_bundle(verifier, root, now):
         writeAccessRevoked=True,fenceMethod='STORAGE_ACCESS_REVOKED',fencedAt=(now-timedelta(minutes=4)).isoformat(),
         promotedAt=(now-timedelta(minutes=3)).isoformat(),trafficOpenedAt=(now-timedelta(minutes=2)).isoformat())))
     write('acknowledged-wal.json',json.dumps(dict(receipt_context,receiptType='ACKNOWLEDGED_WAL',oldWriter=writer,
-        recoveryMode='SYNCHRONOUS_FAILOVER',acknowledgedWalLsn='0/FF',recoveredWalLsn='1/0',acknowledgedOperations=1,reconciledOperations=1)))
+        recoveryMode='SYNCHRONOUS_FAILOVER',acknowledgedWalLsn='0/FF',recoveredWalLsn='1/0',
+        acknowledgedTimeline=1,recoveredTimeline=2,recoveredSystemIdentifier=writer['systemIdentifier'],
+        recoveredTimelineHistory=[dict(timeline=1,forkLsn='0/FF')],acknowledgedOperations=1,reconciledOperations=1)))
     write('outside-epoch.json',json.dumps(dict(receipt_context,receiptType='OUTSIDE_BACKUP_EPOCH',
         sourcePlacement='OUTSIDE_BACKUP',backupStorageEpoch=1,outsideBackupHighWater=4,restoredStorageEpoch=5)))
     gates = {}
