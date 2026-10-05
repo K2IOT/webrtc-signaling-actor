@@ -73,6 +73,8 @@ class NativeSetupCommandIT {
                 var observed=authority.loadRound(offer,offerProof,Duration.ofSeconds(2));
                 var authorizedRound=observed.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);var snapshot=authorizedRound.authorization();
                 var committedGrant=authorizedRound.grant();
+                var destination=authorizedRound.destination();
+                assertThat(destination.cell()).isEqualTo("c001");assertThat(destination.gatewayId()).isEqualTo(route.gatewayId());assertThat(destination.bootId()).isEqualTo(route.bootId());assertThat(destination.recipient()).isEqualTo(callee);
                 assertThat(authorizedRound.authorizationUntil()).isAfter(Instant.now().plusMillis(255)).isBeforeOrEqualTo(Instant.now().plusSeconds(5));
                 assertThat(committedGrant.call()).isEqualTo(call);assertThat(committedGrant.activationId()).isEqualTo(snapshot.activationId());assertThat(committedGrant.callVersion()).isEqualTo(snapshot.callVersion());
                 assertThat(committedGrant.offerer()).isEqualTo(caller);assertThat(committedGrant.answerer()).isEqualTo(callee);assertThat(committedGrant.group()).isEqualTo(group);
