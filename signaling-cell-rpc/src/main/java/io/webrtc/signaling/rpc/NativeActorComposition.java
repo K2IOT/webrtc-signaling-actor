@@ -34,7 +34,7 @@ public final class NativeActorComposition {
     private final ShardedActorIngress ingress;private final NativeProofIssuer issuer;private final ProofBindings bindings;
     private final SessionRegistryService sessions;private final PostgresUserBackend users;private final CallCommandService commands;
     private final CallWorkflowService workflow;private final CoordinatorGrantService grants;
-    private boolean registered;
+    private boolean registered;private volatile NativeRelayProducer relayProducer;
     public NativeActorComposition(ActorSystem<?> system,Inputs inputs,ClusterReadiness readiness){
         this.system=Objects.requireNonNull(system);this.inputs=Objects.requireNonNull(inputs);this.readiness=Objects.requireNonNull(readiness);
         var classic=Adapter.toClassic(system);var roots=new GroupOwnerRepository(inputs.sql(),inputs.cell(),inputs.storageEpoch());
@@ -60,7 +60,7 @@ public final class NativeActorComposition {
             var call=new CallId(entity.getEntityId());int group=HomeParticipationService.group(call);Supplier<Optional<AuthoritySql.GroupToken>> gate=()->local(group);
             var backend=new CallCommandHandler(workflow,commands,gate,user->{var home=Objects.requireNonNull(inputs.homes().apply(user));return new CallCommandService.TargetHome(home.cell(),home.directoryEpoch());},grants,issuer::coordinator,
                 command->command.type()==SignalEnvelope.Type.INVITE?localHome(command.sender().userId()).directoryEpoch():0L);
-            return CallActor.create(call,backend,gate,inputs.clock(),entity.getShard());
+            return CallActor.create(call,backend,gate,inputs.clock(),entity.getShard(),changed->{var producer=relayProducer;if(producer!=null)producer.invalidate(changed);});
         },CallActor.Stop.INSTANCE,readiness);registered=true;return regions;
     }
     public RpcBusinessHandler backend(NativeSagaEffects.Network network,Function<RpcBusinessHandler.RelayRequest,CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply>> relay){
@@ -75,13 +75,13 @@ public final class NativeActorComposition {
             call->local(HomeParticipationService.group(call)),inputs.clock(),()->inputs.trustedClock().getAsBoolean()&&readiness.safetyReady());
     }
     /** Caller owns lifecycle; install with backend.nativeRelay before opening the RPC listener. */
-    public NativeRelayProducer relayProducer(NativeSagaEffects.Network network,int capacity,
+    public synchronized NativeRelayProducer relayProducer(NativeSagaEffects.Network network,int capacity,
             io.webrtc.signaling.actors.relay.RelayBufferBudget memory,GatewayRelayRpcClient gateway){
-        Objects.requireNonNull(gateway);Objects.requireNonNull(memory);
+        if(relayProducer!=null)throw new IllegalStateException("Native relay producer already created");Objects.requireNonNull(gateway);Objects.requireNonNull(memory);
         BooleanSupplier trusted=()->inputs.trustedClock().getAsBoolean()&&readiness.safetyReady();
         Function<CallId,Optional<AuthoritySql.GroupToken>> owner=call->local(HomeParticipationService.group(call));
         var rounds=new NativeRelayRoundCache(capacity,Math.min(capacity,64),relayAuthorization(network),System::nanoTime,trusted,owner);
-        return new NativeRelayProducer(rounds,capacity,System::nanoTime,trusted,owner,memory,gateway::send);
+        relayProducer=new NativeRelayProducer(rounds,capacity,System::nanoTime,trusted,owner,memory,gateway::send);return relayProducer;
     }
     public NativeSessionOperations sessionOperations(){return new NativeSessionOperations(sessions,inputs.tokenVerifier(),inputs.clock(),inputs.proofs().sessionProofs(),inputs.proofs().relaySessionProofs(),inputs.trustedClock(),inputs.callPolicy());}
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
