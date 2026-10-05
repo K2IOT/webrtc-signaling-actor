@@ -46,7 +46,7 @@ class GatewayProtocolIT {
     @Test void expiredBootCannotAuthenticateOrContinueIngress(){var channel=channel();validBoot.set(false);channel.writeInbound(new TextWebSocketFrame(AUTH));assertThat(channel.isActive()).isFalse();assertThat(registry.authenticatedCount()).isZero();channel.finishAndReleaseAll();}
     @Test void strictUpgradeRequiresAllowedOriginAndNoUrlTokenWithSeparateNativePolicy(){
         var policy=new GatewayServer.UpgradePolicy(Set.of("https://app.example"),headers->headers.contains("X-Test-Native"));
-        var request=new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,HttpMethod.GET,"/ws");request.headers().set(HttpHeaderNames.ORIGIN,"https://app.example");assertThat(policy.accepts(request)).isTrue();request.setUri("/ws?token=secret");assertThat(policy.accepts(request)).isFalse();request.setUri("/ws");request.headers().set(HttpHeaderNames.ORIGIN,"https://app.example.evil");assertThat(policy.accepts(request)).isFalse();request.headers().remove(HttpHeaderNames.ORIGIN);assertThat(policy.accepts(request)).isFalse();request.headers().set("X-Test-Native","yes");assertThat(policy.accepts(request)).isTrue();request.release();
+        var request=new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,HttpMethod.GET,"/ws");request.headers().set(HttpHeaderNames.ORIGIN,"https://app.example");request.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,"webrtc-signaling.v1");assertThat(policy.accepts(request)).isTrue();request.setUri("/ws?token=secret");assertThat(policy.accepts(request)).isFalse();request.setUri("/ws");request.headers().set(HttpHeaderNames.ORIGIN,"https://app.example.evil");assertThat(policy.accepts(request)).isFalse();request.headers().remove(HttpHeaderNames.ORIGIN);assertThat(policy.accepts(request)).isFalse();request.headers().set("X-Test-Native","yes");assertThat(policy.accepts(request)).isTrue();request.release();
     }
     @Test void heartbeatStaysLocalAndClosesAfterTenSecondsWithoutPong(){
         var channel=channel();try{authenticate(channel);((TextWebSocketFrame)channel.readOutbound()).release();var heartbeat=channel.pipeline().get(HeartbeatHandler.class);heartbeat.tick(now.plusSeconds(30));var ping=(PingWebSocketFrame)channel.readOutbound();assertThat(ping).isNotNull();channel.writeInbound(new PongWebSocketFrame(ping.content().retainedDuplicate()));ping.release();assertThat(commands).hasValue(0);heartbeat.tick(now.plusSeconds(60));((PingWebSocketFrame)channel.readOutbound()).release();heartbeat.tick(now.plusSeconds(70));assertThat(channel.isActive()).isFalse();}finally{channel.finishAndReleaseAll();}
@@ -89,4 +89,16 @@ class GatewayProtocolIT {
         }finally{channel.finishAndReleaseAll();}
     }
     @Test void commandCarriesTheOriginalVerifiedTokenAndExactCommittedRouteForIndependentNativeProofRead(){var channel=channel();try{authenticate(channel);((TextWebSocketFrame)channel.readOutbound()).release();channel.writeInbound(new TextWebSocketFrame("{\"v\":1,\"type\":\"SYNC_CALL\",\"requestId\":\""+UUID.randomUUID()+"\",\"callId\":\"c001.e1.00000000-0000-0000-0000-000000000001\",\"payload\":{}}"));channel.runPendingTasks();assertThat(commandToken).hasValue("TEST_ONLY");assertThat(commandRoute.get().connectionId()).isEqualTo(channel.attr(ConnectionRegistry.CONNECTION).get());assertThat(commandRoute.get().connectionGeneration()).isEqualTo(1);}finally{channel.finishAndReleaseAll();}}
+    @Test void upgradeRequiresOneBoundedHeaderOfferingTheSupportedSubprotocol(){
+        var policy=new GatewayServer.UpgradePolicy(Set.of("https://app.example"),headers->false);
+        var request=new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,HttpMethod.GET,"/ws");request.headers().set(HttpHeaderNames.ORIGIN,"https://app.example");
+        try{
+            assertThat(policy.accepts(request)).isFalse();
+            request.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,"unsupported.v2");assertThat(policy.accepts(request)).isFalse();
+            request.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,"unsupported.v2, webrtc-signaling.v1");assertThat(policy.accepts(request)).isTrue();
+            request.headers().add(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,"webrtc-signaling.v1");assertThat(policy.accepts(request)).isFalse();
+            request.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,"x".repeat(257)+",webrtc-signaling.v1");assertThat(policy.accepts(request)).isFalse();
+        }finally{request.release();}
+    }
+
 }
