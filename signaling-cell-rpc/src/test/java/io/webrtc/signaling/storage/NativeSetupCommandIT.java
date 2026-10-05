@@ -16,11 +16,22 @@ import org.junit.jupiter.api.Test;
 
 /** Native PostgreSQL business/proof pipeline; direct tracked ingress is TEST_ONLY, no deployed capacity claim. */
 class NativeSetupCommandIT {
-    @Test void publicAcceptDrivesBothNativeHomesAndActivationWithoutFixturePhasePlanner()throws Exception {
+    @Test void publicAcceptDrivesBothNativeHomesAndActivationWithoutFixturePhasePlanner()throws Exception {run(false);}
+    @Test void callerReconnectDuringRingingRebindsBeforeBothNativeHomesActivate()throws Exception {run(true);}
+    private void run(boolean reconnect)throws Exception {
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var caller=f.sender("setup-caller");var callee=f.sender("setup-callee");var invite=f.invite(caller,callee.userId());var call=f.service().executeCallCommand(invite).toCompletableFuture().join().callId();var group=f.token(call);
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));var clock=Clock.systemUTC();var bindings=new ProofBindings(proofs,clock);var issuer=new NativeProofIssuer(proofs,clock,()->true,group::equals);
             var commands=new CallCommandService(f.runtime.sql,"c001",1,1,c->CompletableFuture.failedFuture(new AssertionError()),bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)),bindings.negotiationVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1))).businessAdmission(()->true);
+            if(reconnect){
+                var original=SessionAuthReadIT.route(f,caller);var principal=SessionAuthReadIT.principal(original);
+                var newer=f.sessions.registerSession(principal,f.boot,UUID.randomUUID(),1).toCompletableFuture().join();
+                var rebound=new AuthenticatedSession(newer.user(),newer.key(),newer.incarnation(),newer.connectionGeneration(),newer.connectionId());
+                var resume=new CallCommand(SignalEnvelope.Type.RESUME,rebound,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","e".repeat(64));
+                var nativeCurrent=NativeProofSagaIT.done(new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true).readCurrentSessionTracked(newer,principal,1,Duration.ofSeconds(2)));
+                var resumed=NativeProofSagaIT.done(commands.executeUnderAuthorityTracked(resume,new CallCommandService.Authority(call,group,1,proofs.sessionProofs().issue(nativeCurrent,resume),1),Duration.ofSeconds(2)));
+                assertThat(resumed.code()).isEqualTo("RESUMED");assertThat(resumed.state()).isEqualTo("RINGING");assertThat(resumed.version()).isEqualTo(2);
+            }
             var home=new HomeParticipationService(f.runtime.sql,"c001",1,bindings.homeVerifier("c001"));var users=new PostgresUserBackend(new UserSnapshotService(f.runtime.sql,"c001",1),f.sessions,new UserReservationService(home),new AcceptWinnerService(home,(c,r)->true),new HomeActivationService(home,(c,u)->true),new HomeProofReadService(home,(c,u)->true,(c,r)->true));
             var grants=new CoordinatorGrantService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER");var workflow=new CallWorkflowService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER",bindings.workflowVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)));var current=new AtomicReference<>(NativeProofSagaIT.done(workflow.load(call,group,Duration.ofSeconds(2))).orElseThrow());
             var actors=new RpcBusinessHandler.ActorIngress(){
@@ -43,8 +54,8 @@ class NativeSetupCommandIT {
             var work=bridge.executeTracked(CellRpcServer.Operation.EXECUTE,wire,new CellRpcServer.Peer("c001","actor"),Duration.ofSeconds(2));var reply=work.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);work.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(reply.getAckCommitted()).isTrue();var result=new com.fasterxml.jackson.databind.ObjectMapper().readValue(reply.getResult().toByteArray(),CallCommandService.Outcome.class);
 
-            assertThat(result.status()).isEqualTo("FINAL");assertThat(result.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");assertThat(current.get().state()).isEqualTo("CONNECTING");assertThat(current.get().version()).isEqualTo(4);
-            var retry=executor.execute(accept,signed,Duration.ofSeconds(2));assertThat(retry.logical().toCompletableFuture().get(3,TimeUnit.SECONDS)).isEqualTo(result);retry.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(current.get().version()).isEqualTo(4);
+            assertThat(result.status()).isEqualTo("FINAL");assertThat(result.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");assertThat(current.get().state()).isEqualTo("CONNECTING");assertThat(current.get().version()).isEqualTo(reconnect?5:4);
+            var retry=executor.execute(accept,signed,Duration.ofSeconds(2));assertThat(retry.logical().toCompletableFuture().get(3,TimeUnit.SECONDS)).isEqualTo(result);retry.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(current.get().version()).isEqualTo(reconnect?5:4);
             var losingSession=f.sender("setup-callee");
             var read=new CallCommand(SignalEnvelope.Type.SYNC_CALL,losingSession,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
             var losingRoute=SessionAuthReadIT.route(f,losingSession);

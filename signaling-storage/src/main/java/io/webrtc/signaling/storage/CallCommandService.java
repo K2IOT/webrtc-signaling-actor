@@ -223,7 +223,7 @@ public final class CallCommandService {
             case CANCEL -> caller&&Set.of("PREPARING","RINGING","ACCEPTED","ACTIVATING").contains(s.state());
             case HANGUP -> (caller||winner)&&Set.of("ACCEPTED","ACTIVATING","CONNECTING","ESTABLISHED").contains(s.state());
             case ACCEPT,REJECT -> offered&&s.callee().equals(command.sender().userId())&&s.state().equals("RINGING");
-            case RESUME -> (s.caller().samePrincipal(command.sender())||s.winner()!=null&&s.winner().samePrincipal(command.sender()))&&Set.of("ACCEPTED","ACTIVATING","CONNECTING","ESTABLISHED").contains(s.state());
+            case RESUME -> (s.caller().samePrincipal(command.sender())||s.winner()!=null&&s.winner().samePrincipal(command.sender()))&&Set.of("PREPARING","RINGING","ACCEPTED","ACTIVATING","CONNECTING","ESTABLISHED").contains(s.state());
             case MEDIA_CONNECTED,MEDIA_DISCONNECTED,ICE_RESTARTING,MEDIA_FAILED,MEDIA_RECOVERED -> (caller||winner)&&Set.of("CONNECTING","ESTABLISHED").contains(s.state());
             case NEGOTIATE_REQUEST -> (caller||winner)&&Set.of("CONNECTING","ESTABLISHED").contains(s.state());
             case DECLINE_ALL -> s.callee().equals(command.sender().userId())&&s.state().equals("RINGING");
