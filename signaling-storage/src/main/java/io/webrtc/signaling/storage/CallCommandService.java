@@ -269,6 +269,27 @@ public final class CallCommandService {
             return new CriticalContext(snapshot,original.hash());
         });
     }
+    /** Bounded auth-only relay cache miss; never authorizes a durable mutation. */
+    public DbOperation<CriticalContext> relayContextAuthorized(CallCommand command,String proof,Duration budget){
+        if(!Set.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES).contains(command.type())
+                ||command.callId()==null||!command.scope().equals(CommandScope.call(command.callId()))||command.negotiationId()==null||command.iceGeneration()==null)throw new AuthorizationRejected();
+        return sql.submitTracked(DbClass.RECOVERY,budget,c->{
+            var snapshot=authorizedRead(c,command,proof);
+            if(snapshot.terminalAt()!=null||snapshot.activationId()==null||snapshot.winner()==null||!Set.of("CONNECTING","ESTABLISHED").contains(snapshot.state())
+                    ||!(snapshot.caller().sameBinding(command.sender())||snapshot.winner().sameBinding(command.sender()))||snapshot.negotiationId()!=command.negotiationId().value())throw new AuthorizationRejected();
+            var metadata=JSON.readTree(snapshot.deadlines());
+            if(command.iceGeneration().value()!=Long.parseLong(metadata.path("iceGeneration").asText("0"))||!Set.of("OFFER_GRANTED","COMPLETE").contains(metadata.path("negotiationState").asText()))throw new AuthorizationRejected();
+            var offerer=JSON.treeToValue(metadata.get("offerer"),AuthenticatedSession.class);var answerer=JSON.treeToValue(metadata.get("answerer"),AuthenticatedSession.class);
+            if(!(snapshot.caller().sameBinding(offerer)&&snapshot.winner().sameBinding(answerer)||snapshot.winner().sameBinding(offerer)&&snapshot.caller().sameBinding(answerer))
+                    ||command.type()==SignalEnvelope.Type.OFFER&&!command.sender().equals(offerer)||command.type()==SignalEnvelope.Type.ANSWER&&!command.sender().equals(answerer)
+                    ||!command.sender().equals(offerer)&&!command.sender().equals(answerer))throw new AuthorizationRejected();
+            Instant now;try(var q=c.createStatement();var r=q.executeQuery("SELECT clock_timestamp()")){r.next();now=r.getTimestamp(1).toInstant();}
+            if(!Instant.parse(metadata.path("negotiationUntil").asText()).isAfter(now))throw new AuthorizationRejected();
+            var original=results.find(c,snapshot.caller().key(),CommandScope.invite(),snapshot.inviteRequest());
+            if(original==null||!snapshot.callId().equals(original.callId()))throw new AuthorizationRejected();
+            return new CriticalContext(snapshot,original.hash());
+        });
+    }
     private Snapshot authorizedRead(Connection c,CallCommand read,String proof)throws Exception {
         AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,read.callId());if(hint==null||!cell.equals(read.callId().coordinatorCell()))throw new AuthorizationRejected();
         AuthoritySql.bucketBarrier(c,hint.bucket(),false);AuthoritySql.validateBuckets(c,Map.of(hint.bucket(),localBucketEpoch(c,hint.bucket())));AuthoritySql.callReadBarrier(c,read.callId().value());

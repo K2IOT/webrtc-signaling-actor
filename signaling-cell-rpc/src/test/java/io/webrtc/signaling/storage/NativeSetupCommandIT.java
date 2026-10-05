@@ -18,7 +18,9 @@ import org.junit.jupiter.api.Test;
 class NativeSetupCommandIT {
     @Test void publicAcceptDrivesBothNativeHomesAndActivationWithoutFixturePhasePlanner()throws Exception {run(false);}
     @Test void callerReconnectDuringRingingRebindsBeforeBothNativeHomesActivate()throws Exception {run(true);}
-    private void run(boolean reconnect)throws Exception {
+    @Test void relayAuthorizationUsesNativeCommittedRoundAndBothActiveHomes()throws Exception {run(false,true);}
+    private void run(boolean reconnect)throws Exception {run(reconnect,false);}
+    private void run(boolean reconnect,boolean relayCheck)throws Exception {
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var caller=f.sender("setup-caller");var callee=f.sender("setup-callee");var invite=f.invite(caller,callee.userId());var call=f.service().executeCallCommand(invite).toCompletableFuture().join().callId();var group=f.token(call);
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));var clock=Clock.systemUTC();var bindings=new ProofBindings(proofs,clock);var issuer=new NativeProofIssuer(proofs,clock,()->true,group::equals);
@@ -56,6 +58,40 @@ class NativeSetupCommandIT {
 
             assertThat(result.status()).isEqualTo("FINAL");assertThat(result.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");assertThat(current.get().state()).isEqualTo("CONNECTING");assertThat(current.get().version()).isEqualTo(reconnect?5:4);
             var retry=executor.execute(accept,signed,Duration.ofSeconds(2));assertThat(retry.logical().toCompletableFuture().get(3,TimeUnit.SECONDS)).isEqualTo(result);retry.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);assertThat(current.get().version()).isEqualTo(reconnect?5:4);
+            if(relayCheck){
+                var nativeCaller=NativeProofSagaIT.done(new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true).readCurrentSessionTracked(SessionAuthReadIT.route(f,caller),SessionAuthReadIT.principal(SessionAuthReadIT.route(f,caller)),1,Duration.ofSeconds(2)));
+                var negotiate=new CallCommand(SignalEnvelope.Type.NEGOTIATE_REQUEST,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","a".repeat(64));
+                var critical=new NativeCriticalCommandExecutor(commands,new NativeHomeProofClient(actors,network,clock),actors,u->new ProofBindings.TrustedHome("c001",1,1),"c001",1,clock);
+                var negotiation=critical.execute(negotiate,proofs.sessionProofs().issue(nativeCaller,negotiate),Duration.ofSeconds(2));
+                assertThat(negotiation.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).code()).isEqualTo("NEGOTIATION_GRANTED");
+                negotiation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                current.set(NativeProofSagaIT.done(workflow.load(call,group,Duration.ofSeconds(2))).orElseThrow());
+                var owned=new AtomicBoolean(true);var trusted=new AtomicBoolean(true);
+                var authority=new NativeRelayAuthorization(commands,new NativeHomeProofClient(actors,network,clock),proofs,u->new ProofBindings.TrustedHome("c001",1,1),c->owned.get()?Optional.of(group):Optional.empty(),clock,trusted::get);
+                var offer=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"sdp\":\"v=0\\r\\n\"}","b".repeat(64));
+                var offerProof=proofs.sessionProofs().issue(nativeCaller,offer);
+                var observed=authority.load(offer,offerProof,Duration.ofSeconds(2));
+                var snapshot=observed.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                observed.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                assertThat(snapshot.callId()).isEqualTo(call);assertThat(snapshot.activationId()).isEqualTo(current.get().activationId());
+                assertThat(snapshot.negotiationId()).isEqualTo(1);assertThat(snapshot.iceGeneration()).isEqualTo(1);
+                assertThat(snapshot.sender()).isEqualTo(caller);assertThat(snapshot.recipient()).isEqualTo(callee);assertThat(snapshot.group()).isEqualTo(group);
+                assertThat(snapshot.securityUntilNanos()-snapshot.checkedAtNanos()).isLessThanOrEqualTo(Duration.ofSeconds(5).toNanos());
+                var stale=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(2),new IceGeneration(1),"{}","c".repeat(64));
+                assertThatThrownBy(()->authority.load(stale,proofs.sessionProofs().issue(nativeCaller,stale),Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
+                assertThatThrownBy(()->authority.load(offer,"forged",Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
+                owned.set(false);
+                assertThatThrownBy(()->authority.load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
+                owned.set(true);
+                var wrongOfferer=new CallCommand(SignalEnvelope.Type.OFFER,callee,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{}","d".repeat(64));
+                var calleeProof=proofs.sessionProofs().issue(nativeSession,wrongOfferer);
+                assertThatThrownBy(()->authority.load(wrongOfferer,calleeProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
+                trusted.set(false);
+                assertThatThrownBy(()->authority.load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
+                trusted.set(true);
+                f.sessions.registerSession(SessionAuthReadIT.principal(route),f.boot,UUID.randomUUID(),1).toCompletableFuture().join();
+                assertThatThrownBy(()->authority.load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
+            }
             var losingSession=f.sender("setup-callee");
             var read=new CallCommand(SignalEnvelope.Type.SYNC_CALL,losingSession,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","c".repeat(64));
             var losingRoute=SessionAuthReadIT.route(f,losingSession);
