@@ -10,6 +10,17 @@ import org.junit.jupiter.api.Test;
 
 /** Required authenticated-source fixtures exercise native security gates; no production source is invented. */
 class RevocationSecurityIT {
+    @Test void nativeSourceStepsAcceptOnlyRemainingBoundedPollBudget()throws Exception{
+        try(var f=new LocalInviteAtomicIT.Fixture()){
+            var worker=worker(f,new AtomicBoolean(true));
+            for(var invalid:List.of(Duration.ZERO,Duration.ofNanos(-1),Duration.ofSeconds(3))){
+                assertThatThrownBy(()->worker.progress(invalid)).isInstanceOf(IllegalArgumentException.class);
+                assertThatThrownBy(()->worker.apply(batch(0,0,List.of(),Instant.now()),invalid)).isInstanceOf(IllegalArgumentException.class);
+            }
+            assertThat(CoordinatorGrantIT.done(worker.progress(Duration.ofMillis(500))).offset()).isZero();
+            assertThat(CoordinatorGrantIT.done(worker.apply(batch(0,0,List.of(),Instant.now()),Duration.ofMillis(500)))).isZero();
+        }
+    }
     static final String SOURCE="TEST_ONLY_ENROLLED_COMPLETE_SOURCE_RANGE";
     static RevocationReconciler worker(LocalInviteAtomicIT.Fixture f,AtomicBoolean source){return new RevocationReconciler(f.runtime.sql,"c001",1,Duration.ofSeconds(5),batch->source.get()&&batch.sourceProof().equals(SOURCE));}
     static RevocationReconciler.Batch batch(long from,long high,List<RevocationState.Event> events,Instant now){return new RevocationReconciler.Batch(from,high,events,now,SOURCE);}
