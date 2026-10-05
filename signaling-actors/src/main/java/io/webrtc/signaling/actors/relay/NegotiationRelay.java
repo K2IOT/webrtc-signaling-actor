@@ -12,6 +12,7 @@ import java.util.function.LongSupplier;
 /** Volatile SDP retry lane. Grants must come from committed native negotiation metadata. */
 public final class NegotiationRelay implements AutoCloseable {
     public enum Kind {OFFER,ANSWER}
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper(com.fasterxml.jackson.core.JsonFactory.builder().enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(com.fasterxml.jackson.core.StreamReadConstraints.builder().maxNestingDepth(8).maxStringLength(65536).build()).build()).enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     public record Grant(CallId call,UUID activationId,long callVersion,long negotiationId,long iceGeneration,
             AuthenticatedSession offerer,AuthenticatedSession answerer,long untilNanos,GroupToken group) {
         public Grant {Objects.requireNonNull(call);Objects.requireNonNull(activationId);Objects.requireNonNull(offerer);Objects.requireNonNull(answerer);Objects.requireNonNull(group);
@@ -22,7 +23,12 @@ public final class NegotiationRelay implements AutoCloseable {
         public Description(CallId call,long negotiationId,long iceGeneration,AuthenticatedSession sender,UUID requestId,Kind kind,String body){this(call,negotiationId,iceGeneration,sender,requestId,kind,body,null);}
         public Description {Objects.requireNonNull(call);Objects.requireNonNull(sender);Objects.requireNonNull(requestId);Objects.requireNonNull(kind);Objects.requireNonNull(body);
             if(negotiationId<1||iceGeneration<1||body.isBlank()||body.getBytes(StandardCharsets.UTF_8).length>65536
-                    ||body.codePoints().anyMatch(c->c>=0xd800&&c<=0xdfff))throw new IllegalArgumentException("Invalid bounded description");}
+                    ||body.codePoints().anyMatch(c->c>=0xd800&&c<=0xdfff))throw new IllegalArgumentException("Invalid bounded description");
+            if(original!=null){
+                if(!call.equals(original.callId())||!sender.equals(original.sender())||!requestId.equals(original.requestId().value())||!kind.name().equals(original.type().name())||!CommandScope.call(call).equals(original.scope())||original.target()!=null||original.negotiationId()==null||original.negotiationId().value()!=negotiationId||original.iceGeneration()==null||original.iceGeneration().value()!=iceGeneration||!original.intentHash().matches("[0-9a-f]{64}")||original.payloadJson().getBytes(StandardCharsets.UTF_8).length>81920)throw new IllegalArgumentException("Native description binding mismatch");
+                try{var payload=JSON.readTree(original.payloadJson());if(payload==null||!payload.isObject()||payload.size()!=1||!payload.path("sdp").isTextual()||!body.equals(payload.path("sdp").textValue()))throw new IllegalArgumentException("Native description payload mismatch");}catch(java.io.IOException invalid){throw new IllegalArgumentException("Invalid native description payload",invalid);}
+            }
+        }
         @Override public String toString(){return "Description[kind="+kind+", negotiationId="+negotiationId+"]";}
     }
     @FunctionalInterface public interface NativeAuthorization {
