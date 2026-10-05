@@ -48,7 +48,7 @@ public final class ScenarioRunner {
     }
     private final SocketGauge socketGauge=new SocketGauge();
     private final ActiveTracePool<Long,Round> activeTraces=new ActiveTracePool<>(200000);
-    private long planned(long start,long ordinal,long rate){return scenario.has("burst")?burstArrivalNanos(start,ordinal,rate,scenario.path("burst").path("multiplier").asLong(),scenario.path("burst").path("seconds").asLong()):arrivalNanos(start,ordinal,rate);}
+    private long planned(long start,long ordinal,long rate){return scenario.has("burst")?burstArrivalNanos(start,ordinal,rate,scenario.path("burst").path("multiplier").asLong(1),scenario.path("burst").path("seconds").asLong(0)):arrivalNanos(start,ordinal,rate);}
     private final EvidenceWriter evidence=new EvidenceWriter();
     private final ConcurrentHashMap<Long,State> states=new ConcurrentHashMap<>();
     private final AtomicLong peakSockets=new AtomicLong(),liveSockets=new AtomicLong(),established=new AtomicLong(),peakEstablished=new AtomicLong(),crossAttempts=new AtomicLong(),callAttempts=new AtomicLong(),relayFrames=new AtomicLong(),registrations=new AtomicLong(),reconnects=new AtomicLong();
@@ -63,6 +63,7 @@ public final class ScenarioRunner {
             throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");
         if(scenario.has("burst")){
             var burst=scenario.path("burst");if(!burst.isObject())throw new IllegalArgumentException("Invalid burst profile");
+            for(var name:List.of("multiplier","seconds"))if(burst.has(name)&&(!burst.path(name).isIntegralNumber()||!burst.path(name).canConvertToLong()||burst.path(name).longValue()<(name.equals("multiplier")?1:0)))throw new IllegalArgumentException("Invalid burst arrival profile");
             for(var name:List.of("hotDestinationMultiplier","hotBucketMultiplier"))if(burst.has(name)&&(!burst.path(name).isIntegralNumber()||!burst.path(name).canConvertToLong()||!Set.of(1L,5L).contains(burst.path(name).longValue())))
                 throw new IllegalArgumentException("SKEW_PROFILE_NOT_IMPLEMENTED");
         }
