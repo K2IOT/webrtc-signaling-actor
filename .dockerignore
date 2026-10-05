@@ -1,0 +1,7 @@
+# Only the already-built executable enters the build context. Never copy sources,
+# workspace evidence, approved inventories, runtime Secrets or test private keys.
+**
+!Dockerfile
+!signaling-app/
+!signaling-app/target/
+!signaling-app/target/signaling-app-0.1.0-SNAPSHOT-exec.jar

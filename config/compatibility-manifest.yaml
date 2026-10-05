@@ -20,7 +20,7 @@ jqwik: 1.9.3
 testcontainers: 1.21.3
 toxiproxy: 2.12.0
 containers:
-  javaBase: eclipse-temurin:21.0.8_9-jre-jammy
+  javaBase: eclipse-temurin:21.0.8_9-jre-jammy@sha256:cddd554e8d69b48b46e8b0c9d1ce72ae5fe8d84819dcdb7131328531e9cc100b
   postgres: ghcr.io/cloudnative-pg/postgresql:17.6@sha256:b6b76792061813539ff3c082a41e5e9e8e526b64c495119b7e2d92c80999a7f3
   cloudNativePg: ghcr.io/cloudnative-pg/cloudnative-pg:1.27.0@sha256:3d9da468ac1df63e38ce8def562f8cfb7f4d703e2e41782991d45c7acd33fd5a
 kubernetes: 1.33.5
