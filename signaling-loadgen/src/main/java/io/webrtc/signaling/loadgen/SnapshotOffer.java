@@ -22,5 +22,16 @@ final class SnapshotOffer {
         if(participant==null||!participant.path("connectionId").isTextual()||participant.path("connectionId").asText().isEmpty()||!participant.path("connectionId").equals(offerer.path("connectionId")))return Optional.empty();
         return ids;
     }
+    static boolean needsFreshRound(JsonNode snapshot,Session local,long lastOfferedRound,boolean recovering) {
+        var result=snapshot.path("result");var negotiation=result.path("negotiation");
+        if(local==null||!snapshot.path("type").asText().equals("CALL_SNAPSHOT")||!result.path("code").asText().equals("SNAPSHOT")||!List.of("CONNECTING","ESTABLISHED").contains(result.path("state").asText()))return false;
+        var participant=local.matches(result.path("caller"))?result.path("caller"):local.matches(result.path("winner"))?result.path("winner"):null;
+        if(participant==null||!participant.path("connectionId").isTextual()||participant.path("connectionId").asText().isBlank())return false;
+        if(negotiation.path("state").asText().equals("INVALIDATED"))return true;
+        if(!recovering)return false;
+        if(negotiation.path("state").asText().equals("COMPLETE"))return true;
+        var ids=ScenarioRunner.roundIds(snapshot);
+        return ids.isPresent()&&Long.parseLong(ids.get().negotiation())<=lastOfferedRound;
+    }
     private SnapshotOffer(){}
 }

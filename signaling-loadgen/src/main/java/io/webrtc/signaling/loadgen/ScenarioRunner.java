@@ -26,7 +26,7 @@ public final class ScenarioRunner {
     private static final ObjectMapper YAML=new ObjectMapper(new YAMLFactory()).findAndRegisterModules();
     private record Token(String text,AuthPrincipal principal){@Override public String toString(){return "Token[redacted]";}}
     private record Round(String call,String negotiation,String ice,NegotiationTrace trace){Round(String call,String negotiation,String ice){this(call,negotiation,ice,new NegotiationTrace(System.nanoTime(),1_000_000_000L,256));}}
-    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup;volatile String call;volatile UUID invite;volatile Round round;volatile SnapshotOffer.Session session;volatile long lastOfferedRound;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;State(VirtualClient c){client=c;}}
+    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup,recovering,negotiating;volatile String call;volatile UUID invite;volatile Round round;volatile SnapshotOffer.Session session;volatile long lastOfferedRound;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;State(VirtualClient c){client=c;}}
     public record RoundIds(String negotiation,String ice){}
     public static Optional<RoundIds> roundIds(JsonNode snapshot){
         String round=snapshot.path("negotiationId").asText("0"),ice=snapshot.path("iceGeneration").asText("0");
@@ -175,7 +175,7 @@ public final class ScenarioRunner {
         case "ANSWER"->{synchronized(state){if(state.round!=null)state.round.trace().answerObserved();}}
         case "END_OF_CANDIDATES"->{} // The peer's terminal sequence never reopens or echoes our local trace.
         case "ESTABLISHED"->{if(state.outgoing&&!state.established){state.established=true;long count=established.incrementAndGet();peakEstablished.accumulateAndGet(count,Math::max);state.hangupAt=now+Duration.ofSeconds(targets.path("meanCallSeconds").asLong()).toNanos();}}
-        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.cursor.clear(state.call);state.call=null;state.invite=null;state.lastOfferedRound=0;state.accepting=false;activeTraces.remove(client.index(),state.round);state.round=null;state.outgoing=false;}
+        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.cursor.clear(state.call);state.call=null;state.invite=null;state.lastOfferedRound=0;state.accepting=false;state.recovering=false;state.negotiating=false;activeTraces.remove(client.index(),state.round);state.round=null;state.outgoing=false;}
         case "AUTH_EXPIRING"->client.refresh(now);
         case "RECONNECT"->client.close();
         default->{}
@@ -189,16 +189,27 @@ public final class ScenarioRunner {
                 if(error!=null||reply.path("type").asText().equals("ERROR")||!Objects.equals(requestedCall,state.call)||generation!=state.client.generation())return;
                 try{
                     if(!state.cursor.accept(reply.path("callId").asText(),nativeVersion(reply)))return;
-                    if(!state.outgoing)return;
+                    if(SnapshotOffer.needsFreshRound(reply,state.session,state.lastOfferedRound,state.recovering)){requestFreshRound(state,requestedCall,generation);return;}
                     var ids=SnapshotOffer.freshRound(reply,state.session,state.lastOfferedRound);if(ids.isEmpty())return;
-                    var round=ids.get();state.lastOfferedRound=Long.parseLong(round.negotiation());state.round=new Round(requestedCall,round.negotiation(),round.ice());activeTraces.put(state.client.index(),state.round);
+                    var round=ids.get();state.recovering=false;state.lastOfferedRound=Long.parseLong(round.negotiation());state.round=new Round(requestedCall,round.negotiation(),round.ice());activeTraces.put(state.client.index(),state.round);
                     sendForCall(state,requestedCall,"OFFER",round.negotiation(),round.ice(),JSON.createObjectNode().put("sdp",offer),System.nanoTime(),EvidenceWriter.Operation.RELAY);
                 }catch(RuntimeException invalid){fail("SYNC_WIRE_CONTRACT_INVALID");}
             }});
         }
     }
+    private void recover(State state,String call,long generation){
+        synchronized(state){if(!Objects.equals(call,state.call)||generation!=state.client.generation()||!state.client.authenticated()||state.recovering)return;state.recovering=true;activeTraces.remove(state.client.index(),state.round);state.round=null;sync(state,System.nanoTime());}
+    }
+    private void requestFreshRound(State state,String call,long generation){
+        if(state.negotiating)return;state.recovering=true;state.negotiating=true;activeTraces.remove(state.client.index(),state.round);state.round=null;
+        sendForCall(state,call,"NEGOTIATE_REQUEST",null,null,JSON.createObjectNode().put("iceRestart",true),System.nanoTime(),EvidenceWriter.Operation.NEGOTIATE).whenComplete((reply,error)->{synchronized(state){
+            if(!Objects.equals(call,state.call)||generation!=state.client.generation())return;state.negotiating=false;
+            if(error!=null||!reply.path("type").asText().equals("ACK_COMMITTED")||!reply.path("ackCommitted").asBoolean()||!reply.path("callId").asText().equals(call)||!reply.path("result").path("status").asText().equals("FINAL")||!reply.path("result").path("code").asText().equals("NEGOTIATION_GRANTED")){fail("RECOVERY_NEGOTIATION_NOT_COMMITTED");return;}
+            sync(state,System.nanoTime());
+        }});
+    }
     private CompletionStage<JsonNode> send(State state,String type,String negotiation,String ice,ObjectNode payload,long intended,EvidenceWriter.Operation operation){return sendForCall(state,state.call,type,negotiation,ice,payload,intended,operation);}
-    private CompletionStage<JsonNode> sendForCall(State state,String call,String type,String negotiation,String ice,ObjectNode payload,long intended,EvidenceWriter.Operation operation){var body=JSON.createObjectNode().put("v",1).put("type",type).put("requestId",DistributedLoadGenerator.operation(seed,state.client.index(),type,state.operations.incrementAndGet()).toString());if(call!=null)body.put("callId",call);if(negotiation!=null)body.put("negotiationId",negotiation);if(ice!=null)body.put("iceGeneration",ice);body.set("payload",payload);return state.client.request(body,intended,operation);}
+    private CompletionStage<JsonNode> sendForCall(State state,String call,String type,String negotiation,String ice,ObjectNode payload,long intended,EvidenceWriter.Operation operation){var body=JSON.createObjectNode().put("v",1).put("type",type).put("requestId",DistributedLoadGenerator.operation(seed,state.client.index(),type,state.operations.incrementAndGet()).toString());if(call!=null)body.put("callId",call);if(negotiation!=null)body.put("negotiationId",negotiation);if(ice!=null)body.put("iceGeneration",ice);body.set("payload",payload);long generation=state.client.generation();var original=state.client.request(body,intended,operation);if(Set.of("OFFER","ANSWER","ICE_CANDIDATES","END_OF_CANDIDATES").contains(type))original.whenComplete((reply,error)->{if(error==null&&reply.path("type").asText().equals("ERROR")&&reply.path("error").path("code").asText().equals("RESYNC_REQUIRED"))recover(state,call,generation);});return original;}
     private Map<Long,Token> loadInventory(Path file,Map<Long,Token> previous)throws Exception {boundedPath(file.toString(),config.path("maxIdentityBytes").asLong());var values=new HashMap<Long,Token>();var keys=new HashSet<io.webrtc.signaling.protocol.Identity.SessionKey>();try(var reader=Files.newBufferedReader(file)){String line;while((line=boundedLine(reader))!=null){var node=JSON.readTree(line);long index=node.path("socketIndex").asLong(-1);if(index<range.start()||index>=range.end()||values.containsKey(index))throw new IllegalArgumentException("Inventory range duplicate/mismatch");String text=node.path("token").asText();var principal=verifier.validate(text,Instant.now());if(!principal.userId().value().equals(user(DistributedLoadGenerator.userIndex(index,users)))||!keys.add(principal.key())||previous!=null&&(!previous.get(index).principal().key().equals(principal.key())||!previous.get(index).principal().userId().equals(principal.userId())))throw new IllegalArgumentException("Inventory identity mismatch");values.put(index,new Token(text,principal));if(values.size()>config.path("localSocketLimit").asInt())throw new IllegalArgumentException("Inventory exceeds local bounds");}}if(values.size()!=range.size())throw new IllegalArgumentException("Inventory does not cover worker range");return Map.copyOf(values);}
     private static String boundedLine(BufferedReader reader)throws IOException {var result=new StringBuilder();int next;while((next=reader.read())!=-1&&next!='\n'){if(result.length()>=16384)throw new IOException("Inventory line exceeds bound");result.append((char)next);}return next==-1&&result.isEmpty()?null:result.toString();}
     private Map<String,Object> resources(long elapsed)throws IOException {
