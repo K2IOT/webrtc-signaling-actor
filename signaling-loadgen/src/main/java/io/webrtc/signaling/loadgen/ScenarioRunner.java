@@ -26,7 +26,7 @@ public final class ScenarioRunner {
     private static final ObjectMapper YAML=new ObjectMapper(new YAMLFactory()).findAndRegisterModules();
     private record Token(String text,AuthPrincipal principal){@Override public String toString(){return "Token[redacted]";}}
     private record Round(String call,String negotiation,String ice,NegotiationTrace trace){Round(String call,String negotiation,String ice){this(call,negotiation,ice,new NegotiationTrace(System.nanoTime(),1_000_000_000L,256));}}
-    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting;volatile String call;volatile UUID invite;volatile Round round;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt;State(VirtualClient c){client=c;}}
+    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup;volatile String call;volatile UUID invite;volatile Round round;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;State(VirtualClient c){client=c;}}
     public record RoundIds(String negotiation,String ice){}
     public static Optional<RoundIds> roundIds(JsonNode snapshot){
         String round=snapshot.path("negotiationId").asText("0"),ice=snapshot.path("iceGeneration").asText("0");
@@ -85,7 +85,7 @@ public final class ScenarioRunner {
                 batch=0;while(relayRate>0&&planned(start,relayOrdinal,relayRate)<=now&&batch++<1024){relay(random,relayOrdinal,planned(start,relayOrdinal,relayRate));relayOrdinal+=workers;}
                 if(batch>=1024){limited.set(true);fail("RELAY_SCHEDULER_LIMIT");}
                 batch=0;while(registerRate>0&&arrivalNanos(start,registerOrdinal,registerRate)<=now&&batch++<1024){var s=choose(random);if(s!=null&&s.client.authenticated())s.client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");});else evidence.missed(arrivalNanos(start,registerOrdinal,registerRate),now);registerOrdinal+=workers;}
-                int scanCount=Math.max(1,(int)Math.min(2048,(range.size()+99)/100));for(int n=0;n<scanCount&&range.size()>0;n++){if(scan>=range.end())scan=range.start();var s=states.get(scan++);if(s.closed&&now>=s.reconnectAt){s.closed=false;connect(s,now);reconnects.incrementAndGet();}if(s.client.authenticated()){finishTrace(s,now);if(now>=s.nextHeartbeat){s.client.heartbeat();s.nextHeartbeat=now+Duration.ofSeconds(30).toNanos();}if(now>=s.nextRefresh){s.client.refresh(now);s.nextRefresh=now+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();}if(s.outgoing&&s.established&&now>=s.hangupAt){send(s,"HANGUP",null,null,JSON.createObjectNode(),now,EvidenceWriter.Operation.HANGUP);s.hangupAt=Long.MAX_VALUE;}}}
+                int scanCount=Math.max(1,(int)Math.min(2048,(range.size()+99)/100));for(int n=0;n<scanCount&&range.size()>0;n++){if(scan>=range.end())scan=range.start();var s=states.get(scan++);if(s.closed&&now>=s.reconnectAt){s.closed=false;connect(s,now);reconnects.incrementAndGet();}if(s.client.authenticated()){if(s.call==null&&s.invite!=null&&now>=s.nextLookup)lookupInvite(s,now);finishTrace(s,now);if(now>=s.nextHeartbeat){s.client.heartbeat();s.nextHeartbeat=now+Duration.ofSeconds(30).toNanos();}if(now>=s.nextRefresh){s.client.refresh(now);s.nextRefresh=now+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();}if(s.outgoing&&s.established&&now>=s.hangupAt){send(s,"HANGUP",null,null,JSON.createObjectNode(),now,EvidenceWriter.Operation.HANGUP);s.hangupAt=Long.MAX_VALUE;}}}
                 if(now-lastRefreshPoll>=1_000_000_000L){lastRefreshPoll=now;if(refreshing!=null&&refreshing.isDone()){try{inventory.set(refreshing.join());}catch(CompletionException invalid){fail("REFRESH_INVENTORY_INVALID");}refreshing=null;}var path=Path.of(config.path("refreshIdentitiesFile").asText());long modified=Files.getLastModifiedTime(path).toMillis();if(refreshing==null&&modified!=refreshStamp){refreshStamp=modified;var previous=inventory.get();refreshing=CompletableFuture.supplyAsync(()->{try{return loadInventory(path,previous);}catch(Exception invalid){throw new CompletionException(new IllegalStateException("Approved refresh inventory invalid"));}},refreshExecutor);}}
                 if(now-lastSample>=1_000_000_000L){long expected=now;for(var loop:loops)loop.execute(()->eventLoopLag.accumulateAndGet(Math.max(0,System.nanoTime()-expected),Math::max));var sample=resources(Math.max(0,now-start));samples.write(JSON.writeValueAsString(sample));samples.newLine();samples.flush();if(((Map<?,?>)sample.get("headroom")).values().stream().anyMatch(value->!Boolean.TRUE.equals(value))){limited.set(true);fail("GENERATOR_HEADROOM_EXHAUSTED");}lastSample=now;}
                 Thread.sleep(10);
@@ -102,7 +102,7 @@ public final class ScenarioRunner {
     private String user(long index){return config.path("userPrefix").asText()+index;}
     private String home(String user){try{byte[] hash=MessageDigest.getInstance("SHA-256").digest(user.getBytes(StandardCharsets.UTF_8));return buckets[(hash[6]&63)<<8|(hash[7]&255)];}catch(NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
     private State choose(SplittableRandom random){if(range.size()==0)return null;return states.get(range.start()+random.nextLong(range.size()));}
-    private void connect(State state,long intended){var connecting=state.client.connect(intended);long generation=state.client.generation();connecting.whenComplete((value,error)->{if(state.client.generation()!=generation)return;if(error!=null){state.client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});return;}socketGauge.authenticated(state.client.index(),generation);registrations.incrementAndGet();state.nextHeartbeat=System.nanoTime()+30_000_000_000L;state.nextRefresh=System.nanoTime()+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();if(state.call!=null){ReconnectFlow.afterResume(send(state,"RESUME",null,null,JSON.createObjectNode(),System.nanoTime(),EvidenceWriter.Operation.RECONNECT),()->state.client.generation()==generation&&state.client.authenticated(),()->sync(state,System.nanoTime())).whenComplete((v,e)->{if(e!=null&&state.client.generation()==generation)fail("RESUME_NOT_COMMITTED");});}else if(state.invite!=null){var lookup=JSON.createObjectNode().put("v",1).put("type","GET_COMMAND_RESULT").put("requestId",state.invite.toString());lookup.putObject("payload");state.client.request(lookup,System.nanoTime(),EvidenceWriter.Operation.SYNC);}});}
+    private void connect(State state,long intended){var connecting=state.client.connect(intended);long generation=state.client.generation();connecting.whenComplete((value,error)->{if(state.client.generation()!=generation)return;if(error!=null){state.client.close().whenComplete((v,e)->{if(e!=null)fail("SOCKET_CLEANUP_UNKNOWN");else{state.closed=true;state.reconnectAt=System.nanoTime()+1_000_000_000L;}});return;}socketGauge.authenticated(state.client.index(),generation);registrations.incrementAndGet();state.nextHeartbeat=System.nanoTime()+30_000_000_000L;state.nextRefresh=System.nanoTime()+Duration.ofSeconds(targets.path("refreshSeconds").asLong()).toNanos();if(state.call!=null){ReconnectFlow.afterResume(send(state,"RESUME",null,null,JSON.createObjectNode(),System.nanoTime(),EvidenceWriter.Operation.RECONNECT),()->state.client.generation()==generation&&state.client.authenticated(),()->sync(state,System.nanoTime())).whenComplete((v,e)->{if(e!=null&&state.client.generation()==generation)fail("RESUME_NOT_COMMITTED");});}else if(state.invite!=null)lookupInvite(state,System.nanoTime());});}
     private void invite(CallSchedule.Assignment assignment){
         var state=states.get(assignment.callerSocket());long intended=assignment.intendedNanos();String target=user(assignment.targetUser());
         if(state==null){evidence.missed(EvidenceWriter.Operation.INVITE,intended,System.nanoTime());return;}
@@ -111,7 +111,34 @@ public final class ScenarioRunner {
             state.outgoing=true;state.invite=DistributedLoadGenerator.operation(seed,state.client.index(),"INVITE",assignment.ordinal());UUID originalInvite=state.invite;
             var frame=JSON.createObjectNode().put("v",1).put("type","INVITE").put("requestId",state.invite.toString());frame.putObject("payload").put("targetUserId",target);
             callAttempts.incrementAndGet();if(!home(target).equals(state.client.cell()))crossAttempts.incrementAndGet();
-            state.client.request(frame,intended,EvidenceWriter.Operation.INVITE).whenComplete((reply,error)->{synchronized(state){if(!Objects.equals(state.invite,originalInvite))return;if(error==null&&!reply.path("type").asText().equals("ERROR")&&reply.hasNonNull("callId")){attach(state,reply);}else if(error==null&&reply.path("type").asText().equals("ERROR")){state.outgoing=false;state.invite=null;}}});
+            state.nextLookup=Long.MAX_VALUE;
+            state.client.request(frame,intended,EvidenceWriter.Operation.INVITE).whenComplete((reply,error)->resolveInvite(state,originalInvite,error==null?reply:null,false));
+        }
+    }
+    private void lookupInvite(State state,long intended){
+        synchronized(state){
+            if(state.lookup||state.invite==null||state.call!=null||!state.client.writable())return;
+            UUID original=state.invite;long generation=state.client.generation();state.lookup=true;state.nextLookup=Long.MAX_VALUE;
+            var request=JSON.createObjectNode().put("v",1).put("type","GET_COMMAND_RESULT").put("requestId",original.toString());request.putObject("payload");
+            state.client.request(request,intended,EvidenceWriter.Operation.SYNC).whenComplete((reply,error)->{synchronized(state){
+                state.lookup=false;
+                if(!Objects.equals(state.invite,original))return;
+                if(generation!=state.client.generation()){state.nextLookup=System.nanoTime()+1_000_000_000L;return;}
+                resolveInvite(state,original,error==null?reply:null,true);
+            }});
+        }
+    }
+    private void resolveInvite(State state,UUID original,JsonNode reply,boolean afterLookup){
+        synchronized(state){
+            if(!Objects.equals(state.invite,original))return;
+            try{switch(InviteOutcome.classify(original,reply)){
+                case REJECTED->{if(state.call==null){state.outgoing=false;state.invite=null;}}
+                case ENDED->{if(attach(state,reply)){state.cursor.clear(state.call);state.call=null;state.invite=null;state.outgoing=false;}}
+                case CREATED->{if(attach(state,reply)&&afterLookup){long generation=state.client.generation();
+                    ReconnectFlow.afterResume(send(state,"RESUME",null,null,JSON.createObjectNode(),System.nanoTime(),EvidenceWriter.Operation.RECONNECT),()->state.client.generation()==generation&&state.client.authenticated(),()->sync(state,System.nanoTime()))
+                        .whenComplete((v,e)->{if(e!=null&&state.client.generation()==generation)fail("RESUME_NOT_COMMITTED");});}}
+                case UNRESOLVED->{state.nextLookup=System.nanoTime()+1_000_000_000L;if(reply!=null&&reply.path("error").path("code").asText().equals("RESULT_EXPIRED"))fail("INVITE_RESULT_UNRESOLVED");}
+            }}catch(RuntimeException invalid){fail("INVITE_RESULT_WIRE_CONTRACT_INVALID");}
         }
     }
     private void relay(SplittableRandom random,long ordinal,long intended){
