@@ -46,3 +46,11 @@ Unmeasured intervals and missing decoder dependencies block qualification.
 
 `tests/fixtures/TEST_ONLY_latency.hdr` is a four-sample Java-generated unit fixture.
 It is never release evidence and contains no credentials or production measurements.
+
+Original worker JSONL also records live authenticated sockets, established caller calls
+and cumulative call/cross-cell/relay/registration/reconnect counts for every sample.
+The verifier requires integer counts, bounds gauges by the original socket range and
+summary peak, rejects counter regression and rejects any counter exceeding its original
+summary. Samples must cover the start and entire duration without hidden gaps.
+Simultaneous stage capacity still requires the actual collector to align all worker
+intervals and native cell measurements; separate peaks do not establish P2 concurrency.

@@ -150,8 +150,9 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         import json,shutil
         context,_=self.gate('capacity');directory=self.root/'worker';directory.mkdir()
         histogram=MODULE.parent/'tests'/'fixtures'/'TEST_ONLY_latency.hdr';shutil.copyfile(histogram,directory/'latency.hdr');shutil.copyfile(histogram,directory/'control.hdr')
-        summary={**context,'status':'PASSED','testOnly':False,'workerIndex':0,'workerCount':1,'workerHostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketRange':{'start':0,'end':4},'rawHistogram':'latency.hdr','generatorSamples':'generator.jsonl','failures':[],'observed':{'attempts':4,'successes':4,'failures':0,'missedIntendedArrivals':0,'lateDispatches':0,'peakAuthenticatedSockets':4,'durationSeconds':1,'latencies':{'CONTROL':{'samples':4,'p50Ms':2.0,'p95Ms':20.015,'p99Ms':20.015,'p999Ms':20.015}}}}
+        summary={**context,'status':'PASSED','testOnly':False,'workerIndex':0,'workerCount':1,'workerHostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketRange':{'start':0,'end':4},'rawHistogram':'latency.hdr','generatorSamples':'generator.jsonl','failures':[],'observed':{'attempts':4,'successes':4,'failures':0,'missedIntendedArrivals':0,'lateDispatches':0,'peakAuthenticatedSockets':4,'peakEstablishedCallerCalls':0,'callAttempts':0,'crossCellAttempts':0,'relayFrames':0,'registrations':4,'reconnects':0,'durationSeconds':1,'latencies':{'CONTROL':{'samples':4,'p50Ms':2.0,'p95Ms':20.015,'p99Ms':20.015,'p999Ms':20.015}}}}
         sample={'elapsedNanos':1000000000,'sampleIntervalNanos':1000000000,'cpu':.1,'nicReceiveBytesPerSecond':1,'nicTransmitBytesPerSecond':1,'nicCapacityBytesPerSecond':1000,'fd':1,'fdSoftLimit':100,'eventLoopLagNanos':0,'pendingOperations':0,'maxPendingOperations':100,'pendingBytes':0,'maxPendingBytes':1000,'headroom':{key:True for key in ('cpu','nic','fd','eventLoop','pendingOperations','pendingBytes')}}
+        sample['workload']={'authenticatedSockets':4,'establishedCallerCalls':0,'callAttempts':0,'crossCellAttempts':0,'relayFrames':0,'registrations':4,'reconnects':0}
         (directory/'summary.json').write_text(json.dumps(summary));(directory/'generator.jsonl').write_text(json.dumps(sample)+'\n')
         descriptor={'workerIndex':0,'workerCount':1,'hostId':'TEST_ONLY_HOST','sourceIp':'192.0.2.1','socketStart':0,'socketEnd':4,'summaryArtifact':'worker/summary.json','rawHistogramArtifact':'worker/latency.hdr','generatorSamplesArtifact':'worker/generator.jsonl','phaseArtifacts':{'CONTROL':'worker/control.hdr'}}
         records={name:{} for name in ('worker/summary.json','worker/latency.hdr','worker/generator.jsonl','worker/control.hdr')}
@@ -200,5 +201,26 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         last={**sample,'elapsedNanos':2800000000,'sampleIntervalNanos':100000000}
         (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n'+json.dumps(last)+'\n')
         self.assertIn('WORKER_RESOURCE_COVERAGE_INCOMPLETE',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_worker_samples_must_measure_live_workload_as_well_as_headroom(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture();sample.pop('workload')
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        self.assertIn('WORKER_WORKLOAD_MEASUREMENT_INVALID',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_cumulative_workload_counters_cannot_exceed_original_summary(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture();sample['workload']['registrations']=5
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        self.assertIn('WORKER_WORKLOAD_MEASUREMENT_INVALID',verifier.worker_errors(self.root,worker,context,records))
+    def test_worker_cumulative_counters_cannot_regress_or_use_boolean_counts(self):
+        import json,copy
+        context,worker,records,summary,sample=self.worker_fixture();summary['observed']['durationSeconds']=2
+        (self.root/'worker'/'summary.json').write_text(json.dumps(summary))
+        last=copy.deepcopy(sample);last['elapsedNanos']=2000000000;last['workload']['registrations']=3
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n'+json.dumps(last)+'\n')
+        self.assertIn('WORKER_WORKLOAD_MEASUREMENT_INVALID',verifier.worker_errors(self.root,worker,context,records))
+        sample['workload']['establishedCallerCalls']=False
+        (self.root/'worker'/'generator.jsonl').write_text(json.dumps(sample)+'\n')
+        self.assertIn('WORKER_WORKLOAD_MEASUREMENT_INVALID',verifier.worker_errors(self.root,worker,context,records))
 
 if __name__=='__main__':unittest.main()

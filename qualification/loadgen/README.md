@@ -31,6 +31,8 @@ Latency begins at intended arrival on the monotonic clock. Late dispatch, reject
 local work and server failures remain in counters; no coordinated-omission correction
 is used to hide missed intended arrivals. Keep compressed raw HDR histograms and
 resource snapshots, including CPU, NIC, FD, event-loop lag and pending count/bytes.
+Every snapshot also includes live socket/caller-call gauges and cumulative workload
+counts so the original time series can establish concurrency and rates.
 All workers share `scheduledStartAt`; authenticated warmup must finish before that
 common instant. ICE traces seal once at their actual last admitted sequence; the worker
 never echoes a peer END or sends a later candidate for a sealed trace. Live traces

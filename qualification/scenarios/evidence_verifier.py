@@ -225,7 +225,7 @@ def worker_errors(root,worker,manifest,records):
         samples=artifact_path(root,worker['generatorSamplesArtifact'])
         if samples.stat().st_size>134217728:errors.append('WORKER_SAMPLES_EXCEED_BOUND')
         else:
-            count=0;previous=-1;last=0
+            count=0;previous=-1;last=0;previous_workload={}
             with samples.open() as stream:
                 while line:=stream.readline(8193):
                     count+=1
@@ -237,6 +237,15 @@ def worker_errors(root,worker,manifest,records):
                     interval=sample.get('sampleIntervalNanos')
                     gap=elapsed-max(0,previous)
                     if gap>2250000000 or not number(interval,1,2000000000) or gap>interval+250000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
+                    workload=mapping(sample.get('workload'))
+                    for field,maximum in (('authenticatedSockets',stop-start),('establishedCallerCalls',observed.get('peakEstablishedCallerCalls'))):
+                        value=workload.get(field)
+                        if type(value) is not int or type(maximum) is not int or not 0<=value<=maximum:errors.append('WORKER_WORKLOAD_MEASUREMENT_INVALID')
+                    for field in ('callAttempts','crossCellAttempts','relayFrames','registrations','reconnects'):
+                        value=workload.get(field);maximum=observed.get(field)
+                        if type(value) is not int or type(maximum) is not int or not previous_workload.get(field,0)<=value<=maximum:errors.append('WORKER_WORKLOAD_MEASUREMENT_INVALID')
+                    if type(workload.get('crossCellAttempts')) is int and type(workload.get('callAttempts')) is int and workload['crossCellAttempts']>workload['callAttempts']:errors.append('WORKER_WORKLOAD_MEASUREMENT_INVALID')
+                    previous_workload=workload
                     previous=elapsed;last=elapsed
             if count==0 or not number(observed.get('durationSeconds'),1) or last<max(0,observed['durationSeconds']-1)*1000000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
     except Exception:errors.append('INVALID_OR_MISSING_WORKER_ARTIFACT')
