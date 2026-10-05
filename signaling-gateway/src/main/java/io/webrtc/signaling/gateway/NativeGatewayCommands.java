@@ -28,7 +28,7 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
         public RpcOperation<SessionReply> sessionTracked(SessionCommand c,Duration b){return client.sessionTracked(c,b);}
         public CompletionStage<InternalReply> call(CellRpcServer.Operation op,InternalCommand c,Duration b){return client.call(op,c,b);}
     };}
-    private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
+    private static final ObjectMapper JSON=new ObjectMapper(com.fasterxml.jackson.core.JsonFactory.builder().enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).build()).findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final NativeSessionHandler.GatewayIdentity gateway;
     private final Function<UserId,ProofBindings.TrustedHome> homes;
     private final Network network;
@@ -69,6 +69,13 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                         if(operation==CellRpcServer.Operation.RELAY&&result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");
                         if(!result.getOperationId().equals(wire.getOperationId())||!result.getCallId().equals(wire.getCallId())||!result.getErrorCode().isEmpty()&&!(result.getStatus().equals("PENDING")&&result.getErrorCode().equals("WORKFLOW_PENDING")))return error(original,result.getErrorCode().isEmpty()?"OUTCOME_UNKNOWN":result.getErrorCode());
                         try{
+                            if(operation==CellRpcServer.Operation.RELAY){
+                                if(!result.getStatus().equals("WRITE_COMPLETED"))return error(original,"OUTCOME_UNKNOWN");
+                                var receipt=JSON.readValue(result.getResult().toByteArray(),RelayWriteReceipt.class);
+                                if(!receipt.matches(command)||receipt.callVersion()!=result.getCallVersion())return error(original,"OUTCOME_UNKNOWN");
+                                var value=envelope(original,"COMMAND_RESULT").put("ackCommitted",false).put("callId",receipt.call().value()).put("callVersion",Long.toString(receipt.callVersion())).put("negotiationId",Long.toString(receipt.negotiationId())).put("iceGeneration",Long.toString(receipt.iceGeneration()));
+                                value.putObject("result").put("status","VOLATILE").put("code","WRITE_COMPLETED").put("frameType",receipt.type().name());return value.toString();
+                            }
                             if(command.type()==SignalEnvelope.Type.SYNC_CALL){if(result.getAckCommitted())return error(original,"OUTCOME_UNKNOWN");return snapshot(original,JSON.readValue(result.getResult().toByteArray(),CallSnapshotRepository.Snapshot.class));}
                             if(command.type()==SignalEnvelope.Type.GET_COMMAND_RESULT){
                                 if(result.getAckCommitted()||!result.getStatus().equals("READ"))return error(original,"OUTCOME_UNKNOWN");
