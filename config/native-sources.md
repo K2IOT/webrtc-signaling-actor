@@ -161,9 +161,9 @@ execution, the actual connection registry, current gateway boot/security and
 trusted clock sources. Delivery rechecks the full recipient binding and original
 ACTIVE expiry immediately before Netty write, retaining the original write
 receipt through timeout or unknown close. A WRITE_COMPLETED result remains
-volatile. Native coordinator producer, cache/retry integration and complete
-process startup still require installation and end-to-end validation; these
-components alone are not deployment or qualification evidence.
+volatile. The native coordinator producer and cache/retry integration have joined local
+end-to-end validation described below. Complete process startup still requires
+installation; these components alone are not deployment or qualification evidence.
 
 `NativeActorComposition.relayProducer(network, capacity, memory, gatewayClient)`
 now builds the native source-backed round cache and producer. Install it once

@@ -71,3 +71,15 @@ monotonic start; `cleanupFinishedAt` records teardown separately. The evidence
 verifier requires their original UTC/monotonic windows to agree within250ms and
 rejects missing stop metadata or cleanup finishing before the workload. Cleanup
 time cannot enlarge the measured stage duration.
+
+An INVALIDATED snapshot or original relay RESYNC_REQUIRED retires the current
+ICE trace and requests a native restart. The worker sends a new OFFER only
+after a committed NEGOTIATION_GRANTED and a matching native snapshot; unknown
+outcomes fail the worker. Reconnects use reproducible source-seeded full jitter
+with an exponential ceiling from500ms to30s and preserve the original remaining
+HTTP Retry-After minimum (bounded delta/date hints up to24h).
+
+Ordinary traffic and the configured 2x/60s burst are implemented. Nontrivial hot
+destination/bucket multipliers and requested security abuse profiles currently
+fail preflight before opening sockets. Their presence in YAML cannot silently
+produce an ordinary workload presented as skew or security coverage.

@@ -125,6 +125,16 @@ The Python verifier passed 47 unit tests, including an ephemeral complete
 12-gate parser fixture. An original TEST_ONLY drill receipt initially survived a
 signed manifest; it now blocks release, as do receipt candidate binding mismatches.
 The loadgen contract check also passed. These fixtures provide local verification;
-complete native Main installation, loadgen recovery/skew/abuse behavior and real
+complete native Main installation, loadgen skew/abuse behavior and real
 staged production/HA/DR evidence remain open. Tasks 22–24 remain in progress and
 release remains **NOT_QUALIFIED**.
+
+Fresh full verification at `8c228e2` passed **528 tests in 124 fresh reports**,
+zero failures, errors or skips (2026-10-05T16:13:52Z, 4m42s). The Python
+verifier passed 47 tests and the static loadgen contract passed. Native cache
+callbacks now finish outside cache monitors; original pending authorizations
+cannot be reused after their original expiry. Actual WSS tests cover
+INVALIDATED/RESYNC recovery, committed new rounds, source-seeded reconnect
+jitter and original HTTP Retry-After. Requested skew/security profiles fail
+preflight until their drivers exist. Tasks 22–24 remain in progress; these
+local checks do not qualify production release.
