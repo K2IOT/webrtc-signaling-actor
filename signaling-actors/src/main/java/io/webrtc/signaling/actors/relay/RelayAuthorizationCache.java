@@ -38,7 +38,7 @@ public final class RelayAuthorizationCache {
     private final LinkedHashMap<ParticipantKey,Snapshot> snapshots=new LinkedHashMap<>(16,.75f,true);
     private static final class Flight {
         final CompletableFuture<Snapshot> logical=new CompletableFuture<>();
-        final CompletableFuture<Void> physical=new CompletableFuture<>();boolean cleaned,invalidated;
+        final CompletableFuture<Void> physical=new CompletableFuture<>();boolean cleaned;volatile boolean invalidated;
     }
     private final Map<Key,Flight> pending=new HashMap<>();
     public RelayAuthorizationCache(int capacity,int maxPending,LongSupplier clock,
@@ -56,60 +56,52 @@ public final class RelayAuthorizationCache {
         return trusted.getAsBoolean() && value.live(clock.getAsLong())
             && currentGroup.apply(value.callId()).filter(value.group()::equals).isPresent();
     }
-    public synchronized Optional<Snapshot> get(CallId call,AuthenticatedSession sender,long negotiation,long ice) {
+    public Optional<Snapshot> get(CallId call,AuthenticatedSession sender,long negotiation,long ice) {
         if(!trusted.getAsBoolean()){invalidate(call);return Optional.empty();}
-        var key=new ParticipantKey(call,sender);
-        Snapshot value=snapshots.get(key);
-        if(value==null) return Optional.empty();
-        if(!valid(value)) {snapshots.remove(key);return Optional.empty();}
-        return value.sender().equals(sender) && value.negotiationId()==negotiation && value.iceGeneration()==ice
-            ? Optional.of(value):Optional.empty();
+        synchronized(this){var key=new ParticipantKey(call,sender);Snapshot value=snapshots.get(key);
+            if(value==null)return Optional.empty();if(!valid(value)){snapshots.remove(key);return Optional.empty();}
+            return value.sender().equals(sender)&&value.negotiationId()==negotiation&&value.iceGeneration()==ice?Optional.of(value):Optional.empty();}
     }
     public CompletionStage<Snapshot> refresh(CallId call,AuthenticatedSession sender,long negotiation,long ice,Duration budget,Supplier<ActorOperation<Snapshot>> loader){
         return refreshTracked(call,sender,negotiation,ice,budget,loader).logical();
     }
-    public synchronized ActorOperation<Snapshot> refreshTracked(CallId call,AuthenticatedSession sender,
+    public ActorOperation<Snapshot> refreshTracked(CallId call,AuthenticatedSession sender,
             long negotiation,long ice,Duration budget,Supplier<ActorOperation<Snapshot>> loader) {
-        if(budget==null||budget.isNegative()||budget.isZero()||budget.compareTo(Duration.ofSeconds(2))>0)
-            return denied(new IllegalArgumentException("invalid budget"));
-        if(!trusted.getAsBoolean()){
-            invalidate(call);var existing=pending.get(new Key(call,sender,negotiation,ice));
-            return existing==null?denied(new RejectedExecutionException("relay refresh unavailable")):consumer(existing,budget);
-        }
-        var hit=get(call,sender,negotiation,ice);
-        if(hit.isPresent())return new ActorOperation<>(CompletableFuture.completedFuture(hit.get()),CompletableFuture.completedFuture(null));
+        if(budget==null||budget.isNegative()||budget.isZero()||budget.compareTo(Duration.ofSeconds(2))>0)return denied(new IllegalArgumentException("invalid budget"));
         var key=new Key(call,sender,negotiation,ice);
-        var existing=pending.get(key);if(existing!=null)return consumer(existing,budget);
-        if(!trusted.getAsBoolean()||pending.size()>=maxPending)return denied(new RejectedExecutionException("relay refresh unavailable"));
-        var flight=new Flight();pending.put(key,flight);var result=flight.logical;
-        result.whenComplete((v,e)->{synchronized(this){finish(key,flight);}});
-        result.orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS);
+        if(!trusted.getAsBoolean()){invalidate(call);synchronized(this){var existing=pending.get(key);return existing==null?denied(new RejectedExecutionException("relay refresh unavailable")):consumer(existing,budget);}}
+        var hit=get(call,sender,negotiation,ice);if(hit.isPresent())return new ActorOperation<>(CompletableFuture.completedFuture(hit.get()),CompletableFuture.completedFuture(null));
+        final Flight flight;
+        synchronized(this){var warm=snapshots.get(new ParticipantKey(call,sender));
+            if(warm!=null&&warm.negotiationId()==negotiation&&warm.iceGeneration()==ice&&valid(warm))return new ActorOperation<>(CompletableFuture.completedFuture(warm),CompletableFuture.completedFuture(null));
+            var existing=pending.get(key);if(existing!=null)return consumer(existing,budget);
+            if(!trusted.getAsBoolean()||pending.size()>=maxPending)return denied(new RejectedExecutionException("relay refresh unavailable"));
+            flight=new Flight();pending.put(key,flight);}
+        var result=flight.logical;result.whenComplete((v,e)->finish(key,flight));result.orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS);
         final ActorOperation<Snapshot> operation;
-        try {operation=Objects.requireNonNull(loader.get());}
-        catch(Throwable failure){result.completeExceptionally(failure);return consumer(flight,budget);}
+        try{operation=Objects.requireNonNull(loader.get());}
+        catch(Throwable unknown){result.completeExceptionally(unknown);return consumer(flight,budget);}
         operation.logical().whenComplete((value,failure)->{
-            synchronized(this){
-                if(failure!=null)result.completeExceptionally(failure);
-                else if(value==null||!value.callId().equals(call)||!value.sender().equals(sender)
-                        ||value.negotiationId()!=negotiation||value.iceGeneration()!=ice||!valid(value))
-                    result.completeExceptionally(new IllegalStateException("stale relay authorization"));
-                else if(!result.isDone()){put(value);result.complete(value);}
-            }
+            Throwable rejected=failure;
+            try{synchronized(this){if(result.isDone())return;
+                if(flight.invalidated||failure==null&&(value==null||!value.callId().equals(call)||!value.sender().equals(sender)||value.negotiationId()!=negotiation||value.iceGeneration()!=ice||!valid(value)))rejected=new IllegalStateException("stale relay authorization");
+                else if(failure==null)put(value);}}
+            catch(Throwable unavailable){rejected=unavailable;}
+            // User continuations may read other caches/lanes. Never publish while owning this monitor.
+            if(rejected==null)result.complete(value);else result.completeExceptionally(rejected);
         });
-        operation.physicalCompletion().whenComplete((v,e)->{if(e==null)synchronized(this){flight.cleaned=true;finish(key,flight);}});
+        operation.physicalCompletion().whenComplete((v,e)->{if(e==null){synchronized(this){flight.cleaned=true;}finish(key,flight);}});
         return consumer(flight,budget);
     }
     private static ActorOperation<Snapshot> denied(Throwable cause){return new ActorOperation<>(CompletableFuture.failedFuture(cause),CompletableFuture.completedFuture(null));}
-    private static ActorOperation<Snapshot> consumer(Flight flight,Duration budget){
-        CompletionStage<Snapshot> logical=flight.invalidated?CompletableFuture.failedFuture(new IllegalStateException("stale relay authorization")):flight.logical.thenApply(value->value).orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS).minimalCompletionStage();
+    private ActorOperation<Snapshot> consumer(Flight flight,Duration budget){
+        CompletionStage<Snapshot> logical=flight.invalidated?CompletableFuture.failedFuture(new IllegalStateException("stale relay authorization")):flight.logical.thenApply(value->{synchronized(this){if(flight.invalidated||!valid(value))throw new IllegalStateException("stale relay authorization");return value;}}).orTimeout(budget.toNanos(),TimeUnit.NANOSECONDS).minimalCompletionStage();
         return new ActorOperation<>(logical,flight.physical.minimalCompletionStage());
     }
-    private void finish(Key key,Flight flight){if(flight.cleaned&&flight.logical.isDone()){pending.remove(key,flight);flight.physical.complete(null);}}
-    public synchronized void invalidate(CallId call) {
-        snapshots.keySet().removeIf(key->key.call().equals(call));
-        for(var entry:pending.entrySet().stream().filter(e->e.getKey().call().equals(call)).toList()){
-            entry.getValue().invalidated=true;entry.getValue().logical.completeExceptionally(new IllegalStateException("stale relay authorization"));
-        }
+    private void finish(Key key,Flight flight){boolean retire;synchronized(this){retire=flight.cleaned&&flight.logical.isDone();if(retire)pending.remove(key,flight);}if(retire)flight.physical.complete(null);}
+    public void invalidate(CallId call){final List<Flight> invalid;
+        synchronized(this){snapshots.keySet().removeIf(key->key.call().equals(call));invalid=pending.entrySet().stream().filter(e->e.getKey().call().equals(call)).map(Map.Entry::getValue).toList();invalid.forEach(flight->flight.invalidated=true);}
+        invalid.forEach(flight->flight.logical.completeExceptionally(new IllegalStateException("stale relay authorization")));
     }
     public synchronized int pending(){return pending.size();}
     public synchronized int size(){return snapshots.size();}

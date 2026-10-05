@@ -66,4 +66,21 @@ class RelayAuthorizationCacheTest {
         assertThat(denied.logical().toCompletableFuture()).isCompletedExceptionally();trusted.set(true);logical.complete(snapshot(30000000000L,30000000000L,30000000000L));
         assertThat(first.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(cache.get(call,sender,1,1)).isEmpty();physical.complete(null);assertThat(cache.pending()).isZero();
     }
+    @Test void simultaneousNativeCompletionsCannotDeadlockConsumersReadingAnotherRelayCache()throws Exception {
+        var a=cache();var b=cache();var sourceA=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var sourceB=new CompletableFuture<RelayAuthorizationCache.Snapshot>();var barrier=new CountDownLatch(2);var returnedA=new CompletableFuture<Void>();var returnedB=new CompletableFuture<Void>();
+        var workA=a.refreshTracked(call,sender,1,1,Duration.ofSeconds(2),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(sourceA,CompletableFuture.completedFuture(null)));
+        var workB=b.refreshTracked(call,sender,1,1,Duration.ofSeconds(2),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(sourceB,CompletableFuture.completedFuture(null)));
+        java.util.function.Function<RelayAuthorizationCache,Optional<RelayAuthorizationCache.Snapshot>> lookup=other->{barrier.countDown();try{if(!barrier.await(1,TimeUnit.SECONDS))throw new IllegalStateException("TEST_ONLY_BARRIER_TIMEOUT");}catch(InterruptedException interrupted){throw new IllegalStateException(interrupted);}return other.get(call,sender,1,1);};
+        var crossA=workA.logical().thenApply(v->lookup.apply(b));var crossB=workB.logical().thenApply(v->lookup.apply(a));
+        Thread.ofPlatform().daemon().name("TEST_ONLY_NATIVE_REFRESH_A").start(()->{sourceA.complete(snapshot(30000000000L,30000000000L,30000000000L));returnedA.complete(null);});
+        Thread.ofPlatform().daemon().name("TEST_ONLY_NATIVE_REFRESH_B").start(()->{sourceB.complete(snapshot(30000000000L,30000000000L,30000000000L));returnedB.complete(null);});
+        CompletableFuture.allOf(returnedA,returnedB).get(1500,TimeUnit.MILLISECONDS);assertThat(crossA.toCompletableFuture().join()).isPresent();assertThat(crossB.toCompletableFuture().join()).isPresent();workA.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);workB.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+    }
+
+    @Test void expiredSuccessWithUnknownOriginalCleanupCannotAuthorizeAnotherFrame(){
+        var cache=cache();var cleanup=new CompletableFuture<Void>();var original=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->new io.webrtc.signaling.actors.admission.ActorOperation<>(CompletableFuture.completedFuture(snapshot(3000000000L,30000000000L,30000000000L)),cleanup));
+        assertThat(original.logical().toCompletableFuture()).isDone();assertThat(original.physicalCompletion().toCompletableFuture()).isNotDone();now.set(4000000000L);
+        var late=cache.refreshTracked(call,sender,1,1,Duration.ofSeconds(1),()->{throw new AssertionError("Original cleanup still owns the refresh slot");});assertThat(late.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(late.physicalCompletion().toCompletableFuture()).isNotDone();cleanup.complete(null);assertThat(late.physicalCompletion().toCompletableFuture()).isDone();assertThat(cache.pending()).isZero();
+    }
+
 }
