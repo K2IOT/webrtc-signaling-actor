@@ -275,4 +275,18 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_SOURCE_CONFIGURATION_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
+    def test_worker_cannot_stretch_monotonic_samples_past_its_actual_finish(self):
+        import json,copy
+        context,worker,records,summary,sample=self.worker_fixture();summary['observed']['durationSeconds']=3
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        last=copy.deepcopy(sample);last['elapsedNanos']=3000000000
+        (self.root/'worker/generator.jsonl').write_text(json.dumps(sample)+'\n'+json.dumps({**sample,'elapsedNanos':2000000000})+'\n'+json.dumps(last)+'\n')
+        self.assertIn('WORKER_CLOCK_WINDOW_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
+    def test_worker_monotonic_run_duration_cannot_replace_original_wall_window(self):
+        import json
+        context,worker,records,summary,sample=self.worker_fixture();summary['finishedAt']=(self.now+timedelta(seconds=10)).isoformat()
+        (self.root/'worker/summary.json').write_text(json.dumps(summary))
+        self.assertIn('WORKER_CLOCK_WINDOW_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
+
 if __name__=='__main__':unittest.main()

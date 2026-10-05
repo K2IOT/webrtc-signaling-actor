@@ -253,6 +253,9 @@ def worker_errors(root,worker,manifest,records):
             decoded=hdr_metrics(artifact_path(root,path))
             if decoded['count']!=phase['samples'] or any(phase.get(key+'Ms')!=decoded[key] for key in ('p50','p95','p99','p999')):errors.append('WORKER_RAW_PHASE_MISMATCH')
         if phase_count!=attempts:errors.append('WORKER_PHASE_ACCOUNTING_MISMATCH')
+        run_seconds=(utc(summary['finishedAt'])-utc(observed['scheduledStartAt'])).total_seconds()
+        duration=observed.get('durationSeconds')
+        if type(duration) is not int or duration<1 or not 0<=run_seconds-duration<=1.25:errors.append('WORKER_CLOCK_WINDOW_MISMATCH')
         samples=artifact_path(root,worker['generatorSamplesArtifact'])
         if samples.stat().st_size>134217728:errors.append('WORKER_SAMPLES_EXCEED_BOUND')
         else:
@@ -265,6 +268,7 @@ def worker_errors(root,worker,manifest,records):
                     elapsed=sample.get('elapsedNanos')
                     if not resource_headroom(sample) or type(elapsed) is not int or elapsed<0 or elapsed<previous:errors.append('WORKER_RESOURCE_HEADROOM_NOT_PROVEN')
                     if type(elapsed) is not int:raise ValueError('Invalid sample clock')
+                    if elapsed>run_seconds*1000000000+250000000:errors.append('WORKER_CLOCK_WINDOW_MISMATCH')
                     interval=sample.get('sampleIntervalNanos')
                     gap=elapsed-max(0,previous)
                     if gap>2250000000 or not number(interval,1,2000000000) or gap>interval+250000000:errors.append('WORKER_RESOURCE_COVERAGE_INCOMPLETE')
