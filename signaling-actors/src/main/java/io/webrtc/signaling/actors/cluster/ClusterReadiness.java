@@ -1,6 +1,13 @@
 package io.webrtc.signaling.actors.cluster;
 import java.util.concurrent.atomic.AtomicReference;
 public final class ClusterReadiness {
+    private final AtomicReference<java.util.function.BooleanSupplier> liveSafety=new AtomicReference<>();
+    /** Installed once by the native source owner; expiry is checked on every admission without I/O. */
+    public void installSafetyGate(java.util.function.BooleanSupplier gate){
+        java.util.Objects.requireNonNull(gate);
+        if(!liveSafety.compareAndSet(null,gate))throw new IllegalStateException("Native safety source already installed");
+    }
+    private boolean sourceReady(){var gate=liveSafety.get();try{return gate==null||gate.getAsBoolean();}catch(RuntimeException unavailable){return false;}}
     public record Snapshot(boolean localUp,boolean regionsRegistered,boolean fingerprintValid,boolean cellActive,boolean safetyPoolUsable,boolean clockBoundValid,int upActors,int reachableAzCount,boolean draining) {
         public Snapshot{if(upActors<0||reachableAzCount<0)throw new IllegalArgumentException("Invalid membership counts");}
     }
@@ -12,7 +19,10 @@ public final class ClusterReadiness {
         if(upActors<0||reachableAzCount<0)throw new IllegalArgumentException("Invalid membership counts");
         state.updateAndGet(s->new Snapshot(localUp,s.regionsRegistered(),s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),upActors,reachableAzCount,s.draining()));
     }
-    private static boolean safety(Snapshot s){return s.localUp()&&s.regionsRegistered()&&s.fingerprintValid()&&s.cellActive()&&s.safetyPoolUsable()&&s.clockBoundValid();}
+    public void updateSafety(boolean fingerprintValid,boolean cellActive,boolean safetyPoolUsable,boolean clockBoundValid){
+        state.updateAndGet(s->new Snapshot(s.localUp(),s.regionsRegistered(),fingerprintValid,cellActive,safetyPoolUsable,clockBoundValid,s.upActors(),s.reachableAzCount(),s.draining()));
+    }
+    private boolean safety(Snapshot s){return sourceReady()&&s.localUp()&&s.regionsRegistered()&&s.fingerprintValid()&&s.cellActive()&&s.safetyPoolUsable()&&s.clockBoundValid();}
     public boolean safetyReady(){return safety(state.get());}
     public boolean businessReady(){var s=state.get();return safety(s)&&!s.draining()&&s.upActors()>=4&&s.reachableAzCount()>=2;}
     void registered(){state.updateAndGet(s->new Snapshot(s.localUp(),true,s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),s.upActors(),s.reachableAzCount(),s.draining()));}
