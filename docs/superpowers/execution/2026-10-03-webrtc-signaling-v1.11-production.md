@@ -135,8 +135,8 @@ verifier passed 47 tests and the static loadgen contract passed. Native cache
 callbacks now finish outside cache monitors; original pending authorizations
 cannot be reused after their original expiry. Actual WSS tests cover
 INVALIDATED/RESYNC recovery, committed new rounds, source-seeded reconnect
-jitter and original HTTP Retry-After. Requested skew/security profiles fail
-preflight until their drivers exist. Tasks 22–24 remain in progress; these
+jitter and original HTTP Retry-After. At that checkpoint, requested skew/security profiles failed
+preflight until their drivers existed. Tasks 22–24 remain in progress; these
 local checks do not qualify production release.
 
 Fresh full verification after native ingress/transport drain passed **538 tests
@@ -149,5 +149,15 @@ SYNC to the original committed restart version. DR verification rejects malforme
 fault timelines, unfenced promotion, mixed writer/cell/drill receipts, reused
 recovery epochs and foreign/pre-ACK WAL lineage. PITR loss remains explicit and
 requires restored-call invalidation. These local checks leave complete Main
-source enrollment, skew/security drivers and genuine staged qualification open;
+source enrollment, aggregate skew measurement, security drivers and genuine staged qualification open;
 Tasks22–24 remain in progress and release remains **NOT_QUALIFIED**.
+
+Fresh full verification at `b877ff7` passed **545 tests in 128 fresh reports**,
+zero failures, errors or skips (2026-10-05T22:17:00Z, 4m40s). Python verification
+passed 55 tests and the static loadgen contract passed. Native five-times
+destination/bucket selection now drives actual WSS INVITEs while preserving
+original global arrivals and request identities. Original summary/time-series
+skew scope, population and counters must agree; unsupported security profiles
+cannot claim ordinary traffic as an abuse run. Aggregate achieved skew, complete
+Main/source enrollment, security drivers and genuine staged same-candidate
+qualification remain open. Tasks 22–24 remain in progress; **NOT_QUALIFIED**.
