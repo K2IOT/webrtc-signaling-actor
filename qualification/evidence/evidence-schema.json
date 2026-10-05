@@ -123,6 +123,18 @@
     "sourceIp": {
       "type": "string",
       "minLength": 1
+    },
+    "sourceConfig": {
+      "type": "string",
+      "enum": [
+        "source-config.json"
+      ]
+    },
+    "sourceScenario": {
+      "type": "string",
+      "enum": [
+        "source-scenario.yaml"
+      ]
     }
   },
   "required": [
@@ -151,6 +163,8 @@
     "identityContractFingerprint",
     "topologyFingerprint",
     "hardwareFingerprint",
-    "sourceIp"
+    "sourceIp",
+    "sourceConfig",
+    "sourceScenario"
   ]
 }

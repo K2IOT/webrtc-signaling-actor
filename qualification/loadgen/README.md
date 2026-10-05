@@ -26,6 +26,10 @@ Run the worker with `java -jar signaling-loadgen/target/signaling-loadgen-0.1.0-
 --evidence /approved/candidate/worker-000`. Orchestration starts one process per declared
 source address; it does not manufacture remote machines or source IPs. All worker ranges
 and raw histograms must be merged by the evidence verifier before accepting a stage.
+The worker retains the exact bytes it parsed in `source-config.json` and
+`source-scenario.yaml`; summary hashes bind those snapshots even if the original input
+paths change while the run is active. Index them as each worker's `configArtifact` and
+`scenarioArtifact`. Inventory token contents are not copied into evidence.
 
 Latency begins at intended arrival on the monotonic clock. Late dispatch, rejected
 local work and server failures remain in counters; no coordinated-omission correction
