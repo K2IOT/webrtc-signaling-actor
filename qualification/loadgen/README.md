@@ -98,3 +98,12 @@ Requested security abuse profiles still fail preflight before opening sockets.
 Their presence in YAML cannot produce an ordinary workload presented as security
 coverage. Genuine approved source machines and identity inventories remain
 required for staged qualification.
+
+For an original 5x source scenario, the evidence verifier now requires that native
+skew body in both summary and every retained generator sample. It checks actual
+effective target-population bounds, exact selected scope, disabled scope semantics,
+original attempt accounting and monotonic counters bounded by the original summary.
+Missing, rebound, boolean, regressing or inflated observations fail verification.
+These checks establish source consistency; aggregate achieved 5x demand over a
+qualified simultaneous source window still needs its own measured gate. Sources
+also cannot claim an unsupported security profile as an ordinary successful run.

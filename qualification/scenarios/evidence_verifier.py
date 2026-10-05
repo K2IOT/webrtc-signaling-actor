@@ -195,6 +195,52 @@ def resource_headroom(sample):
         and number(max_pending,1) and number(pending,0,max_pending*.8) and number(max_bytes,1) and number(queued,0,max_bytes*.8)
         and number(sample.get('sampleIntervalNanos'),1,2000000000))
 
+def worker_skew_source_errors(root,worker,summary,config,scenario):
+    """Original worker scope/counter consistency; aggregate achieved skew is a separate gate."""
+    burst=scenario.get('burst',{})
+    if not isinstance(burst,dict):return ['WORKER_SOURCE_UNSUPPORTED_SKEW_PROFILE']
+    destination,bucket=(burst.get(key,1) for key in ('hotDestinationMultiplier','hotBucketMultiplier'))
+    if any(type(value) is not int or value not in (1,5) for value in (destination,bucket)):return ['WORKER_SOURCE_UNSUPPORTED_SKEW_PROFILE']
+    measured=mapping(summary.get('observed')).get('skew')
+    if destination==bucket==1:return [] if measured is None else ['WORKER_SKEW_MEASUREMENTS_INVALID']
+    if not isinstance(measured,dict):return ['WORKER_SKEW_NOT_MEASURED']
+    try:
+        metadata=('hotDestinationCell','hotBucket','targetUsers','destinationUsers','bucketUsers')
+        counters=('destinationAttempts','bucketAttempts','totalAttempts')
+        if set(measured)!=set(metadata+counters):raise ValueError('Native skew shape')
+        targets=mapping(scenario.get('targets'));users,sockets,stage=(targets.get('distinctUsers'),targets.get('sockets'),config.get('stageSockets'))
+        if any(type(value) is not int or value<1 for value in (users,sockets,stage)) or users>sockets or stage>sockets:raise ValueError('Native user population')
+        population=min(users,(stage*users+sockets-1)//sockets)//2
+        if type(measured['targetUsers']) is not int or measured['targetUsers']!=population or population<1:raise ValueError('Native target population')
+        for multiplier,scope,count in ((destination,'hotDestinationCell','destinationUsers'),(bucket,'hotBucket','bucketUsers')):
+            if type(measured[count]) is not int or not 0<=measured[count]<=population:raise ValueError('Population count')
+            if multiplier==1:
+                if measured[scope] is not None or measured[count]!=0:raise ValueError('Unrequested hot scope')
+            elif measured[count]<1:raise ValueError('Missing occupied scope')
+        if destination==5 and (not isinstance(measured['hotDestinationCell'],str) or not re.fullmatch('[a-z][a-z0-9-]{0,23}',measured['hotDestinationCell'])):raise ValueError('Native destination cell')
+        if bucket==5 and (type(measured['hotBucket']) is not int or not 0<=measured['hotBucket']<16384):raise ValueError('Native hot bucket')
+        if destination*measured['destinationUsers']+bucket*measured['bucketUsers']>population:raise ValueError('Impossible hot demand')
+        def counts(node,total,previous,maximum):
+            if not isinstance(node,dict) or set(node)!=set(metadata+counters) or any(node.get(key)!=measured[key] for key in metadata):raise ValueError('Rebound native skew scope')
+            for field in counters:
+                value=node.get(field)
+                if type(value) is not int or not previous.get(field,0)<=value<=maximum[field]:raise ValueError('Native cumulative counter')
+            if type(total) is not int or node['totalAttempts']!=total or node['destinationAttempts']+node['bucketAttempts']>total:raise ValueError('Original attempt accounting')
+            if destination==1 and node['destinationAttempts']!=0 or bucket==1 and node['bucketAttempts']!=0:raise ValueError('Unrequested scope attempts')
+        counts(measured,mapping(summary.get('observed')).get('callAttempts'),{},measured)
+        path=artifact_path(root,worker['generatorSamplesArtifact'])
+        if path.stat().st_size>134217728:raise ValueError('Original source bytes')
+        previous={};observations=0
+        with path.open() as stream:
+            while line:=stream.readline(8193):
+                observations+=1
+                if len(line)>8192 or observations>100000:raise ValueError('Original source bounds')
+                workload=mapping(_json_value(line).get('workload'));node=workload.get('skew')
+                counts(node,workload.get('callAttempts'),previous,measured);previous=node
+        if observations==0:raise ValueError('No original skew measurements')
+    except Exception:return ['WORKER_SKEW_MEASUREMENTS_INVALID']
+    return []
+
 def worker_source_errors(root,worker,summary,manifest,records):
     errors=[]
     for artifact,digest in (('configArtifact','configHash'),('scenarioArtifact','scenarioHash')):
@@ -223,6 +269,9 @@ def worker_source_errors(root,worker,summary,manifest,records):
                 and utc(summary['startedAt'])<utc(config['scheduledStartAt'])<utc(summary['finishedAt']))
         except Exception:valid=False
     if not valid:errors.append('WORKER_SOURCE_CONFIGURATION_MISMATCH')
+    if ('abuse' in scenario and (not isinstance(scenario['abuse'],list) or scenario['abuse'])) or ('abuseFraction' in scenario and not number(scenario['abuseFraction'],0,0)):
+        errors.append('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE')
+    errors.extend(worker_skew_source_errors(root,worker,summary,config,scenario))
     return errors
 
 def worker_errors(root,worker,manifest,records):

@@ -468,4 +468,43 @@ class EvidenceVerifierContractTest(unittest.TestCase):
                 else:receipt['recoveredTimelineHistory'].append({'timeline':1,'forkLsn':'1/0'})
                 self.assertIn('INVALID_ACKNOWLEDGED_WAL:dr-restore',verifier.native_drill_receipt_errors(receipt,'acknowledgedWalReceipt',gate,'dr-restore'))
 
+    def test_skew_source_labels_without_original_native_counters_are_rejected(self):
+        import json,hashlib
+        context,worker,records,summary,sample=self.worker_fixture()
+        scenario=json.loads((self.root/'worker/scenario.yaml').read_text());scenario['burst']={'hotDestinationMultiplier':5,'hotBucketMultiplier':5}
+        path=self.root/'worker/scenario.yaml';path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertIn('WORKER_SKEW_NOT_MEASURED',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
+    def test_skew_original_scope_and_counters_cannot_be_replaced_or_regressed(self):
+        import json,hashlib,copy
+        context,worker,records,summary,sample=self.worker_fixture()
+        config=json.loads((self.root/'worker/config.json').read_text());config['stageSockets']=20000
+        scenario=json.loads((self.root/'worker/scenario.yaml').read_text());scenario['targets']={'sockets':20000,'distinctUsers':16000};scenario['burst']={'hotDestinationMultiplier':5,'hotBucketMultiplier':5}
+        summary['requestedTargets']=scenario['targets'];summary['observed']['callAttempts']=6
+        measured={'hotDestinationCell':'c001','hotBucket':123,'targetUsers':8000,'destinationUsers':160,'bucketUsers':1,'destinationAttempts':2,'bucketAttempts':1,'totalAttempts':6}
+        summary['observed']['skew']=measured;sample['workload']['callAttempts']=4;sample['workload']['skew']={**measured,'destinationAttempts':1,'bucketAttempts':0,'totalAttempts':4}
+        for name,body in (('config.json',config),('scenario.yaml',scenario)):
+            path=self.root/'worker'/name;path.write_text(json.dumps(body));summary['configHash' if name=='config.json' else 'scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+        path=self.root/'worker/generator.jsonl';path.write_text(json.dumps(sample)+'\n')
+        # This unit body is coherent; unrelated partition checks still prevent qualification.
+        self.assertNotIn('WORKER_SKEW_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,summary,context,records))
+        for mutation in ('different-scope','boolean-count','exceeds-summary','regresses','missing-sample'):
+            with self.subTest(mutation=mutation):
+                first=copy.deepcopy(sample);last=copy.deepcopy(sample);last['elapsedNanos']=2000000000
+                if mutation=='different-scope':last['workload']['skew']['hotDestinationCell']='c002'
+                elif mutation=='boolean-count':last['workload']['skew']['bucketAttempts']=True
+                elif mutation=='exceeds-summary':last['workload']['skew']['destinationAttempts']=3
+                elif mutation=='regresses':last['workload']['skew']['destinationAttempts']=0
+                else:last['workload'].pop('skew')
+                path.write_text(json.dumps(first)+'\n'+json.dumps(last)+'\n')
+                self.assertIn('WORKER_SKEW_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
+    def test_source_cannot_claim_execution_of_unimplemented_security_modes(self):
+        import json,hashlib
+        context,worker,records,summary,_=self.worker_fixture()
+        for mode in ('malformed','slowConsumer','oversized','staleGeneration','revokedJti','retiredSigningKey'):
+            with self.subTest(mode=mode):
+                path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text());scenario['abuse']=[mode];scenario['abuseFraction']=.01;path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+                self.assertIn('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
 if __name__=='__main__':unittest.main()
