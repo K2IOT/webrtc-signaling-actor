@@ -61,9 +61,9 @@ class NativeActorCompositionIT {
             }
             var cell=compositions.getLast();var call=CallId.create("c001",1);var original=f.invite(caller,callee.userId());
             var command=new CallCommand(original.type(),caller,original.requestId(),call,original.scope(),callee.userId(),null,null,"{}",original.intentHash());
-            var route=SessionAuthReadIT.route(f,caller);var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var auth=CoordinatorGrantIT.done(registry.readCurrentSessionTracked(route,SessionAuthReadIT.principal(route),1,Duration.ofSeconds(2)));var signed=proofs.sessionProofs().issue(auth,command);
+            var route=SessionAuthReadIT.route(f,caller);var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var auth=currentSession(registry,route);var signed=proofs.sessionProofs().issue(auth,command);
             CallCommandService.Outcome result=null;long end=System.nanoTime()+Duration.ofSeconds(15).toNanos();
-            while(System.nanoTime()<end){auth=CoordinatorGrantIT.done(registry.readCurrentSessionTracked(route,SessionAuthReadIT.principal(route),1,Duration.ofSeconds(2)));signed=proofs.sessionProofs().issue(auth,command);var operation=cell.ingress().callTracked(command,signed,Instant.now().plusSeconds(2),RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,signed)).length);try{result=operation.logical().toCompletableFuture().join();}catch(CompletionException unknown){assertThat(unknown.getCause()).isInstanceOfAny(org.apache.pekko.pattern.AskTimeoutException.class,DbOutcomeUnknownException.class,TimeoutException.class);}finally{operation.physicalCompletion().toCompletableFuture().get(8,TimeUnit.SECONDS);}if(result!=null&&result.status().equals("FINAL"))break;java.util.concurrent.locks.LockSupport.parkNanos(20_000_000);}
+            while(System.nanoTime()<end){auth=currentSession(registry,route);signed=proofs.sessionProofs().issue(auth,command);var operation=cell.ingress().callTracked(command,signed,Instant.now().plusSeconds(2),RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,signed)).length);try{result=operation.logical().toCompletableFuture().join();}catch(CompletionException unknown){assertThat(unknown.getCause()).isInstanceOfAny(org.apache.pekko.pattern.AskTimeoutException.class,DbOutcomeUnknownException.class,TimeoutException.class);}finally{operation.physicalCompletion().toCompletableFuture().get(8,TimeUnit.SECONDS);}if(result!=null&&result.status().equals("FINAL"))break;java.util.concurrent.locks.LockSupport.parkNanos(20_000_000);}
             assertThat(result).isNotNull();assertThat(result.status()).isEqualTo("FINAL");assertThat(result.state()).isEqualTo("RINGING");
             var holders=compositions.stream().filter(c->PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(c.system()),HomeParticipationService.group(call)).isPresent()).toList();assertThat(holders).hasSize(1);
             var token=PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(holders.getFirst().system()),HomeParticipationService.group(call)).orElseThrow().token();
@@ -71,6 +71,39 @@ class NativeActorCompositionIT {
             var queryAction=new HomeParticipationService.AuthorizationIntent("QUERY",null,0,null,0,null,null);var now=Instant.now();
             var template=new HomeParticipationService.Request(caller.userId(),call,command.requestId().value(),command.intentHash(),1,HomeParticipationService.Phase.RINGING,new HomeParticipationService.Grant("c001",1,1,token.group(),token.epoch(),1,UUID.randomUUID(),now,now.plusSeconds(5),"UNSIGNED"));
             var grant=cell.ingress().grant(template,queryAction,"c001",Instant.now().plusSeconds(2),RpcBusinessHandler.encode(template).length).toCompletableFuture().join();assertThat(grant.code()).isEqualTo("GRANTED");assertThat(new ProofBindings(proofs,Clock.systemUTC()).homeVerifier("c001").verify(grant.signedRequest(),queryAction)).isTrue();
+            var host=holders.getFirst();
+            var target=new java.util.concurrent.atomic.AtomicReference<RpcBusinessHandler>();
+            var network=new NativeSagaEffects.Network(){
+                public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){return callTracked(op,c,b).logical();}
+                public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand c,Duration b){
+                    assertThat(c.getPayload().size()).isLessThan(37000);
+                    return target.get().executeTracked(op,c,new CellRpcServer.Peer("c001","actor"),b);
+                }
+            };
+            var backend=host.backend(network,r->CompletableFuture.failedFuture(new AssertionError("Legacy relay must stay unused")));target.set(backend);
+            var winnerRoute=SessionAuthReadIT.route(f,callee);var winnerAuth=currentSession(registry,winnerRoute);
+            var accept=AcceptCompletionIT.accept(callee,call);
+            var setup=publicCommand(backend,accept,proofs.sessionProofs().issue(winnerAuth,accept));
+            assertThat(setup.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");
+            auth=currentSession(registry,route);
+            var negotiate=new CallCommand(SignalEnvelope.Type.NEGOTIATE_REQUEST,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,null,null,"{}","b".repeat(64));
+            var critical=publicCommand(backend,negotiate,proofs.sessionProofs().issue(auth,negotiate));
+            assertThat(critical.code()).isEqualTo("NEGOTIATION_GRANTED");
+            auth=currentSession(registry,route);
+            var offer=new CallCommand(SignalEnvelope.Type.OFFER,caller,new RequestId(UUID.randomUUID()),call,CommandScope.call(call),null,new NegotiationId(1),new IceGeneration(1),"{\"sdp\":\""+"x".repeat(65536)+"\"}","c".repeat(64));
+            var relay=host.relayAuthorization(network).load(offer,proofs.sessionProofs().issue(auth,offer),Duration.ofSeconds(2));
+            var authorized=relay.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);relay.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
+            assertThat(authorized.sender()).isEqualTo(caller);assertThat(authorized.recipient()).isEqualTo(callee);assertThat(authorized.group()).isEqualTo(token);
+            assertThat(authorized.callVersion()).isEqualTo(5);assertThat(authorized.negotiationId()).isEqualTo(1);
+            var nonhost=compositions.stream().filter(c->c!=host).findFirst().orElseThrow();
+            String offerProof=proofs.sessionProofs().issue(auth,offer);
+            assertThatThrownBy(()->nonhost.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasRootCauseInstanceOf(AuthoritySql.FencedException.class);
+            host.readiness().beginDrain();
+            assertThat(host.readiness().businessReady()).isFalse();
+            var existing=host.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2));
+            assertThat(existing.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).recipient()).isEqualTo(callee);
+            existing.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
+
             cell.ingress().settleAdmitted().toCompletableFuture().get(3,TimeUnit.SECONDS);
             cell.ingress().drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
             var anotherIngress=new ShardedActorIngress(cell.system(),Clock.systemUTC());
@@ -79,4 +112,25 @@ class NativeActorCompositionIT {
 
         }finally{for(var system:systems)system.terminate();for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);for(var composition:compositions)composition.drainRoots().toCompletableFuture().get(8,TimeUnit.SECONDS);f.close();}
     }
+    /** Fixture eligibility read: known native contention retries within one original read budget. */
+    private static SessionRegistryService.SessionProofView currentSession(SessionRegistryService registry,SessionRepository.Route route)throws Exception {
+        long end=System.nanoTime()+Duration.ofSeconds(2).toNanos();
+        for(;;){long left=end-System.nanoTime();if(left<=0)throw new TimeoutException("Native fixture session read budget");
+            var work=registry.readCurrentSessionTracked(route,SessionAuthReadIT.principal(route),1,Duration.ofNanos(left));
+            try{return work.logical().toCompletableFuture().join();}
+            catch(CompletionException failure){Throwable cause=failure.getCause();while(cause instanceof CompletionException)cause=cause.getCause();if(!(cause instanceof AuthoritySql.RetryableConflict||cause instanceof DbOverloadedException))throw failure;}
+            finally{long cleanup=end-System.nanoTime();if(cleanup<=0)throw new TimeoutException("Native fixture session cleanup budget");work.physicalCompletion().toCompletableFuture().get(cleanup,TimeUnit.NANOSECONDS);}
+            java.util.concurrent.locks.LockSupport.parkNanos(Math.min(25_000_000,Math.max(0,end-System.nanoTime())));
+        }
+    }
+    private static CallCommandService.Outcome publicCommand(RpcBusinessHandler backend,CallCommand command,String proof)throws Exception {
+        java.util.function.Function<UUID,com.google.protobuf.ByteString> uuid=id->com.google.protobuf.ByteString.copyFrom(java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array());
+        var sender=command.sender();
+        var wire=io.webrtc.signaling.protocol.internal.InternalCommand.newBuilder().setSchemaMajor(1).setType(command.type().name()).setOperationId(command.requestId().value().toString()).setCallId(command.callId().value()).setCommandScope(command.scope().value()).setDestinationCell("c001").setRemainingBudgetMs(2000).setPayloadHash(com.google.protobuf.ByteString.copyFrom(HexFormat.of().parseHex(command.intentHash()))).setPayload(com.google.protobuf.ByteString.copyFrom(RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,proof)))).setSender(io.webrtc.signaling.protocol.internal.SessionIdentity.newBuilder().setUserId(sender.userId().value()).setIssuer(sender.key().issuer()).setJti(sender.key().jti()).setIncarnation(uuid.apply(sender.incarnation().value())).setConnectionGeneration(sender.connectionGeneration()).setConnectionId(uuid.apply(sender.connectionId()))).build();
+        var op=backend.executeTracked(CellRpcServer.Operation.EXECUTE,wire,new CellRpcServer.Peer("c001","actor"),Duration.ofSeconds(2));
+        var reply=op.logical().toCompletableFuture().get(3,TimeUnit.SECONDS);op.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
+        assertThat(reply.getAckCommitted()).describedAs(reply.getErrorCode()).isTrue();
+        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(reply.getResult().toByteArray(),CallCommandService.Outcome.class);
+    }
+
 }
