@@ -28,8 +28,11 @@ public final class NativeClockSource implements AutoCloseable {
         http=new NativeSourceHttp(endpoint,tls,podUid,processBoot);this.monitor=Objects.requireNonNull(monitor);
     }
     /** Called only off event loops. Its one socket is synchronously closed before physical retirement. */
-    public boolean poll(Duration budget){
-        synchronized(this){if(draining)return false;if(active)return false;active=true;admittedPhysical=new CompletableFuture<>();}
+    public boolean poll(Duration budget){return pollTracked(budget).logical().toCompletableFuture().join();}
+    /** Each invocation exposes its own original receipt, even if a completion callback admits another poll. */
+    public RpcOperation<Boolean> pollTracked(Duration budget){
+        final CompletableFuture<Void> physical;
+        synchronized(this){if(draining||active)return new RpcOperation<>(CompletableFuture.completedFuture(false),CompletableFuture.completedFuture(null));active=true;admittedPhysical=physical=new CompletableFuture<>();}
         long started=System.nanoTime();boolean accepted=false;
         try{
             if(budget==null||budget.isZero()||budget.isNegative())throw new IllegalArgumentException("Positive source budget required");
@@ -43,13 +46,13 @@ public final class NativeClockSource implements AutoCloseable {
             accepted=monitor.observe(report,value.get("signature").asText(),started);
         }catch(Exception invalid){accepted=false;}
         finally{
-            synchronized(this){if(!accepted||draining)monitor.invalidate();if(http.physicallySettled()){active=false;admittedPhysical.complete(null);if(draining)drained.complete(null);}}
+            synchronized(this){if(!accepted||draining)monitor.invalidate();if(http.physicallySettled()){active=false;physical.complete(null);if(draining&&!active)drained.complete(null);}}
         }
-        synchronized(this){return accepted&&!draining;}
+        synchronized(this){return new RpcOperation<>(CompletableFuture.completedFuture(accepted&&!draining),physical);}
     }
     public NativeWorkerScheduler.Job job(Duration period){
         if(period==null||period.compareTo(Duration.ofSeconds(1))>0)throw new IllegalArgumentException("Clock source poll must run at least once per second");
-        return new NativeWorkerScheduler.Job("clock_source",NativeWorkerScheduler.Priority.SAFETY,period,budget->{boolean valid=poll(budget);return new RpcOperation<>(valid?CompletableFuture.completedFuture(true):CompletableFuture.failedFuture(new IllegalStateException("Clock source unavailable")),settleAdmitted());});
+        return new NativeWorkerScheduler.Job("clock_source",NativeWorkerScheduler.Priority.SAFETY,period,budget->{var original=pollTracked(budget);return new RpcOperation<>(original.logical().thenApply(valid->{if(!valid)throw new IllegalStateException("Clock source unavailable");return true;}),original.physicalCompletion());});
     }
     public synchronized CompletionStage<Void> settleAdmitted(){return admittedPhysical.minimalCompletionStage();}
     public synchronized CompletionStage<Void> drain(){draining=true;monitor.invalidate();if(!active)drained.complete(null);return drained.minimalCompletionStage();}

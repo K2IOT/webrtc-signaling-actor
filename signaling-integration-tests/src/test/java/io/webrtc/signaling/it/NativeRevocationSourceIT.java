@@ -30,7 +30,7 @@ class NativeRevocationSourceIT {
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
             var verifier=new RevocationSourceVerifier("c001",route.key().issuer(),Map.of("TEST_ONLY_SOURCE",keys.getPublic()));
             var reconciler=new RevocationReconciler(f.runtime.sql,"c001",1,Duration.ofSeconds(1),verifier);
-            var mode=new AtomicInteger();var clockSequence=new AtomicLong();var offsets=new ConcurrentLinkedQueue<Long>();var heldResponse=new CompletableFuture<Runnable>();UUID pod=UUID.randomUUID(),boot=UUID.randomUUID();
+            var mode=new AtomicInteger();var clockSequence=new AtomicLong();var offsets=new ConcurrentLinkedQueue<Long>();var heldResponse=new AtomicReference<>(new CompletableFuture<Runnable>());UUID pod=UUID.randomUUID(),boot=UUID.randomUUID();
             var tls=SslContextBuilder.forServer(NativeClockSourceIT.cert("server.crt"),NativeClockSourceIT.cert("server.key")).trustManager(NativeClockSourceIT.cert("ca.crt")).clientAuth(ClientAuth.REQUIRE).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
             var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);Channel server=null;
             try{
@@ -57,7 +57,7 @@ class NativeRevocationSourceIT {
                     if(mode.get()==7){var value=NativeClockSourceIT.JSON.readTree(body);((com.fasterxml.jackson.databind.node.ObjectNode)value).remove("fromOffset");body=value.toString();}
                     var response=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK,Unpooled.copiedBuffer(body,StandardCharsets.UTF_8));response.headers().set(HttpHeaderNames.CONTENT_TYPE,"application/json").setInt(HttpHeaderNames.CONTENT_LENGTH,response.content().readableBytes());
                     Runnable send=()->ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-                    if(mode.get()==8)heldResponse.complete(send);else send.run();
+                    if(mode.get()==8)heldResponse.get().complete(send);else send.run();
                 }});}}).bind("127.0.0.1",0).sync().channel();int port=((InetSocketAddress)server.localAddress()).getPort();
                 try(var source=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot)){
                     assertThat(source.usable()).isFalse();settled(source.poll(Duration.ofSeconds(2)));assertThat(source.usable()).isTrue();
@@ -85,9 +85,17 @@ class NativeRevocationSourceIT {
                 }
                 mode.set(8);
                 try(var waiting=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot);var tasks=Executors.newVirtualThreadPerTaskExecutor()){
-                    var poll=tasks.submit(()->waiting.poll(Duration.ofSeconds(2)));var release=heldResponse.get(1,TimeUnit.SECONDS);
+                    var poll=tasks.submit(()->waiting.poll(Duration.ofSeconds(2)));var release=heldResponse.get().get(1,TimeUnit.SECONDS);
                     var draining=waiting.drain().toCompletableFuture();assertThat(draining).isNotDone();assertThat(poll).isNotDone();assertThat(waiting.usable()).isFalse();
                     release.run();settled(poll.get(2,TimeUnit.SECONDS));draining.get(2,TimeUnit.SECONDS);assertThat(waiting.usable()).isFalse();
+                }
+                heldResponse.set(new CompletableFuture<>());mode.set(8);
+                try(var reentrant=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),new SecondFactoryUnknownContext(NativeClockSourceIT.clientTls(true)),verifier,reconciler,pod,boot);var tasks=Executors.newVirtualThreadPerTaskExecutor()){
+                    var running=tasks.submit(()->reentrant.poll(Duration.ofSeconds(2)));var release=heldResponse.get().get(1,TimeUnit.SECONDS);
+                    var globalDrain=new AtomicReference<CompletionStage<Void>>();var callbackDone=new CompletableFuture<Void>();
+                    reentrant.settleAdmitted().whenComplete((v,e)->{try{var unknown=reentrant.poll(Duration.ofSeconds(1));assertThat(unknown.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(unknown.physicalCompletion().toCompletableFuture()).isNotDone();globalDrain.set(reentrant.drain());callbackDone.complete(null);}catch(Throwable failure){callbackDone.completeExceptionally(failure);}});
+                    release.run();var original=running.get(2,TimeUnit.SECONDS);callbackDone.get(2,TimeUnit.SECONDS);
+                    original.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(globalDrain.get().toCompletableFuture()).isNotDone();assertThat(reentrant.usable()).isFalse();
                 }
                 mode.set(0);
                 var system=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config("a"));
@@ -122,6 +130,29 @@ class NativeRevocationSourceIT {
                 }finally{for(var member:systems)member.terminate();for(var member:systems)member.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);if(installed.get()!=null)installed.get().drainRoots().toCompletableFuture().get(5,TimeUnit.SECONDS);}
             }finally{if(server!=null)server.close().sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
         }
+    }
+    /** TEST_ONLY factory failure signal after a first genuine mTLS socket; cleanup remains unknown. */
+    private static final class SecondFactoryUnknownContext extends javax.net.ssl.SSLContext {
+        SecondFactoryUnknownContext(javax.net.ssl.SSLContext delegate){super(new SecondFactoryUnknownSpi(delegate),new Provider("TEST_ONLY_UNKNOWN_FACTORY","1","Failure injection"){},"TLSv1.3");}
+    }
+    private static final class SecondFactoryUnknownSpi extends javax.net.ssl.SSLContextSpi {
+        private final javax.net.ssl.SSLContext delegate;private final AtomicInteger calls=new AtomicInteger();
+        SecondFactoryUnknownSpi(javax.net.ssl.SSLContext delegate){this.delegate=delegate;}
+        protected void engineInit(javax.net.ssl.KeyManager[] k,javax.net.ssl.TrustManager[] t,SecureRandom r){throw new UnsupportedOperationException();}
+        protected javax.net.ssl.SSLSocketFactory engineGetSocketFactory(){var original=delegate.getSocketFactory();return new javax.net.ssl.SSLSocketFactory(){
+            public String[] getDefaultCipherSuites(){return original.getDefaultCipherSuites();}public String[] getSupportedCipherSuites(){return original.getSupportedCipherSuites();}
+            public java.net.Socket createSocket()throws java.io.IOException{if(calls.incrementAndGet()>1)throw new java.io.IOException("TEST_ONLY_UNKNOWN_FACTORY_EFFECTS");return original.createSocket();}
+            public java.net.Socket createSocket(java.net.Socket s,String h,int p,boolean a)throws java.io.IOException{return original.createSocket(s,h,p,a);}
+            public java.net.Socket createSocket(String h,int p)throws java.io.IOException{return original.createSocket(h,p);}
+            public java.net.Socket createSocket(String h,int p,InetAddress l,int lp)throws java.io.IOException{return original.createSocket(h,p,l,lp);}
+            public java.net.Socket createSocket(InetAddress h,int p)throws java.io.IOException{return original.createSocket(h,p);}
+            public java.net.Socket createSocket(InetAddress h,int p,InetAddress l,int lp)throws java.io.IOException{return original.createSocket(h,p,l,lp);}
+        };}
+        protected javax.net.ssl.SSLServerSocketFactory engineGetServerSocketFactory(){return delegate.getServerSocketFactory();}
+        protected javax.net.ssl.SSLEngine engineCreateSSLEngine(){return delegate.createSSLEngine();}
+        protected javax.net.ssl.SSLEngine engineCreateSSLEngine(String h,int p){return delegate.createSSLEngine(h,p);}
+        protected javax.net.ssl.SSLSessionContext engineGetServerSessionContext(){return delegate.getServerSessionContext();}
+        protected javax.net.ssl.SSLSessionContext engineGetClientSessionContext(){return delegate.getClientSessionContext();}
     }
     static void settled(io.webrtc.signaling.rpc.RpcOperation<?> operation)throws Exception {operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);}
 }

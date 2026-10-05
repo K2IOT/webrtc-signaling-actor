@@ -55,7 +55,7 @@ public final class NativeRevocationSource implements AutoCloseable {
         CompletableFuture.allOf(receipts.toArray(CompletableFuture[]::new)).whenComplete((v,error)->{
             synchronized(this){
                 if(error!=null){checkedAt=null;return;}
-                active=false;physical.complete(null);if(draining)drained.complete(null);
+                active=false;physical.complete(null);if(draining&&!active)drained.complete(null);
             }
         });
         return new RpcOperation<>(logical,physical);
