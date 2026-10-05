@@ -96,7 +96,7 @@ public final class NegotiationRelay implements AutoCloseable {
                     catch(Throwable failure){attempt.physicalPending=false;result.completeExceptionally(failure);if(attempt.closed)attempt.credit.close();return;}
                     result.orTimeout(remaining,TimeUnit.NANOSECONDS);
                     operation.logical().whenComplete((ignored,failure)->{if(failure==null)result.complete(null);else result.completeExceptionally(failure);});
-                    operation.physicalCompletion().whenComplete((ignored,failure)->{synchronized(this){attempt.physicalPending=false;if(attempt.closed)attempt.credit.close();}});
+                    operation.physicalCompletion().whenComplete((ignored,failure)->{if(failure==null)synchronized(this){attempt.physicalPending=false;if(attempt.closed)attempt.credit.close();}});
                 }
             });
         return result;

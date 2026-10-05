@@ -85,7 +85,7 @@ public final class RelayAuthorizationCache {
             }
         });
         operation.physicalCompletion().whenComplete((ignored,failure)->{
-            synchronized(this) {pending.remove(key,result);}
+            if(failure==null)synchronized(this) {pending.remove(key,result);}
         });
         return result;
     }

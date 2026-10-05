@@ -17,7 +17,9 @@ import org.junit.jupiter.api.Test;
 
 class CellRpcPhysicalCompletionIT {
     static File cert(String name) { return new File(Objects.requireNonNull(CellRpcPhysicalCompletionIT.class.getResource("/test-only-pki/" + name)).getFile()); }
-    @Test void actualRpcListenerDrainWaitsForNativeCleanupAfterUnknownResponse() throws Exception {
+    @Test void actualRpcListenerDrainWaitsForNativeCleanupAfterUnknownResponse() throws Exception {listenerDrain(false);}
+    @Test void actualRpcListenerKeepsAdmissionWhenNativeCleanupFails() throws Exception {listenerDrain(true);}
+    private void listenerDrain(boolean cleanupFails) throws Exception {
         var physical=new CompletableFuture<Void>();var admission=new RpcAdmission(1,98304,1,98304);
         var backend=new CellRpcServer.Backend(){
             public CompletionStage<InternalReply> execute(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer p,Duration b){return executeTracked(op,c,p,b).logical();}
@@ -32,8 +34,14 @@ class CellRpcPhysicalCompletionIT {
             assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
             var snapshot=server.settleAdmitted();assertThat(snapshot.toCompletableFuture()).isNotDone();
             var drain=server.drain();assertThat(drain.toCompletableFuture()).isNotDone();
-            physical.complete(null);snapshot.toCompletableFuture().get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);
-            assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+            if(cleanupFails){
+                physical.completeExceptionally(new IllegalStateException("TEST_ONLY_NATIVE_CLEANUP_UNKNOWN"));
+                assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+                assertThat(snapshot.toCompletableFuture()).isNotDone();assertThat(drain.toCompletableFuture()).isNotDone();
+            }else{
+                physical.complete(null);snapshot.toCompletableFuture().get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);
+                assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+            }
         }finally{physical.complete(null);}
     }
     @Test void actualTlsUnaryReplyKeepsTransportCreditUntilStreamEndsAndDrainRejectsNewWork() throws Exception {
