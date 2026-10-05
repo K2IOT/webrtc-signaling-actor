@@ -45,6 +45,16 @@ public final class NativeRelayRoundCache implements AutoCloseable {
         var logical=original.logical().thenApply(snapshot->{synchronized(lock){var round=rounds.get(key);if(closed||round==null||mono.getAsLong()-round.grant().untilNanos()>=0||!round.authorization().equals(snapshot))throw new IllegalStateException("Native relay metadata unavailable");if(command.type()==SignalEnvelope.Type.OFFER&&!command.sender().equals(round.grant().offerer())||command.type()==SignalEnvelope.Type.ANSWER&&!command.sender().equals(round.grant().answerer()))throw new IllegalStateException("RESYNC_REQUIRED");return round;}});
         return new RpcOperation<>(logical,original.physicalCompletion().thenCombine(logical.handle((v,e)->null),(a,b)->null));
     }
+    /** Pure bounded local view for an already verified frame; misses never dispatch a native read. */
+    public Optional<NativeRelayAuthorization.AuthorizedRound> cached(CallCommand command){
+        try{
+            if(!RelaySessionAuthorizationProof.supports(command))return Optional.empty();
+            var key=new Key(command.callId(),command.sender(),command.negotiationId().value(),command.iceGeneration().value());
+            synchronized(lock){if(closed)return Optional.empty();}
+            var snapshot=authorization.get(key.call(),key.sender(),key.round(),key.ice());if(snapshot.isEmpty())return Optional.empty();
+            synchronized(lock){var round=rounds.get(key);if(closed||round==null||mono.getAsLong()-round.grant().untilNanos()>=0||!round.authorization().equals(snapshot.get())||command.type()==SignalEnvelope.Type.OFFER&&!command.sender().equals(round.grant().offerer())||command.type()==SignalEnvelope.Type.ANSWER&&!command.sender().equals(round.grant().answerer()))return Optional.empty();return Optional.of(round);}
+        }catch(RuntimeException unavailable){return Optional.empty();}
+    }
     public void invalidate(CallId call){synchronized(lock){rounds.keySet().removeIf(k->k.call().equals(call));pending.forEach((key,flight)->{if(key.call().equals(call))flight.invalidated=true;});}authorization.invalidate(call);}
     public int size(){synchronized(lock){return rounds.size();}}
     public int pending(){synchronized(lock){return pending.size();}}
