@@ -26,7 +26,7 @@ public final class ScenarioRunner {
     private static final ObjectMapper YAML=new ObjectMapper(new YAMLFactory()).findAndRegisterModules();
     private record Token(String text,AuthPrincipal principal){@Override public String toString(){return "Token[redacted]";}}
     private record Round(String call,String negotiation,String ice,NegotiationTrace trace){Round(String call,String negotiation,String ice){this(call,negotiation,ice,new NegotiationTrace(System.nanoTime(),1_000_000_000L,256));}}
-    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup,recovering,negotiating;volatile String call;volatile UUID invite;volatile Round round;volatile SnapshotOffer.Session session;volatile long lastOfferedRound,lastAnsweredRound,lastObservedIce;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;long scheduledReconnectGeneration=-1;int reconnectAttempt;State(VirtualClient c){client=c;}}
+    private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup,recovering,negotiating;volatile String call;volatile UUID invite;volatile Round round;volatile SnapshotOffer.Session session;volatile long lastOfferedRound,lastAnsweredRound,lastObservedIce,recoveryGrantVersion;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;long scheduledReconnectGeneration=-1;int reconnectAttempt;State(VirtualClient c){client=c;}}
     public record RoundIds(String negotiation,String ice){}
     public static Optional<RoundIds> roundIds(JsonNode snapshot){
         String round=snapshot.path("negotiationId").asText("0"),ice=snapshot.path("iceGeneration").asText("0");
@@ -202,7 +202,7 @@ public final class ScenarioRunner {
         case "ANSWER"->{if(state.round!=null&&state.round.negotiation().equals(frame.path("negotiationId").asText())&&state.round.ice().equals(frame.path("iceGeneration").asText()))state.round.trace().answerObserved();}
         case "END_OF_CANDIDATES"->{} // The peer's terminal sequence never reopens or echoes our local trace.
         case "ESTABLISHED"->{if(state.outgoing&&!state.established){state.established=true;long count=established.incrementAndGet();peakEstablished.accumulateAndGet(count,Math::max);state.hangupAt=now+Duration.ofSeconds(targets.path("meanCallSeconds").asLong()).toNanos();}}
-        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.cursor.clear(state.call);state.call=null;state.invite=null;state.lastOfferedRound=0;state.lastAnsweredRound=0;state.lastObservedIce=0;state.accepting=false;state.recovering=false;state.negotiating=false;activeTraces.remove(client.index(),state.round);state.round=null;state.outgoing=false;}
+        case "TERMINAL","ANSWERED_ELSEWHERE"->{if(state.established&&state.outgoing)established.decrementAndGet();state.established=false;state.cursor.clear(state.call);state.call=null;state.invite=null;state.lastOfferedRound=0;state.lastAnsweredRound=0;state.lastObservedIce=0;state.recoveryGrantVersion=0;state.accepting=false;state.recovering=false;state.negotiating=false;activeTraces.remove(client.index(),state.round);state.round=null;state.outgoing=false;}
         case "AUTH_EXPIRING"->client.refresh(now);
         case "RECONNECT"->client.close();
         default->{}
@@ -215,7 +215,10 @@ public final class ScenarioRunner {
             sendForCall(state,requestedCall,"SYNC_CALL",null,null,JSON.createObjectNode(),intended,EvidenceWriter.Operation.SYNC).whenComplete((reply,error)->{synchronized(state){
                 if(error!=null||reply.path("type").asText().equals("ERROR")||!Objects.equals(requestedCall,state.call)||generation!=state.client.generation())return;
                 try{
-                    if(!state.cursor.accept(reply.path("callId").asText(),nativeVersion(reply)))return;
+                    long version=nativeVersion(reply);
+                    if(state.recoveryGrantVersion>0&&version<state.recoveryGrantVersion){fail("RECOVERY_SNAPSHOT_BEFORE_GRANT");return;}
+                    if(!state.cursor.accept(reply.path("callId").asText(),version))return;
+                    if(state.recoveryGrantVersion==version&&SnapshotOffer.needsFreshRound(reply,state.session,state.lastOfferedRound,state.recovering)){fail("RECOVERY_SNAPSHOT_NOT_GRANTED");return;}
                     if(SnapshotOffer.needsFreshRound(reply,state.session,state.lastOfferedRound,state.recovering)){requestFreshRound(state,requestedCall,generation);return;}
                     var ids=SnapshotOffer.freshRound(reply,state.session,state.lastOfferedRound);if(ids.isEmpty())return;
                     var round=ids.get();state.recovering=false;state.lastOfferedRound=Long.parseLong(round.negotiation());state.lastObservedIce=Long.parseLong(round.ice());state.round=new Round(requestedCall,round.negotiation(),round.ice());activeTraces.put(state.client.index(),state.round);
@@ -228,10 +231,12 @@ public final class ScenarioRunner {
         synchronized(state){if(!Objects.equals(call,state.call)||generation!=state.client.generation()||!state.client.authenticated()||state.recovering)return;state.recovering=true;activeTraces.remove(state.client.index(),state.round);state.round=null;sync(state,System.nanoTime());}
     }
     private void requestFreshRound(State state,String call,long generation){
-        if(state.negotiating)return;state.recovering=true;state.negotiating=true;activeTraces.remove(state.client.index(),state.round);state.round=null;
+        if(state.negotiating)return;long originalVersion=state.cursor.version();state.recovering=true;state.negotiating=true;activeTraces.remove(state.client.index(),state.round);state.round=null;
         sendForCall(state,call,"NEGOTIATE_REQUEST",null,null,JSON.createObjectNode().put("iceRestart",true),System.nanoTime(),EvidenceWriter.Operation.NEGOTIATE).whenComplete((reply,error)->{synchronized(state){
             if(!Objects.equals(call,state.call)||generation!=state.client.generation())return;state.negotiating=false;
             if(error!=null||!reply.path("type").asText().equals("ACK_COMMITTED")||!reply.path("ackCommitted").asBoolean()||!reply.path("callId").asText().equals(call)||!reply.path("result").path("status").asText().equals("FINAL")||!reply.path("result").path("code").asText().equals("NEGOTIATION_GRANTED")){fail("RECOVERY_NEGOTIATION_NOT_COMMITTED");return;}
+            try{long version=nativeVersion(reply);if(version<=originalVersion||!state.cursor.accept(call,version))throw new IllegalArgumentException("Restart did not advance native version");state.recoveryGrantVersion=version;}
+            catch(RuntimeException invalid){fail("RECOVERY_GRANT_VERSION_INVALID");return;}
             sync(state,System.nanoTime());
         }});
     }
