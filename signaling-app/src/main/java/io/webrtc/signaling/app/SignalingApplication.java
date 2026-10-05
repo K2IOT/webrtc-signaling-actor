@@ -5,6 +5,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.context.event.ApplicationFailedEvent;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationListener;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -19,7 +23,15 @@ import org.springframework.core.env.Environment;
 public class SignalingApplication {
     public enum Plane { GATEWAY, ACTOR, CONTROL }
 
-    public static void main(String[] args) { SpringApplication.run(SignalingApplication.class, args); }
+    public static void main(String[] args) {
+        var application=new SpringApplication(SignalingApplication.class);
+        application.addListeners((ApplicationListener<ApplicationFailedEvent>)event->System.err.println(SafeStartupFailure.render(event.getException())));
+        application.run(args);
+    }
+
+    @Bean ApplicationRunner requireNativePlane(Plane plane,ApplicationContext context){
+        return args->NativeRuntimeStartup.requireInstalled(plane,context);
+    }
 
     @Bean Plane deploymentPlane(Environment environment) {
         List<String> planes = Arrays.stream(environment.getActiveProfiles())
