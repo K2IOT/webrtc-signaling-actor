@@ -161,3 +161,13 @@ skew scope, population and counters must agree; unsupported security profiles
 cannot claim ordinary traffic as an abuse run. Aggregate achieved skew, complete
 Main/source enrollment, security drivers and genuine staged same-candidate
 qualification remain open. Tasks 22–24 remain in progress; **NOT_QUALIFIED**.
+
+Fresh full verification at `fffdb85` passed **551 tests in 129 fresh reports**,
+zero failures, errors or skips (2026-10-05T22:38:20Z, 4m47s). Python verification
+passed 60 tests and the static loadgen contract passed. Aggregate burst/skew now
+requires original bound source stages and simultaneous native counter windows;
+a checklist alone fails. Worker drain proves actual task/timer termination, and
+staged source populations use exact integer arithmetic. Native Main, security
+drivers and genuine staged qualification remain open. Required external inputs
+and the remaining implementation are listed in `runbooks/qualification-inputs.md`.
+Tasks 22–24 remain in progress; release remains **NOT_QUALIFIED**.
