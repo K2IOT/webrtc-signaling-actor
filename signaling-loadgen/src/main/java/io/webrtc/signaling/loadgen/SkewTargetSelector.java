@@ -21,10 +21,10 @@ final class SkewTargetSelector {
         try{hash=MessageDigest.getInstance("SHA-256");}catch(NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
         for(long user=population;user<2*population;user++){int bucket=bucket(hash,prefix+user);counts[bucket]++;cells.merge(nativeDirectory[bucket],1L,Long::sum);}
         if(cells.size()>50)throw new IllegalArgumentException("Invalid bounded cell topology");
-        var destinations=new ArrayList<>(cells.keySet());destination=destinations.get((int)Math.floorMod(seed,destinations.size()));destinationPopulation=cells.get(destination);
+        var destinations=new ArrayList<>(cells.keySet());destination=destinationMultiplier==1?null:destinations.get((int)Math.floorMod(seed,destinations.size()));destinationPopulation=destination==null?0:cells.get(destination);
         var eligible=new ArrayList<Integer>();for(int bucket=0;bucket<counts.length;bucket++)if(counts[bucket]>0&&!nativeDirectory[bucket].equals(destination))eligible.add(bucket);
-        if(eligible.isEmpty())throw new IllegalArgumentException("SKEW_PROFILE_IMPOSSIBLE: no independent hot bucket");
-        hotBucket=eligible.get((int)Math.floorMod(Long.rotateLeft(seed,23),eligible.size()));bucketPopulation=counts[hotBucket];
+        if(bucketMultiplier!=1&&eligible.isEmpty())throw new IllegalArgumentException("SKEW_PROFILE_IMPOSSIBLE: no independent hot bucket");
+        hotBucket=bucketMultiplier==1?-1:eligible.get((int)Math.floorMod(Long.rotateLeft(seed,23),eligible.size()));bucketPopulation=hotBucket<0?0:counts[hotBucket];
         long coldPopulation=population-destinationPopulation-bucketPopulation;
         long coldWeight=population-destinationMultiplier*destinationPopulation-bucketMultiplier*bucketPopulation;
         if(coldPopulation<=0||coldWeight<0)throw new IllegalArgumentException("SKEW_PROFILE_IMPOSSIBLE: requested hot shares exceed target population");

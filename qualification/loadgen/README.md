@@ -79,7 +79,22 @@ outcomes fail the worker. Reconnects use reproducible source-seeded full jitter
 with an exponential ceiling from500ms to30s and preserve the original remaining
 HTTP Retry-After minimum (bounded delta/date hints up to24h).
 
-Ordinary traffic and the configured 2x/60s burst are implemented. Nontrivial hot
-destination/bucket multipliers and requested security abuse profiles currently
-fail preflight before opening sockets. Their presence in YAML cannot silently
-produce an ordinary workload presented as skew or security coverage.
+Ordinary traffic, the configured 2x/60s burst and native 5x skew are implemented.
+A seeded actual directory cell receives five times its original callee population
+share of intended INVITEs; an occupied native bucket outside that cell receives
+five times its own share. Remaining demand uses the cold population. Selectors
+use original global arrival ordinals, so worker partitioning does not change
+wire targets or request IDs. Caller scheduling and original latency clocks remain
+unchanged. Impossible target shares fail preflight instead of reducing demand.
+A multiplier of1 disables that hot scope; bucket-only skew works within one cell.
+
+Original summaries and generator time series include `observed.skew`/`workload.skew`
+with selected cell/bucket, actual target population sizes and cumulative INVITE
+attempt counters. Disabled scopes are null with zero counters. These observations
+must establish achieved skew; YAML labels and a local distribution test cannot
+qualify capacity. Normal busy/server/admission failures remain failures.
+
+Requested security abuse profiles still fail preflight before opening sockets.
+Their presence in YAML cannot produce an ordinary workload presented as security
+coverage. Genuine approved source machines and identity inventories remain
+required for staged qualification.
