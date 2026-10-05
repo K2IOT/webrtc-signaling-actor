@@ -190,3 +190,23 @@ qualification verifier; no trusted signature, enrollment fingerprint, native
 production gate, source inventory or measured capacity is invented. No image
 was pushed or deployment performed. Complete Main, six security drivers and
 genuine staged/drill qualification remain open; Tasks 22–24 remain in progress.
+
+## Native security wire checkpoint (2026-10-05)
+
+Source `c4958b7` passed a fresh `clean verify`: **580 tests / 134 reports**,
+zero failures/errors/skips, 5m06s, finished2026-10-05T23:53:40Z. The Python
+verifier/exporter suite passed **63 tests** in26.108s and the static harness
+contract passed. Gateway malformed JSON emits bounded1002; native oversized
+rejection retains its original1009 write instead of prematurely closing TLS.
+Unknown rejection writes have bounded socket cleanup without forged write success.
+
+Actual WSS tests cover matching original close codes, unrelated/absent closes,
+original deadlines, pre-dispatch closure, local write failure followed by the
+original server response, held original write completion and exhausted credits.
+Security probe receipts do not enter ordinary latency/error counters. TEST_ONLY
+authority remains explicit. Six scenario drivers and production source observations
+are still required; **Tasks22–24 remain IN PROGRESS / NOT_QUALIFIED**.
+
+The setup microburst keeps call and setup-frame arrivals coupled through §35
+`C×S`, including their transient population. No steady-concurrency target is
+doubled and no authorization/fencing/TTL rule was relaxed.

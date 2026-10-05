@@ -80,6 +80,9 @@ with an exponential ceiling from500ms to30s and preserve the original remaining
 HTTP Retry-After minimum (bounded delta/date hints up to24h).
 
 Ordinary traffic, the configured 2x/60s burst and native 5x skew are implemented.
+The setup microburst accelerates both call arrivals and their setup-frame arrivals
+for the original first60s, preserving the §35 `C×S` workload relationship and
+recording transient population rather than requiring double steady concurrency.
 A seeded actual directory cell receives five times its original callee population
 share of intended INVITEs; an occupied native bucket outside that cell receives
 five times its own share. Remaining demand uses the cold population. Selectors
