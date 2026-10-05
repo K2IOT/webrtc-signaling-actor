@@ -36,6 +36,12 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
     public RpcBusinessHandler nativeCritical(NativeCriticalCommandExecutor executor){nativeCritical=Objects.requireNonNull(executor);return this;}
     public RpcBusinessHandler nativeReads(SnapshotReads reads){this.nativeReads=Objects.requireNonNull(reads);return this;}
     public boolean nativeReadsConfigured(){return nativeReads!=null;}
+    private volatile Function<RelayRequest,RpcOperation<InternalReply>> nativeRelay;
+    /** A production producer must validate native authorization and supply independent cleanup. */
+    public synchronized RpcBusinessHandler nativeRelay(Function<RelayRequest,RpcOperation<InternalReply>> producer){
+        Objects.requireNonNull(producer);if(nativeRelay!=null)throw new IllegalStateException("Native relay producer already installed");
+        nativeRelay=producer;return this;
+    }
     public interface ActorIngress {
         default RpcOperation<io.webrtc.signaling.actors.call.CallActor.GrantReply> grantTracked(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){var stage=grant(r,action,destination,deadline,bytes);return new RpcOperation<>(stage,stage);}
         default CompletionStage<io.webrtc.signaling.actors.call.CallActor.GrantReply> grant(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){return CompletableFuture.failedFuture(new IllegalStateException("Native shard grant ingress required"));}
@@ -76,7 +82,15 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
                 if(nativeCritical!=null&&Set.of(SignalEnvelope.Type.NEGOTIATE_REQUEST,SignalEnvelope.Type.MEDIA_CONNECTED).contains(command.type()))return tracked(nativeCritical.execute(command,payload.proof(),budget),physical).thenApply(value->reply(c,value.status().equals("FINAL"),value.code(),value));
                 return tracked(actors.callTracked(command,payload.proof(),deadline,bytes),physical).thenApply(value->reply(c,value.status().equals("FINAL"),value.code(),value));}
             if(op==CellRpcServer.Operation.SYNC){var read=decode(c,SyncRead.class);var command=new CallCommand(SignalEnvelope.Type.SYNC_CALL,read.sender(),read.request(),read.call(),CommandScope.call(read.call()),null,null,null,"{}",read.intentHash());var home=homes.apply(read.sender().userId());if(home==null||!peer.cell().equals(home.cell())||!call.equals(read.call())||!operation.equals(read.request().value())||!bindings.commandVerifier(cell,homes).verify(command,null,read.proof())||!sameSender(c.getSender(),read.sender()))return rejected(c,"UNAUTHORIZED");if(nativeReads!=null)return tracked(nativeReads.read(read,budget),physical).thenApply(snapshot->reply(c,false,"SNAPSHOT",snapshot));var stage=reads.apply(read);physical.set(stage);return stage.thenApply(snapshot->reply(c,false,"SNAPSHOT",snapshot));}
-            if(op==CellRpcServer.Operation.RELAY)return relay.apply(new RelayRequest(c,peer,budget));return rejected(c,"UNSUPPORTED_OPERATION");
+            if(op==CellRpcServer.Operation.RELAY){
+                var producer=nativeRelay;if(producer==null)return rejected(c,"UNSUPPORTED_OPERATION");
+                physical.set(new CompletableFuture<Void>());
+                try{
+                    var work=Objects.requireNonNull(producer.apply(new RelayRequest(c,peer,budget)));
+                    return tracked(work,physical);
+                }catch(Throwable unknown){return rejected(c,"OUTCOME_UNKNOWN");}
+            }
+            return rejected(c,"UNSUPPORTED_OPERATION");
         }catch(io.webrtc.signaling.actors.admission.EntityAdmission.Overloaded overloaded){return rejected(c,"OVERLOADED");}catch(DbOverloadedException overloaded){return rejected(c,"OVERLOADED");}catch(Exception invalid){return rejected(c,"UNAUTHORIZED");}
     }
     private static <T> CompletionStage<T> tracked(RpcOperation<T> operation,java.util.concurrent.atomic.AtomicReference<CompletionStage<?>> physical){physical.set(operation.physicalCompletion());return operation.logical();}
