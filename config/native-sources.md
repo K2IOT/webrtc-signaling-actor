@@ -103,5 +103,11 @@ local tenure or trustworthy clock bounds denies the read. Every SQL/home operati
 retains its independent physical receipt. The PostgreSQL fixture exercises setup,
 activation and negotiation before this read, including connection-generation loss.
 Its direct ingress and enrollment remain TEST_ONLY. Installing this producer at the
-actual hosting composition, bounded warm gateway proof reuse and volatile transport
+bounded warm gateway proof reuse and volatile transport
 are still required; this helper alone does not implement end-to-end relay.
+
+`NativeActorComposition.relayAuthorization(network)` binds the producer to this
+composition's real shard grant and live clock/safety gate. A non-hosting process
+cannot refresh relay authority. Existing hosted work may settle through the
+business drain before membership and safety sources stop. Complete process
+startup and gateway proof reuse remain required.
