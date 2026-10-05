@@ -371,6 +371,59 @@ class EvidenceVerifierContractTest(unittest.TestCase):
         (self.root/'worker/summary.json').write_text(json.dumps(summary))
         self.assertIn('WORKER_WORKLOAD_STOP_MISMATCH',verifier.worker_errors(self.root,worker,context,records))
 
+    def burst_skew_window_fixture(self):
+        import json
+        envelope=dict(sockets=40,distinctUsers=40,establishedCalls=1,callAttemptsPerSecond=20,inboundSetupFramesPerSecond=20,registrationsPerSecond=1,crossCellRatio=1)
+        metadata=dict(hotDestinationCell='c001',hotBucket=123,targetUsers=20,destinationUsers=1,bucketUsers=1)
+        scenario=dict(burst=dict(multiplier=2,seconds=60,hotDestinationMultiplier=5,hotBucketMultiplier=5),targets=envelope)
+        path=self.root/'scenario.yaml';path.write_text(json.dumps(scenario))
+        stream=self.root/'generator.jsonl'
+        samples=[]
+        for second in range(2,605,2):
+            samples.append(dict(elapsedNanos=second*1000000000,workload=dict(authenticatedSockets=40,establishedCallerCalls=1,callAttempts=20*second,relayFrames=20*(second+min(second,60)),skew=dict(metadata,destinationAttempts=5*second,bucketAttempts=5*second,totalAttempts=20*second))))
+        stream.write_text(''.join(json.dumps(sample)+'\n' for sample in samples))
+        stage=dict(workers=[dict(generatorSamplesArtifact='generator.jsonl',scenarioArtifact='scenario.yaml')])
+        return stage,envelope,samples,stream
+
+    def test_original_native_burst_skew_window_counts_qualify_only_observed_shape(self):
+        stage,envelope,_,_=self.burst_skew_window_fixture()
+        self.assertEqual(verifier.skew_burst_window_errors(self.root,stage,envelope),[])
+
+    def test_native_profile_targets_bind_envelope_with_source_refresh_fields(self):
+        import json
+        stage,envelope,_,_=self.burst_skew_window_fixture()
+        envelope['name']='TEST_ONLY_UNIT_ENVELOPE'
+        path=self.root/'scenario.yaml';scenario=json.loads(path.read_text());scenario['targets'].update(refreshSeconds=300,heartbeatSeconds=30);path.write_text(json.dumps(scenario))
+        self.assertEqual(verifier.skew_burst_window_errors(self.root,stage,envelope),[])
+
+    def test_native_burst_skew_window_rejects_ordinary_counts_and_sampling_gaps(self):
+        import json,copy
+        stage,envelope,samples,stream=self.burst_skew_window_fixture()
+        for mutation,error in (('ordinary-skew','NO_SIMULTANEOUS_NATIVE_5X_SOURCE_WINDOW'),('ordinary-burst','NO_NATIVE_2X_SETUP_BURST_WINDOW'),('lost-sockets','NO_NATIVE_2X_SETUP_BURST_WINDOW'),('gap','INVALID_BURST_SKEW_SOURCE_MEASUREMENTS'),('different-scope','INVALID_BURST_SKEW_SOURCE_MEASUREMENTS'),('boolean','INVALID_BURST_SKEW_SOURCE_MEASUREMENTS')):
+            with self.subTest(mutation=mutation):
+                altered=copy.deepcopy(samples)
+                if mutation=='ordinary-skew':
+                    for sample in altered:
+                        second=sample['elapsedNanos']//1000000000;sample['workload']['skew'].update(destinationAttempts=second,bucketAttempts=second)
+                elif mutation=='ordinary-burst':
+                    for sample in altered:sample['workload']['relayFrames']=20*(sample['elapsedNanos']//1000000000)
+                elif mutation=='lost-sockets':
+                    for sample in altered:
+                        if 20000000000<=sample['elapsedNanos']<=40000000000:sample['workload']['authenticatedSockets']=39
+                elif mutation=='gap':del altered[30:50]
+                elif mutation=='different-scope':altered[-1]['workload']['skew']['hotBucket']=124
+                else:altered[-1]['workload']['skew']['destinationAttempts']=True
+                stream.write_text(''.join(json.dumps(sample)+'\n' for sample in altered))
+                self.assertIn(error,verifier.skew_burst_window_errors(self.root,stage,envelope))
+
+    def test_signed_burst_skew_checklist_without_original_stage_is_rejected(self):
+        from complete_bundle_fixture import complete_bundle
+        manifest,trust,seal=complete_bundle(verifier,self.root,self.now)
+        manifest['gates']['burst-skew'].pop('metrics',None);seal()
+        report=verifier.verify(self.root,trust,self.now)
+        self.assertEqual(report['decision'],'NOT_QUALIFIED')
+        self.assertIn('MISSING_BURST_SKEW_SOURCE_STAGE',report['errors'])
+
     def test_complete_ephemeral_unit_bundle_and_test_only_flag(self):
         from complete_bundle_fixture import complete_bundle
         manifest,trust,seal=complete_bundle(verifier,self.root,self.now)

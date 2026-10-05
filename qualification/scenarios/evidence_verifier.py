@@ -395,11 +395,98 @@ def p2_source_window_errors(root,stage,envelope,minimum_seconds=300):
             return [] if qualified else ['NO_SIMULTANEOUS_P2_SOURCE_WINDOW']
     except Exception:return ['INVALID_P2_SOURCE_MEASUREMENTS']
 
-def _capacity(root,gate,manifest,records):
+def skew_burst_window_errors(root,stage,envelope):
+    """Join original source clocks/counters; native collectors still attest the population."""
+    import heapq
+    from contextlib import ExitStack
+    metadata=('hotDestinationCell','hotBucket','targetUsers','destinationUsers','bucketUsers')
+    counters=('destinationAttempts','bucketAttempts','totalAttempts')
+    try:
+        workers=stage.get('workers')
+        if not isinstance(workers,list) or not 1<=len(workers)<=4096:raise ValueError('Bounded workers required')
+        scope=None
+        for worker in workers:
+            scenario=yaml.load(_read(artifact_path(root,worker['scenarioArtifact']),65536),Loader=StrictYaml)
+            burst=mapping(scenario.get('burst'))
+            if any(mapping(scenario.get('targets')).get(key)!=envelope.get(key) for key in P2_ENVELOPE) or any(type(burst.get(key)) is not int or burst[key]!=value for key,value in (('multiplier',2),('seconds',60),('hotDestinationMultiplier',5),('hotBucketMultiplier',5))):
+                raise ValueError('Original native burst/skew profile required')
+        def samples(stream):
+            nonlocal scope
+            previous=-1;previous_counts={};count=0;local_scope=None
+            while line:=stream.readline(8193):
+                count+=1
+                if len(line)>8192 or count>100000:raise ValueError('Source bounds')
+                sample=_json_value(line);elapsed=sample.get('elapsedNanos');workload=mapping(sample.get('workload'));node=mapping(workload.get('skew'))
+                if type(elapsed) is not int or elapsed<0 or elapsed<previous or elapsed-max(0,previous)>2250000000:raise ValueError('Original source clock gap')
+                if set(node)!=set(metadata+counters):raise ValueError('Original native skew required')
+                current=tuple(node[key] for key in metadata)
+                if not isinstance(current[0],str) or not re.fullmatch('[a-z][a-z0-9-]{0,23}',current[0]) or type(current[1]) is not int or not 0<=current[1]<16384 or any(type(value) is not int or value<1 for value in current[2:]) or 5*(current[3]+current[4])>current[2]:raise ValueError('Native scope/population')
+                if local_scope is None:local_scope=current
+                if scope is None:scope=current
+                if current!=local_scope or current!=scope:raise ValueError('Original scopes disagree')
+                values={key:workload.get(key) for key in ('authenticatedSockets','establishedCallerCalls','callAttempts','relayFrames')}
+                values.update({key:node[key] for key in counters})
+                if any(type(value) is not int or value<0 for value in values.values()) or any(values[key]<previous_counts.get(key,0) for key in ('callAttempts','relayFrames')+counters):raise ValueError('Native counter regression/type')
+                if node['totalAttempts']!=workload['callAttempts'] or node['destinationAttempts']+node['bucketAttempts']>node['totalAttempts']:raise ValueError('Native counter scope')
+                previous_counts=values;previous=elapsed
+                if elapsed>0:yield elapsed,values
+        with ExitStack() as owners:
+            queue=[];iterators=[];latest=[None]*len(workers);finished=[None]*len(workers)
+            for index,worker in enumerate(workers):
+                path=artifact_path(root,worker['generatorSamplesArtifact'])
+                if path.stat().st_size>134217728:raise ValueError('Source bytes')
+                iterator=samples(owners.enter_context(path.open()));iterators.append(iterator)
+                elapsed,values=next(iterator);heapq.heappush(queue,(elapsed,index,values))
+            burst_start=None;burst_initial=None;burst_qualified=False
+            skew_start=None;skew_initial=None;skew_qualified=False
+            while queue:
+                instant=queue[0][0]
+                while queue and queue[0][0]==instant:
+                    _,index,values=heapq.heappop(queue);latest[index]=(instant,values)
+                    try:
+                        elapsed,following=next(iterators[index]);heapq.heappush(queue,(elapsed,index,following))
+                    except StopIteration:finished[index]=instant
+                if any(value is None or instant-value[0]>2250000000 or end is not None and instant>end for value,end in zip(latest,finished)):
+                    skew_start=None;continue
+                totals={key:sum(value[1][key] for value in latest) for key in latest[0][1]}
+                live=totals['authenticatedSockets']>=envelope['sockets']
+                if not live and instant<=60000000000:burst_start=None;burst_qualified=False
+                if live and instant<=60000000000:
+                    if burst_start is None and instant<=2250000000:burst_start=instant;burst_initial=totals['relayFrames']
+                    if burst_start is not None:
+                        seconds=(instant-burst_start)/1000000000
+                        if seconds>=55.5 and instant>=57750000000 and totals['relayFrames']-burst_initial>=2*envelope['inboundSetupFramesPerSecond']*seconds-len(workers):burst_qualified=True
+                if not live or totals['establishedCallerCalls']<envelope['establishedCalls']:
+                    skew_start=None;continue
+                if skew_start is None:skew_start=instant;skew_initial=totals;continue
+                seconds=(instant-skew_start)/1000000000
+                if seconds<300:continue
+                attempts=totals['callAttempts']-skew_initial['callAttempts']
+                if attempts<seconds*envelope['callAttemptsPerSecond']:continue
+                measured=True
+                for field,population in (('destinationAttempts',scope[3]),('bucketAttempts',scope[4])):
+                    expected=attempts*population/scope[2]
+                    delta=totals[field]-skew_initial[field]
+                    if expected*5<100 or not 4.5*expected<=delta<=5.5*expected:measured=False
+                if measured:skew_qualified=True
+            errors=[]
+            if not burst_qualified:errors.append('NO_NATIVE_2X_SETUP_BURST_WINDOW')
+            if not skew_qualified:errors.append('NO_SIMULTANEOUS_NATIVE_5X_SOURCE_WINDOW')
+            return errors
+    except Exception:return ['INVALID_BURST_SKEW_SOURCE_MEASUREMENTS']
+
+def burst_skew_source_errors(root,gate,manifest,records):
+    stages=mapping(mapping(gate.get('metrics')).get('stages'))
+    if set(stages)!=set(('burst-skew',)):return ['MISSING_BURST_SKEW_SOURCE_STAGE']
+    errors=_capacity(root,gate,manifest,records,('burst-skew',))
+    errors.extend(skew_burst_window_errors(root,stages['burst-skew'],mapping(manifest.get('declaredEnvelope')) or P2_ENVELOPE))
+    return errors
+
+def _capacity(root,gate,manifest,records,stage_names=None):
     errors=[];metrics=gate.get('metrics',{});stages=metrics.get('stages',{}) if isinstance(metrics,dict) else {}
-    if not isinstance(stages,dict) or set(stages)!=set(required_stages(manifest)):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
+    if not isinstance(stages,dict) or set(stages)!=set(stage_names or required_stages(manifest)):return ['MISSING_STAGED_CAPACITY_EVIDENCE']
     previous=None
-    for name in required_stages(manifest):
+    for name in stage_names or required_stages(manifest):
         stage=stages[name]
         if not isinstance(stage,dict):errors.append('INVALID_CAPACITY_STAGE:'+name);continue
         if stage.get('status')!='PASSED' or stage.get('testOnly') is not False or stage.get('generatorLimited') is not False:errors.append('CAPACITY_STAGE_NOT_VALID:'+name)
@@ -598,6 +685,7 @@ def _verify(root,trust_file=None,now=None):
             if gate.get(receipt) and gate[receipt] not in records:errors.append('UNINDEXED_RECEIPT:'+name+':'+receipt)
         errors.extend(drill_receipt_errors(root,gate,name,manifest,records))
         if name=='capacity':errors.extend(_capacity(root,gate,manifest,records))
+        if name=='burst-skew':errors.extend(burst_skew_source_errors(root,gate,manifest,records))
     metadata=manifest.get('environment',{})
     if not isinstance(metadata,dict) or any(not metadata.get(k) for k in ('instanceTypes','kernel','jvm','podRequestsLimits','topology','dependencyVersions','datasetCardinalities','generatorModel','seedScenario','originalFaultTimelines')):errors.append('MISSING_ENVIRONMENT_METADATA')
     envelope_errors,decision=envelope_decision(manifest,records);errors.extend(envelope_errors)

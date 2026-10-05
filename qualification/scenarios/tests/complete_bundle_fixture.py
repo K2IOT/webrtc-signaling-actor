@@ -19,8 +19,8 @@ def complete_bundle(verifier, root, now):
     context = dict(candidateId=root.name, gitCommit='a'*40,
                    imageDigests={'actor':'sha256:'+'f'*64, 'gateway':'sha256:'+'1'*64, 'control':'sha256:'+'2'*64},
                    **{key:'a'*64 for key in verifier.BINDINGS})
-    envelope = dict(name='TEST_ONLY_UNIT_ENVELOPE', sockets=4, distinctUsers=4,
-                    establishedCalls=1, callAttemptsPerSecond=1, meanCallSeconds=300,
+    envelope = dict(name='TEST_ONLY_UNIT_ENVELOPE', sockets=40, distinctUsers=40,
+                    establishedCalls=1, callAttemptsPerSecond=20, meanCallSeconds=300,
                     inboundSetupFramesPerSecond=1, registrationsPerSecond=1, crossCellRatio=1)
     start = now-timedelta(days=1, minutes=40)
     fixture = Path(__file__).parent/'fixtures'/'TEST_ONLY_latency.hdr'
@@ -35,15 +35,17 @@ def complete_bundle(verifier, root, now):
 
     stages = {}
     headroom = {key:True for key in ('cpu','nic','fd','eventLoop','pendingOperations','pendingBytes')}
-    for name in verifier.required_stages({'declaredEnvelope':envelope}):
+    for name in verifier.required_stages({'declaredEnvelope':envelope})+('burst-skew',):
         seconds = 86400 if name=='soak-24h' else 302
         scheduled = start+timedelta(seconds=1)
         finished = scheduled+timedelta(seconds=seconds)
         prefix = name+'/worker'
         config = dict(context, testOnly=False, seed=42, workerIndex=0, workerCount=1,
-                      stageSockets=4, localSocketLimit=4, sourceIps=['192.0.2.1'],
+                      stageSockets=40, localSocketLimit=40, sourceIps=['192.0.2.1'],
                       workerHostId='TEST_ONLY_HOST', scheduledStartAt=scheduled.isoformat())
         scenario = dict(name='TEST_ONLY_UNIT_SCENARIO', targets=envelope, durationSeconds=seconds)
+        skew_metadata=dict(hotDestinationCell='c001',hotBucket=123,targetUsers=20,destinationUsers=1,bucketUsers=1)
+        if name=='burst-skew':scenario['burst']=dict(multiplier=2,seconds=60,hotDestinationMultiplier=5,hotBucketMultiplier=5)
         write(prefix+'/config.json',json.dumps(config))
         write(prefix+'/scenario.yaml',yaml.safe_dump(scenario))
         raw_path = root/(prefix+'/latency.hdr')
@@ -55,31 +57,37 @@ def complete_bundle(verifier, root, now):
                           cpu=.1,nicReceiveBytesPerSecond=1,nicTransmitBytesPerSecond=1,
                           nicCapacityBytesPerSecond=1000,fd=1,fdSoftLimit=100,eventLoopLagNanos=0,
                           pendingOperations=0,maxPendingOperations=100,pendingBytes=0,maxPendingBytes=1000,
-                          headroom=headroom, workload=dict(authenticatedSockets=4, establishedCallerCalls=1,
-                          callAttempts=elapsed,crossCellAttempts=elapsed,relayFrames=elapsed,
+                          headroom=headroom, workload=dict(authenticatedSockets=40, establishedCallerCalls=1,
+                          callAttempts=20*elapsed,crossCellAttempts=20*elapsed,relayFrames=elapsed,
                           registrations=elapsed,reconnects=0))
+            if name=='burst-skew':
+                sample['workload']['relayFrames']=elapsed+min(elapsed,60)
+                sample['workload']['skew']=dict(skew_metadata,destinationAttempts=5*elapsed,bucketAttempts=5*elapsed,totalAttempts=20*elapsed)
             samples.append(json.dumps(sample,separators=(',',':')))
         write(prefix+'/generator.jsonl','\n'.join(samples)+'\n')
         summary = dict(context, status='PASSED',testOnly=False,seed=42,workerIndex=0,workerCount=1,
-                       workerHostId='TEST_ONLY_HOST',sourceIp='192.0.2.1',socketRange=dict(start=0,end=4),
+                       workerHostId='TEST_ONLY_HOST',sourceIp='192.0.2.1',socketRange=dict(start=0,end=40),
                        rawHistogram='latency.hdr',generatorSamples='generator.jsonl',failures=[],
                        configHash=records[prefix+'/config.json']['sha256'],scenarioHash=records[prefix+'/scenario.yaml']['sha256'],
                        scenario=scenario['name'],requestedTargets=scenario['targets'],startedAt=start.isoformat(),
                        finishedAt=finished.isoformat(),cleanupFinishedAt=(finished+timedelta(seconds=1)).isoformat(),
                        observed=dict(attempts=raw['count'],successes=raw['count'],failures=0,missedIntendedArrivals=0,
-                       lateDispatches=0,peakAuthenticatedSockets=4,peakEstablishedCallerCalls=1,callAttempts=seconds,
-                       crossCellAttempts=seconds,relayFrames=seconds,registrations=seconds,reconnects=0,
+                       lateDispatches=0,peakAuthenticatedSockets=40,peakEstablishedCallerCalls=1,callAttempts=20*seconds,
+                       crossCellAttempts=20*seconds,relayFrames=seconds,registrations=seconds,reconnects=0,
                        durationSeconds=seconds,workloadDurationNanos=seconds*1000000000,
                        scheduledStartAt=scheduled.isoformat(),latencies={'CONTROL':dict(samples=raw['count'],
                        **{key+'Ms':raw[key] for key in ('p50','p95','p99','p999')})}))
+        if name=='burst-skew':
+            summary['observed']['relayFrames']=seconds+60
+            summary['observed']['skew']=dict(skew_metadata,destinationAttempts=5*seconds,bucketAttempts=5*seconds,totalAttempts=20*seconds)
         write(prefix+'/summary.json',json.dumps(summary))
         worker = dict(workerIndex=0,workerCount=1,hostId='TEST_ONLY_HOST',sourceIp='192.0.2.1',socketStart=0,
-                      socketEnd=4,testOnly=False,generatorLimited=False,headroom=headroom,
+                      socketEnd=40,testOnly=False,generatorLimited=False,headroom=headroom,
                       summaryArtifact=prefix+'/summary.json',rawHistogramArtifact=prefix+'/latency.hdr',
                       generatorSamplesArtifact=prefix+'/generator.jsonl',phaseArtifacts={'CONTROL':prefix+'/latency.hdr'},
                       configArtifact=prefix+'/config.json',scenarioArtifact=prefix+'/scenario.yaml')
         stages[name] = dict(context,status='PASSED',testOnly=False,generatorLimited=False,startedAt=start.isoformat(),
-                            finishedAt=finished.isoformat(),durationSeconds=seconds,observedSockets=4,workers=[worker],
+                            finishedAt=finished.isoformat(),durationSeconds=seconds,observedSockets=40,workers=[worker],
                             observed=envelope,resourceMeasurements={key:1 for key in verifier.RESOURCE_METRICS},
                             histograms={kind:dict(raw,rawArtifact=prefix+'/latency.hdr') for kind in ('control','relay','activation','clientDelivery')})
         start = finished+timedelta(seconds=1)
@@ -113,7 +121,8 @@ def complete_bundle(verifier, root, now):
         if name=='dr-restore':
             for key in ('physicalFenceReceipt','acknowledgedWalReceipt','outsideBackupEpochHighWaterReceipt'):
                 gate[key]={'physicalFenceReceipt':'physical-fence.json','acknowledgedWalReceipt':'acknowledged-wal.json','outsideBackupEpochHighWaterReceipt':'outside-epoch.json'}[key]
-        if name=='capacity':gate['metrics']={'stages':stages}
+        if name=='capacity':gate['metrics']={'stages':{key:value for key,value in stages.items() if key!='burst-skew'}}
+        if name=='burst-skew':gate['metrics']={'stages':{'burst-skew':stages['burst-skew']}}
         if name=='soak':gate['metrics']={'durationSeconds':86400,'retainedDatasetAgeSeconds':86400}
         if name=='n-minus-one':gate['metrics']={'eligibleReconnects':1,'p99ReconnectSeconds':1}
         gates[name]=gate

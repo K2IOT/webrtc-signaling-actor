@@ -102,3 +102,23 @@ the verifier's 12-gate positive path, including bounded HDR and source samples.
 Its disposable signing key and production-shaped flags are parser test inputs;
 its measurements and drill payloads are synthetic. The fixture is never an
 enrolled collector or a candidate evidence bundle.
+
+The `burst-skew` gate requires its own `metrics.stages.burst-skew` descriptor,
+with the original candidate-bound workers, inputs, HDRs, resource observations
+and UTC interval. A signed checklist without that stage fails. The verifier joins
+original source clocks, requires identical native hot scope/population metadata,
+and rejects missing, rebound, boolean, regressing or gapped counters. A common
+>=300s window must hold live socket/caller-call targets and the declared call
+rate. Destination and bucket attempt shares must each be 4.5–5.5 times their
+original population share, with >=100 expected hot attempts per scope. This
+sampling tolerance applies to offered-load distribution; native safety gates
+retain their strict semantics.
+
+The original first60s setup burst must show twice the baseline setup-frame rate
+with continuously observed live sockets. Endpoint polling margins are <=2.25s,
+so the measured interior must cover >=55.5s and reach >=57.75s; the original UTC
+run must still include the complete burst. Source clock gaps cannot hide missing
+load. These observations supplement enrolled native measurements, including
+actual directory/population provenance, fanout, slow consumers, malicious valid
+traffic and shedding. They do not establish those other checks or production
+qualification. The complete positive fixture remains temporary and UNIT ONLY.
