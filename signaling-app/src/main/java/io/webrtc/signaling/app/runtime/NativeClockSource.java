@@ -19,7 +19,7 @@ public final class NativeClockSource implements AutoCloseable {
         .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
         .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(8).maxStringLength(4096).maxNumberLength(20).build()).build())
         .findAndRegisterModules().disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
-        .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
+        .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES,DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final NativeSourceHttp http;private final ClockSafetyMonitor monitor;
     private final CompletableFuture<Void> drained=new CompletableFuture<>();
     private boolean active,draining;

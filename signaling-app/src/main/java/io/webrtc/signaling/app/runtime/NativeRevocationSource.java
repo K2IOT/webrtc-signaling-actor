@@ -18,7 +18,7 @@ public final class NativeRevocationSource implements AutoCloseable {
     private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
         .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(8).maxStringLength(8192).maxNumberLength(20).build()).build())
         .findAndRegisterModules().disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
-        .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES,DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
+        .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES,DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES,DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final NativeSourceHttp http;private final RevocationSourceVerifier verifier;private final RevocationReconciler reconciler;
     private boolean active,draining;private long checkedNanos;private Instant checkedAt;
     private CompletableFuture<Void> admitted=CompletableFuture.completedFuture(null);

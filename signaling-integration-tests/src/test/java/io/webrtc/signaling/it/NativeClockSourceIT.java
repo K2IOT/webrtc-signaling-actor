@@ -47,11 +47,12 @@ class NativeClockSourceIT {
                 Instant now=Instant.now();var report=new ClockSafetyMonitor.Report("TEST_ONLY_SOURCE","c001",1,pod,boot,sequence.incrementAndGet(),now,now.plusSeconds(5),250000,1000,true);
                 var signature=Signature.getInstance("Ed25519");signature.initSign(keys.getPrivate());signature.update(ClockSafetyMonitor.signingBytes(report));String signed=Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign());
                 var payload=JSON.createObjectNode();payload.set("report",JSON.valueToTree(report));payload.put("signature",mode.get()==1?"a".repeat(86):signed);String body=mode.get()==2?"x".repeat(32769):payload.toString();if(mode.get()==3)body=body.substring(0,body.length()-1)+",\"signature\":\""+signed+"\"}";
+                if(mode.get()==5)body+="{}";
                 var response=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK,Unpooled.copiedBuffer(body,StandardCharsets.UTF_8));response.headers().set(HttpHeaderNames.CONTENT_TYPE,"application/json").setInt(HttpHeaderNames.CONTENT_LENGTH,response.content().readableBytes());if(mode.get()==4)heldResponse.complete(()->ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE));else ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
             }});}}).bind("127.0.0.1",0).sync().channel();int port=((InetSocketAddress)server.localAddress()).getPort();
             try(var source=new NativeClockSource(URI.create("https://localhost:"+port+"/v1/clock-bound"),clientTls(true),monitor,pod,boot)){
                 assertThat(source.poll(Duration.ofSeconds(1))).isTrue();assertThat(monitor.valid()).isTrue();
-                for(int invalid:new int[]{1,2,3}){mode.set(invalid);assertThat(source.poll(Duration.ofSeconds(1))).isFalse();assertThat(monitor.valid()).isFalse();}
+                for(int invalid:new int[]{1,2,3,5}){mode.set(invalid);assertThat(source.poll(Duration.ofSeconds(1))).isFalse();assertThat(monitor.valid()).isFalse();}
                 mode.set(0);var observed=new CountDownLatch(1);try(var workers=new NativeWorkerScheduler(List.of(source.job(Duration.ofMillis(100))),event->{if(event.status()==NativeWorkerScheduler.Status.COMPLETED)observed.countDown();})){workers.start();assertThat(observed.await(3,TimeUnit.SECONDS)).isTrue();assertThat(monitor.valid()).isTrue();workers.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);}
                 source.drain().toCompletableFuture().get(1,TimeUnit.SECONDS);assertThat(source.poll(Duration.ofSeconds(1))).isFalse();assertThat(monitor.valid()).isFalse();
             }

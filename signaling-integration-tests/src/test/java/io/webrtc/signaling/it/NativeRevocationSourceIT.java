@@ -53,6 +53,7 @@ class NativeRevocationSourceIT {
                     String body=NativeClockSourceIT.JSON.writeValueAsString(page);
                     if(mode.get()==5)body=body.substring(0,body.length()-1)+",\"highWater\":0}";
                     if(mode.get()==6)body=body.substring(0,body.length()-1)+",\"healthy\":true}";
+                    if(mode.get()==9)body+="{}";
                     if(mode.get()==7){var value=NativeClockSourceIT.JSON.readTree(body);((com.fasterxml.jackson.databind.node.ObjectNode)value).remove("fromOffset");body=value.toString();}
                     var response=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK,Unpooled.copiedBuffer(body,StandardCharsets.UTF_8));response.headers().set(HttpHeaderNames.CONTENT_TYPE,"application/json").setInt(HttpHeaderNames.CONTENT_LENGTH,response.content().readableBytes());
                     Runnable send=()->ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
@@ -64,7 +65,7 @@ class NativeRevocationSourceIT {
                     java.util.concurrent.locks.LockSupport.parkNanos(Duration.ofMillis(1100).toNanos());
                     assertThat(source.usable()).isFalse();
                     mode.set(1);var invalid=source.poll(Duration.ofSeconds(2));assertThat(invalid.logical().toCompletableFuture()).isCompletedExceptionally();invalid.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(source.usable()).isFalse();
-                    for(int malformed:new int[]{4,5,6,7}){
+                    for(int malformed:new int[]{4,5,6,7,9}){
                         mode.set(malformed);var rejected=source.poll(Duration.ofSeconds(2));assertThat(rejected.logical().toCompletableFuture()).isCompletedExceptionally();rejected.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(source.usable()).isFalse();
                     }
                     assertThat(CoordinatorGrantIT.done(reconciler.progress()).offset()).isZero();
