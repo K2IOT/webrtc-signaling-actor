@@ -56,6 +56,7 @@ public final class VirtualClient {
     public long retryAfterNanos(){var original=retryHint;return original==null||original.generation()!=generations.get()?0:Math.max(0,original.delayNanos()-(System.nanoTime()-original.observedNanos()));}
     public long generation(){return generations.get();}
     public long index(){return index;}public String user(){return user;}public String cell(){return cell;}public boolean authenticated(){var c=channel;return !draining&&authenticated&&c!=null&&c.isActive();}public boolean writable(){var c=channel;return !draining&&probeSlot.get()==null&&authenticated&&c!=null&&c.isActive()&&c.isWritable()&&pending.size()<8;}
+    public synchronized boolean probeReady(){return writable()&&pending.isEmpty();}
     public synchronized CompletionStage<JsonNode> connect(long intended){
         if(draining||probeSlot.get()!=null||channel!=null&&channel.isOpen())return CompletableFuture.failedFuture(new IllegalStateException("Connection already owned"));authenticated=false;nativeAuth=null;long generation=generations.incrementAndGet();
         var ready=new CompletableFuture<JsonNode>();ready.whenComplete((v,e)->evidence.record(EvidenceWriter.Operation.CONNECT,intended,System.nanoTime(),e==null));int port=endpoint.getPort()<0?443:endpoint.getPort();

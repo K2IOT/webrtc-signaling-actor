@@ -129,7 +129,32 @@ These primitives are tested over real TLS1.3 with TEST_ONLY RS256 authority and
 production decoder/validator handlers. The scenario orchestrator and enrolled
 security observations still need all six drivers before security qualification.
 
-Requested security abuse profiles still fail preflight before opening sockets.
+The worker now schedules `malformed` and `oversized` modes. `abuseFraction`
+selects a deterministic fraction of the original offered setup-frame arrival
+stream (the relay schedule), shared across workers by global arrival ordinal.
+Selected arrivals send a raw probe in place of an ordinary relay frame. Call,
+registration and refresh clocks retain their original schedules. The fraction
+must be numeric, positive, at most one and representable in millionths; modes
+must be unique. Up to16 local socket checks select an idle authenticated client
+without renewing its intended arrival. Failure to admit or complete a probe is
+published as a source failure and blocks worker success.
+
+`observed.security` and resource time-series `security` publish separate mode
+and outcome counters. `logicalRejected` records the matching native close within
+the original two-second window; `verifiedRejected` also requires its original
+write/socket physical receipt. `pendingPhysical` and `cleanupUnknown` preserve
+unknown cleanup. Invalid probe traffic does not enter authorized-operation HDRs
+or their success/error denominator. Authorized reconnect/AUTH traffic retains
+ordinary accounting. WSS smoke tests exercise both actual worker modes with
+TEST_ONLY issuer keys and registration; they do not qualify real capacity.
+
+`slowConsumer`, `staleGeneration`, `revokedJti` and `retiredSigningKey` remain
+unsupported by scenario scheduling. The stale-generation primitive requires a
+native same-incarnation/newer AUTH_OK and exact original stale closure, but is
+not yet a scheduled mode. The complete `security-abuse.yaml` profile still fails
+preflight until all requested modes and their approved inputs are implemented.
+
+Profiles requesting any remaining unsupported mode still fail preflight before opening sockets.
 Their presence in YAML cannot produce an ordinary workload presented as security
 coverage. Genuine approved source machines and identity inventories remain
 required for staged qualification.

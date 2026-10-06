@@ -2,7 +2,7 @@
 
 Implementation of the v1.11 production-standard target specification. Tasks 1–21 have local contract coverage; **Tasks 22–24 remain in progress**. The branch includes fenced PostgreSQL/Pekko call and session state, scoped command results, native cross-cell proof/activation composition, bounded WSS and RPC transports, physical completion tracking, relay/recovery primitives, maintenance workers, telemetry and deployment/runbook contracts.
 
-Native qualification work now covers signed clock reports over actual mTLS source I/O, winner-only snapshot authorization, portable proof expiry, original-ID RPC retries and native shutdown. The distributed worker uses real TLS1.3/RS256, seeded disjoint call ranges, bounded live ICE traces, current-socket reconnect sequencing, raw HDR histograms and original workload/resource time series. Native 5x destination/bucket selection and bounded malformed/oversized wire probes now exist. Complete native launcher/source installation, all six orchestrated security drivers and genuine staged production runs remain open.
+Native qualification work now covers signed clock reports over actual mTLS source I/O, winner-only snapshot authorization, portable proof expiry, original-ID RPC retries and native shutdown. The distributed worker uses real TLS1.3/RS256, seeded disjoint call ranges, bounded live ICE traces, current-socket reconnect sequencing, raw HDR histograms and original workload/resource time series. Native 5x destination/bucket selection and scheduled malformed/oversized wire probes now exist, with separate original-source counters. Complete native launcher/source installation, the four remaining security schedulers and genuine staged production runs remain open.
 
 ## Build
 

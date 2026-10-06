@@ -17,9 +17,10 @@ documented in `config/native-sources.md`. This does not install source enrollmen
 policies or native factories, and does not demonstrate serving a business listener.
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
-native 5x destination/bucket selection. The six security drivers in
-`security-abuse.yaml` remain unwired in the scenario orchestrator and are rejected
-before socket startup. Bounded malformed/oversized wire primitives now observe
+native 5x destination/bucket selection. The scenario orchestrator now schedules
+`malformed` and `oversized`, with separate original-source counters. The four
+other modes in `security-abuse.yaml` remain unwired and the complete six-mode
+profile still rejects before socket startup. Bounded raw wire probes observe
 native gateway close codes and original physical completion over WSS. A separate
 stale-generation probe now installs the original observer before opening a fresh
 same-user replacement, requires same-incarnation/newer native AUTH_OK plus the

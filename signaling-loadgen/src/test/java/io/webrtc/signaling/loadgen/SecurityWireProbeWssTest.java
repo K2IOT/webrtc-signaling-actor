@@ -69,14 +69,18 @@ class SecurityWireProbeWssTest {
             }).get(3,TimeUnit.SECONDS);
             if(mode==Mode.EARLY_CLOSE){original.eventLoop().execute(()->{queued.countDown();try{if(!release.await(3,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY barrier timeout");for(var entry:original.pipeline()){var handler=entry.getValue();if(handler.getClass().isAnonymousClass()&&handler instanceof ChannelInboundHandlerAdapter inbound&&!(handler instanceof SimpleChannelInboundHandler<?>)){inbound.channelRead(original.pipeline().context(handler),new CloseWebSocketFrame(1002,"TEST_ONLY_UNRELATED"));break;}}}catch(Exception error){throw new AssertionError(error);}});assertThat(queued.await(3,TimeUnit.SECONDS)).isTrue();}
             long intended=System.nanoTime();
-            var probe=client.probe(oversized?VirtualClient.ProbeKind.OVERSIZED:VirtualClient.ProbeKind.MALFORMED,intended);
+            var workload=SecurityWorkload.parse(new ObjectMapper().readTree("{\"abuse\":[\""+(oversized?"oversized":"malformed")+"\"],\"abuseFraction\":1}"));
+            var probe=workload.start(client,oversized?VirtualClient.ProbeKind.OVERSIZED:VirtualClient.ProbeKind.MALFORMED,intended);
             if(mode==Mode.LATE_CLOSE){assertThat(queued.await(3,TimeUnit.SECONDS)).isTrue();Thread.sleep(2150);}
             release.countDown();
             if(mode==Mode.WRITE_FAILURE_THEN_CLOSE){var ctx=delayedHandler.get(3,TimeUnit.SECONDS);original.eventLoop().submit(()->held.get().setFailure(new java.io.IOException("TEST_ONLY original write failed"))).get(3,TimeUnit.SECONDS);ctx.executor().submit(()->ctx.fireChannelRead(delayedInput.getAndSet(null))).get(3,TimeUnit.SECONDS);}
             var observed=probe.observed().toCompletableFuture().get(3,TimeUnit.SECONDS);
-            if(mode==Mode.HELD_WRITE){original.closeFuture().sync();var drain=client.drain();original.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);assertThat(drain.toCompletableFuture()).isNotDone();assertThat(probe.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(credits.count()).isEqualTo(1);assertThat(credits.bytes()).isEqualTo(1);original.eventLoop().submit(()->held.get().setSuccess()).get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);}
+            if(mode==Mode.HELD_WRITE){original.closeFuture().sync();var drain=client.drain();original.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);assertThat(drain.toCompletableFuture()).isNotDone();assertThat(probe.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(workload.snapshot().get("verifiedRejected")).isEqualTo(0L);assertThat(workload.snapshot().get("pendingPhysical")).isEqualTo(1L);assertThat(credits.count()).isEqualTo(1);assertThat(credits.bytes()).isEqualTo(1);original.eventLoop().submit(()->held.get().setSuccess()).get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);}
             probe.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             nativePeer.get().eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);
+            assertThat(workload.snapshot().get("attempted")).isEqualTo(1L);
+            assertThat(workload.snapshot().get("pendingPhysical")).isEqualTo(0L);
+            assertThat(workload.snapshot().get("verifiedRejected")).isEqualTo(mode==Mode.NORMAL||mode==Mode.HELD_WRITE||mode==Mode.WRITE_FAILURE_THEN_CLOSE||mode==Mode.CLOSE_FUTURE_FIRST?1L:0L);
             switch(mode){
                 case NORMAL,HELD_WRITE,WRITE_FAILURE_THEN_CLOSE,CLOSE_FUTURE_FIRST -> {assertThat(observed.closeCode()).as(observed.toString()).isEqualTo(oversized?1009:1002);assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.PROTOCOL_REJECTED);}
                 case ABRUPT -> {assertThat(observed.closeCode()).isEqualTo(-1);assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE);}
