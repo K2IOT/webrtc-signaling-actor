@@ -21,6 +21,8 @@ class OutboundRelayReceiptTest {
         try{
             var logical=channel.writeAndFlush(frame);assertThat(logical.isDone()).isFalse();assertThat(frame.physicalCompletion().toCompletableFuture()).isNotDone();
             channel.advanceTimeBy(11,TimeUnit.SECONDS);channel.runScheduledPendingTasks();
+            assertThat(channel.isActive()).isTrue();assertThat(GatewayRejection.rejecting(channel)).isTrue();
+            channel.advanceTimeBy(1100,TimeUnit.MILLISECONDS);channel.runScheduledPendingTasks();
             assertThat(logical.isSuccess()).isFalse();assertThat(channel.isActive()).isFalse();assertThat(frame.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(aggregate.retainedBytes()).isGreaterThanOrEqualTo(8192);
             transport.settled();assertThat(frame.physicalCompletion().toCompletableFuture()).isDone();assertThat(aggregate.retainedBytes()).isZero();assertThat(frame.refCnt()).isZero();
         }finally{transport.settled();channel.finishAndReleaseAll();}
