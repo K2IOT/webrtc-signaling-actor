@@ -24,7 +24,8 @@ import org.junit.jupiter.api.Test;
 
 /** Real TLS/RS256 and native handlers; registration/feed are explicit TEST_ONLY fixtures. */
 class SecurityClosureWssTest {
-    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, STALE_POOLED, STALE_NO_HEADROOM, STALE_LATE_AUTH, SLOW_PRESSURE, SLOW_SILENT, SLOW_UNRELATED, REVOKED, REVOKED_LATE, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
+    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, STALE_POOLED, STALE_POOLED_QUIESCE, STALE_NO_HEADROOM, STALE_LATE_AUTH, SLOW_PRESSURE, SLOW_SILENT, SLOW_UNRELATED, REVOKED, REVOKED_LATE, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
+    @Test void replacementPoolQuiescePreservesAdmittedNativeAuthAndOriginalClosure()throws Exception {run(Mode.STALE_POOLED_QUIESCE);}
     @Test void ownedReadPauseObservesNativeBoundedQueuePressureOverWss()throws Exception {run(Mode.SLOW_PRESSURE);}
     @Test void readPauseWithoutNativePressureCannotClaimBackpressureIsolation()throws Exception {run(Mode.SLOW_SILENT);}
     @Test void nativeAuthorizationClosureCannotBeCountedAsPressureRejection()throws Exception {run(Mode.SLOW_UNRELATED);}
@@ -50,7 +51,7 @@ class SecurityClosureWssTest {
             public boolean currentBoot(){return true;}
             public CompletionStage<AuthPrincipal> verify(String value,Instant at){try{return CompletableFuture.completedFuture(verifier.validate(value,at));}catch(AuthException denied){return CompletableFuture.failedFuture(denied);}}
             public AuthorizationStatus cachedSecurity(AuthPrincipal p,Instant at){return status.get();}
-            public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID connection,Duration budget){long generation=generations.incrementAndGet();var nativeIncarnation=mode==Mode.STALE_WRONG_INCARNATION&&generation>1?new SessionIncarnation(UUID.randomUUID()):incarnation;var route=new SessionRepository.Route(p.userId(),p.key(),nativeIncarnation,generation,"TEST_ONLY_gw",boot,connection,p.expiresAt(),p.signingKeyId(),1);if(mode==Mode.STALE_LATE_AUTH&&generation>1){replacementRoute.set(route);registrationReady.countDown();return delayedRegistration;}return CompletableFuture.completedFuture(route);}
+            public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID connection,Duration budget){long generation=generations.incrementAndGet();var nativeIncarnation=mode==Mode.STALE_WRONG_INCARNATION&&generation>1?new SessionIncarnation(UUID.randomUUID()):incarnation;var route=new SessionRepository.Route(p.userId(),p.key(),nativeIncarnation,generation,"TEST_ONLY_gw",boot,connection,p.expiresAt(),p.signingKeyId(),1);if((mode==Mode.STALE_LATE_AUTH||mode==Mode.STALE_POOLED_QUIESCE)&&generation>1){replacementRoute.set(route);registrationReady.countDown();return delayedRegistration;}return CompletableFuture.completedFuture(route);}
             public CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal p,Duration budget){return CompletableFuture.failedFuture(new UnsupportedOperationException("TEST_ONLY"));}
             public CompletionStage<Void> close(SessionRepository.Route route){return CompletableFuture.completedFuture(null);}
             public CompletionStage<String> command(CallCommand command,Duration budget){throw new AssertionError("Passive observation must not send business commands");}
@@ -81,10 +82,15 @@ class SecurityClosureWssTest {
                 assertThat(original.config().isAutoRead()).isTrue();assertThat(evidence.attempts()).isEqualTo(ordinary);
                 assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();return;
             }
-            if(mode==Mode.STALE_POOLED||mode==Mode.STALE_NO_HEADROOM){
+            if(mode==Mode.STALE_POOLED||mode==Mode.STALE_POOLED_QUIESCE||mode==Mode.STALE_NO_HEADROOM){
                 var source=SecurityWorkload.parse(new com.fasterxml.jackson.databind.ObjectMapper().readTree("{\"abuse\":[\"staleGeneration\"],\"abuseFraction\":1}"));
                 var pool=new SecurityReplacementPool(1,mode==Mode.STALE_NO_HEADROOM?1:2);
                 var operation=pool.start(source,old,intended);
+                if(mode==Mode.STALE_POOLED_QUIESCE){
+                    assertThat(registrationReady.await(3,TimeUnit.SECONDS)).isTrue();var frozen=pool.quiesce().toCompletableFuture();var originalFrozen=old.quiesce().toCompletableFuture();
+                    assertThat(frozen).isNotDone();assertThat(originalFrozen).isNotDone();assertThat(original.isActive()).isTrue();
+                    delayedRegistration.complete(replacementRoute.get());frozen.get(3,TimeUnit.SECONDS);originalFrozen.get(3,TimeUnit.SECONDS);
+                }
                 if(mode==Mode.STALE_NO_HEADROOM){
                     assertThat(operation).isEmpty();assertThat(generations).hasValue(1);
                     assertThat(source.snapshot().get("unknown")).isEqualTo(1L);assertThat(source.generatorLimited()).isTrue();
@@ -151,7 +157,7 @@ class SecurityClosureWssTest {
             var receipt=observation.observed().toCompletableFuture().get(6,TimeUnit.SECONDS);observation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(receipt.intendedNanos()).isEqualTo(intended);assertThat(receipt.generation()).isEqualTo(old.generation());assertThat(evidence.attempts()).isEqualTo(ordinary);assertThat(receipt.toString()).doesNotContain("PRIVATE","TEST_ONLY_jti",token);assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
             if(mode==Mode.SILENT){assertThat(receipt.outcome()).isEqualTo(VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN);assertThat(receipt.finishedNanos()-intended).isBetween(TimeUnit.MILLISECONDS.toNanos(4900),TimeUnit.MILLISECONDS.toNanos(5600));}
-            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.REVOKED_LATE?VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN:mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT,STALE_POOLED,STALE_NO_HEADROOM,STALE_LATE_AUTH,SLOW_PRESSURE,SLOW_SILENT,SLOW_UNRELATED->throw new AssertionError();case REVOKED,REVOKED_LATE->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});if(mode==Mode.REVOKED_LATE)assertThat(receipt.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));}
+            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.REVOKED_LATE?VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN:mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT,STALE_POOLED,STALE_POOLED_QUIESCE,STALE_NO_HEADROOM,STALE_LATE_AUTH,SLOW_PRESSURE,SLOW_SILENT,SLOW_UNRELATED->throw new AssertionError();case REVOKED,REVOKED_LATE->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});if(mode==Mode.REVOKED_LATE)assertThat(receipt.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));}
         }finally{if(old!=null)old.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(newer!=null)newer.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();loops.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
     }
 }
