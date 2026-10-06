@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.*;
 /** Worker orchestration: bounded open-loop arrivals, genuine issuer inventory and measured source headroom. */
 public final class ScenarioRunner {
     private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(131072).build()).build()).findAndRegisterModules();
-    private static final ObjectMapper YAML=new ObjectMapper(new YAMLFactory()).findAndRegisterModules();
+    private static final ObjectMapper YAML=new ObjectMapper(YAMLFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+        .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(65536).maxNumberLength(20).build()).build()).findAndRegisterModules();
     private record Token(String text,AuthPrincipal principal){@Override public String toString(){return "Token[redacted]";}}
     private record Round(String call,String negotiation,String ice,NegotiationTrace trace){Round(String call,String negotiation,String ice){this(call,negotiation,ice,new NegotiationTrace(System.nanoTime(),1_000_000_000L,256));}}
     private static final class State {final VirtualClient client;final AtomicLong operations=new AtomicLong();final CallEventCursor cursor=new CallEventCursor();volatile boolean outgoing,closed,established,accepting,lookup,recovering,negotiating;volatile String call;volatile UUID invite;volatile Round round;volatile SnapshotOffer.Session session;volatile long lastOfferedRound,lastAnsweredRound,lastObservedIce,recoveryGrantVersion;volatile long nextHeartbeat,nextRefresh,reconnectAt,hangupAt,nextLookup;long scheduledReconnectGeneration=-1;int reconnectAttempt;State(VirtualClient c){client=c;}}
