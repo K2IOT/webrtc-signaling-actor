@@ -87,11 +87,12 @@ public final class VirtualClient {
         evidence.dispatched(intended,System.nanoTime());c.writeAndFlush(new TextWebSocketFrame(encoded)).addListener(write->p.written(write.isSuccess()));return p.reply.minimalCompletionStage();
     }
     public synchronized void heartbeat(){var c=channel;if(draining||c==null||!authenticated||probeSlot.get()!=null)return;long stamp=System.nanoTime();lastPong=stamp;c.writeAndFlush(new PingWebSocketFrame());c.eventLoop().schedule(()->{if(lastPong==stamp)c.close();},10,TimeUnit.SECONDS);}
-    public void slowConsumer(boolean slow){var c=channel;if(c!=null)c.config().setAutoRead(!slow);}
-    public enum ProbeKind { MALFORMED, OVERSIZED, SECURITY_CLOSURE }
-    public enum ProbeOutcome { PROTOCOL_REJECTED, AUTHORIZATION_REJECTED, SOURCE_UNKNOWN, UNCLASSIFIED_CLOSE, ADMISSION_REJECTED, CREDIT_REJECTED, TRANSPORT_FAILED, DEADLINE_UNKNOWN }
-    public enum CloseReason { NONE, UNCLASSIFIED, PROTOCOL_REJECTED, PROTOCOL_FRAME_TOO_LARGE, PROTOCOL_INVALID_UTF8, AUTH_REVOKED, AUTH_FRESHNESS_UNKNOWN, AUTH_TOKEN_EXPIRED, AUTHORIZATION_REJECTED, AUTH_REQUIRED, STALE_CONNECTION }
-    public record ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode,CloseReason closeReason) {
+    public enum ProbeKind { MALFORMED, OVERSIZED, SECURITY_CLOSURE, SLOW_CONSUMER }
+    public enum ProbeOutcome { PROTOCOL_REJECTED, AUTHORIZATION_REJECTED, BACKPRESSURE_REJECTED, SOURCE_UNKNOWN, UNCLASSIFIED_CLOSE, ADMISSION_REJECTED, CREDIT_REJECTED, TRANSPORT_FAILED, DEADLINE_UNKNOWN }
+    public enum CloseReason { NONE, UNCLASSIFIED, PROTOCOL_REJECTED, PROTOCOL_FRAME_TOO_LARGE, PROTOCOL_INVALID_UTF8, AUTH_REVOKED, AUTH_FRESHNESS_UNKNOWN, AUTH_TOKEN_EXPIRED, AUTHORIZATION_REJECTED, AUTH_REQUIRED, STALE_CONNECTION, RESYNC_REQUIRED }
+    public record ReadPause(long startedNanos,long resumedNanos){}
+    public record ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode,CloseReason closeReason,ReadPause readPause) {
+        public ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode,CloseReason closeReason){this(kind,generation,intendedNanos,finishedNanos,outcome,closeCode,closeReason,null);}
         public ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode){this(kind,generation,intendedNanos,finishedNanos,outcome,closeCode,CloseReason.NONE);}
     }
     public record ProbeOperation(CompletionStage<ProbeReceipt> observed,CompletionStage<Void> physicalCompletion,CompletionStage<Boolean> admission) {
@@ -101,13 +102,14 @@ public final class VirtualClient {
     private final class WireProbe {
         final ProbeKind kind;final long generation,intended;final Channel owner;final Credits.Ticket ticket;
         final CompletableFuture<ProbeReceipt> observed=new CompletableFuture<>();final CompletableFuture<Void> physical=new CompletableFuture<>();final CompletableFuture<Boolean> admission=new CompletableFuture<>();
-        boolean dispatched,writeDone,writeFailed,transportFailed,closeDone,retired;ScheduledFuture<?> timeout;
+        boolean dispatched,writeDone,writeFailed,transportFailed,closeDone,retired,readPaused,readResumed;long readStartedNanos,readResumedNanos;ScheduledFuture<?> timeout,readResume;
         WireProbe(ProbeKind kind,long generation,long intended,Channel owner,Credits.Ticket ticket){this.kind=kind;this.generation=generation;this.intended=intended;this.owner=owner;this.ticket=ticket;}
         ProbeOperation operation(){return new ProbeOperation(observed.minimalCompletionStage(),physical.minimalCompletionStage(),admission.minimalCompletionStage());}
         void finish(ProbeOutcome outcome,int code){finish(outcome,code,CloseReason.NONE);}
         void finish(ProbeOutcome outcome,int code,CloseReason reason){
             if(!dispatched)admission.complete(false);
-            if(observed.complete(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,code,reason))&&timeout!=null)timeout.cancel(false);
+            var pause=readPaused&&readResumed?new ReadPause(readStartedNanos,readResumedNanos):null;
+            if(observed.complete(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,code,reason,pause))&&timeout!=null)timeout.cancel(false);
             retire();
         }
         void inactive(){finish(writeFailed||transportFailed?ProbeOutcome.TRANSPORT_FAILED:ProbeOutcome.UNCLASSIFIED_CLOSE,-1);}
@@ -123,23 +125,30 @@ public final class VirtualClient {
                     default -> ProbeOutcome.UNCLASSIFIED_CLOSE;
                 };
                 finish(outcome,code,reason);
-            }else finish(code==(kind==ProbeKind.MALFORMED?1002:1009)?ProbeOutcome.PROTOCOL_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code,reason);
+            }else if(kind==ProbeKind.SLOW_CONSUMER)finish(code==1013&&reason==CloseReason.RESYNC_REQUIRED&&readPaused&&readResumed?ProbeOutcome.BACKPRESSURE_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code,reason);
+            else finish(code==(kind==ProbeKind.MALFORMED?1002:1009)?ProbeOutcome.PROTOCOL_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code,reason);
         }
-        void retire(){if(retired||!writeDone||!closeDone||!observed.isDone())return;retired=true;ticket.close();probeSlot.compareAndSet(this,null);physical.complete(null);}
+        void retire(){if(retired||!writeDone||!closeDone||!observed.isDone())return;retired=true;if(readResume!=null)readResume.cancel(false);if(readPaused&&!readResumed)owner.config().setAutoRead(true);ticket.close();probeSlot.compareAndSet(this,null);physical.complete(null);}
         void start(){
             long remaining=probeWindow(kind)-(System.nanoTime()-intended);
-            if(remaining<=0||owner!=channel||generation!=generations.get()||!authenticated||!owner.isActive()||!owner.isWritable()||!pending.isEmpty()){
+            long pauseRemaining=TimeUnit.SECONDS.toNanos(10)-(System.nanoTime()-intended);
+            if(remaining<=0||owner!=channel||generation!=generations.get()||!authenticated||!owner.isActive()||!owner.isWritable()||!pending.isEmpty()||kind==ProbeKind.SLOW_CONSUMER&&(!owner.config().isAutoRead()||pauseRemaining<=0)){
                 writeDone=true;closeDone=true;finish(remaining<=0?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED,-1);return;
             }
             owner.closeFuture().addListener(done->{closeDone=true;retire();});
             timeout=owner.eventLoop().schedule(()->{finish(ProbeOutcome.DEADLINE_UNKNOWN,-1);owner.close();},remaining,TimeUnit.NANOSECONDS);
             if(kind==ProbeKind.SECURITY_CLOSURE){dispatched=true;writeDone=true;admission.complete(true);return;}
+            if(kind==ProbeKind.SLOW_CONSUMER){
+                readStartedNanos=System.nanoTime();owner.config().setAutoRead(false);readPaused=true;dispatched=true;writeDone=true;
+                readResume=owner.eventLoop().schedule(()->{owner.config().setAutoRead(true);readResumedNanos=System.nanoTime();readResumed=true;},pauseRemaining,TimeUnit.NANOSECONDS);
+                admission.complete(true);return;
+            }
             String raw=kind==ProbeKind.MALFORMED?"{":"x".repeat(81921);
             try {dispatched=true;admission.complete(true);owner.writeAndFlush(new TextWebSocketFrame(raw)).addListener(done->{writeDone=true;writeFailed=!done.isSuccess();retire();});}
             catch(RuntimeException error){writeDone=true;finish(ProbeOutcome.TRANSPORT_FAILED,-1);owner.close();}
         }
     }
-    private static long probeWindow(ProbeKind kind){return TimeUnit.SECONDS.toNanos(kind==ProbeKind.SECURITY_CLOSURE?5:2);}
+    private static long probeWindow(ProbeKind kind){return TimeUnit.SECONDS.toNanos(kind==ProbeKind.SECURITY_CLOSURE?5:kind==ProbeKind.SLOW_CONSUMER?12:2);}
     /** SECURITY_CLOSURE observes an already authenticated socket; it performs no drill or outgoing write. */
     public synchronized ProbeOperation probe(ProbeKind kind,long intended) {
         Objects.requireNonNull(kind);var owner=channel;long generation=generations.get();long elapsed=System.nanoTime()-intended;
