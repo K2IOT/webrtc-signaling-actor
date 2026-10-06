@@ -36,12 +36,14 @@ class ScenarioRunnerWssTest {
     @Test void malformedProfileSchedulesNativeWireRejectionAndExportsSeparateCounters()throws Exception {runWorker(false,"malformed");}
     @Test void oversizedProfileSchedulesNativeWireRejectionAndExportsSeparateCounters()throws Exception {runWorker(false,"oversized");}
     @Test void staleGenerationProfileSchedulesNativeReplacementInsideDeclaredSocketBudget()throws Exception {runWorker(false,"staleGeneration");}
+    @Test void slowConsumerWorkerRetainsOriginalReadObservationBeyondWorkloadStop()throws Exception {runWorker(false,"slowConsumer");}
     private void runWorker(boolean relay)throws Exception {runWorker(relay,null);}
     private void runWorker(boolean relay,String abuse)throws Exception {
         var keygen=KeyPairGenerator.getInstance("RSA");keygen.initialize(2048);var keys=keygen.generateKeyPair();
         var verifier=new Rs256TokenVerifier(new IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofHours(1),Duration.ZERO,Duration.ofSeconds(4),Duration.ofSeconds(5),true,"TEST_ONLY_SOURCE"),new TrustedRsaKeys(Map.of("test",(RSAPublicKey)keys.getPublic()),null,Duration.ofSeconds(1)),8192);
         var mutableSource=new AtomicReference<Path>();var sourceMutated=new AtomicBoolean();var authenticated=new ConcurrentHashMap<String,Boolean>();var unexpectedCommands=new AtomicInteger();var received=new ConcurrentLinkedQueue<JsonNode>();var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);Channel server=null;
-        boolean stale="staleGeneration".equals(abuse);
+        boolean stale="staleGeneration".equals(abuse),slow="slowConsumer".equals(abuse);
+        var nativePeers=ConcurrentHashMap.<Channel>newKeySet();var pressureStop=new AtomicBoolean();var runner=new ScenarioRunner();Thread pressureObserver=null;
         var boot=UUID.randomUUID();var nativeGeneration=new AtomicLong();var incarnation=new io.webrtc.signaling.protocol.Identity.SessionIncarnation(UUID.randomUUID());
         var registry=new io.webrtc.signaling.gateway.ConnectionRegistry("TEST_ONLY_gw",boot,8);
         var nativeServices=new io.webrtc.signaling.gateway.GatewayServices(){
@@ -73,7 +75,7 @@ class ScenarioRunnerWssTest {
                             }finally{admitted.release().run();}
                         }
                     });
-                    if(stale){c.pipeline().removeLast();c.pipeline().addLast(new io.webrtc.signaling.gateway.AuthHandler(registry,nativeServices,Clock.systemUTC(),Runnable::run),new io.webrtc.signaling.gateway.HeartbeatHandler(registry,nativeServices,Clock.systemUTC()));}
+                    if(stale||slow){c.pipeline().removeLast();c.pipeline().addLast(new io.webrtc.signaling.gateway.AuthHandler(registry,nativeServices,Clock.systemUTC(),Runnable::run),new io.webrtc.signaling.gateway.HeartbeatHandler(registry,nativeServices,Clock.systemUTC()));nativePeers.add(c);}
                 }
             }}).bind("127.0.0.1",0).sync().channel();int port=((InetSocketAddress)server.localAddress()).getPort();
             String candidate="20261004-0000-aaaaaaa-ffffffffffff";var directory=JSON.createObjectNode().put("candidateId",candidate);var buckets=directory.putArray("buckets");for(int i=0;i<16384;i++)buckets.add("c001");var directoryFile=input("directory.json",directory.toString());
@@ -86,7 +88,30 @@ class ScenarioRunnerWssTest {
             var scenario=JSON.createObjectNode().put("scenarioVersion",1).put("name","TEST_ONLY_TWO_SOCKET_P0").put("durationSeconds",2);scenario.putObject("targets").put("sockets",2).put("distinctUsers",2).put("callAttemptsPerSecond",0).put("establishedCalls",0).put("meanCallSeconds",300).put("inboundSetupFramesPerSecond",0).put("registrationsPerSecond",0).put("crossCellRatio",.98).put("heartbeatSeconds",30).put("refreshSeconds",300);
             if(abuse!=null){scenario.putArray("abuse").add(abuse);scenario.put("abuseFraction",1);scenario.withObject("targets").put("inboundSetupFramesPerSecond",1);}
             var configFile=input("config.json",config.toString());var scenarioFile=input("scenario.yaml",scenario.toString());mutableSource.set(configFile);
-            var evidence=scratch.resolve("TEST_ONLY_evidence");try{new ScenarioRunner().run(scenarioFile,configFile,evidence);}catch(IllegalStateException failed){var report=JSON.readTree(Files.readString(evidence.resolve("summary.json")));assertThat(report.path("status").asText()).isEqualTo("GENERATOR_LIMITED");assertThat(report.path("failures").toString()).contains("GENERATOR_HEADROOM_EXHAUSTED");}
+            var evidence=scratch.resolve("TEST_ONLY_evidence");
+            if(slow){
+                pressureObserver=new Thread(()->{
+                    var charged=new java.util.HashSet<Channel>();long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(30);
+                    try{
+                        var stateField=ScenarioRunner.class.getDeclaredField("states");stateField.setAccessible(true);
+                        var clientField=Class.forName(ScenarioRunner.class.getName()+"$State").getDeclaredField("client");clientField.setAccessible(true);
+                        var channelField=VirtualClient.class.getDeclaredField("channel");channelField.setAccessible(true);
+                        while(!pressureStop.get()&&System.nanoTime()<deadline){
+                            for(var state:((java.util.Map<?,?>)stateField.get(runner)).values()){
+                                var socket=(Channel)channelField.get(clientField.get(state));
+                                if(socket==null||!socket.isActive()||socket.config().isAutoRead()||!charged.add(socket))continue;
+                                for(var peer:nativePeers)if(java.util.Objects.equals(peer.remoteAddress(),socket.localAddress()))peer.eventLoop().execute(()->{
+                                    peer.pipeline().addBefore(peer.pipeline().context(io.webrtc.signaling.gateway.FrameAdmissionHandler.class).name(),"TEST_ONLY_writability_fault",new io.webrtc.signaling.gateway.OutboundAdmissionHandler(new io.webrtc.signaling.rpc.DeliveryCreditController(64,1048576,8,65536)));
+                                    peer.unsafe().outboundBuffer().setUserDefinedWritability(1,false);
+                                    for(int i=0;i<64;i++)peer.writeAndFlush(new TextWebSocketFrame("{\"v\":1,\"type\":\"ICE\",\"payload\":{\"candidate\":\"TEST_ONLY\"}}"));
+                                });
+                            }
+                            Thread.sleep(10);
+                        }
+                    }catch(Exception failure){throw new AssertionError("TEST_ONLY native pressure observer failed",failure);}
+                },"TEST_ONLY_native_pressure");pressureObserver.start();
+            }
+            try{runner.run(scenarioFile,configFile,evidence);}catch(IllegalStateException failed){var report=JSON.readTree(Files.readString(evidence.resolve("summary.json")));assertThat(report.path("status").asText()).isEqualTo("GENERATOR_LIMITED");assertThat(report.path("failures").toString()).contains("GENERATOR_HEADROOM_EXHAUSTED");}
             var summary=JSON.readTree(Files.readString(evidence.resolve("summary.json")));
             if(abuse!=null){
                 var security=summary.path("observed").path("security");
@@ -94,6 +119,12 @@ class ScenarioRunnerWssTest {
                 assertThat(security.path("attempted").asLong()).isPositive();
                 assertThat(security.path("verifiedRejected").asLong()).isEqualTo(security.path("attempted").asLong());
                 assertThat(security.path("pendingPhysical").asLong()).isZero();assertThat(security.path("unknown").asLong()).isZero();
+                if(slow){
+                    assertThat(security.path("modes").path("SLOW_CONSUMER").path("readPauseVerified").asLong()).isEqualTo(security.path("attempted").asLong());
+                    assertThat(security.path("modes").path("SLOW_CONSUMER").path("outcomes").path("BACKPRESSURE_REJECTED").asLong()).isEqualTo(security.path("attempted").asLong());
+                    assertThat(Duration.between(Instant.parse(summary.path("finishedAt").asText()),Instant.parse(summary.path("cleanupFinishedAt").asText())).toSeconds()).isGreaterThanOrEqualTo(7);
+                    assertThat(summary.path("observed").path("durationSeconds").asLong()).isEqualTo(2);
+                }
                 if(stale){
                     assertThat(security.path("modes").path("STALE_GENERATION").path("outcomes").path("REPLACED").asLong()).isEqualTo(security.path("attempted").asLong());
                     assertThat(summary.path("observed").path("securityReplacementSlots").path("capacity").asInt()).isEqualTo(1);
@@ -120,6 +151,6 @@ class ScenarioRunnerWssTest {
             var samples=Files.readAllLines(evidence.resolve("generator.jsonl"));assertThat(samples).isNotEmpty();boolean observedLimited=false;for(var line:samples){var sample=JSON.readTree(line);assertThat(sample.path("sourceInterface").asText()).isEqualTo("lo");assertThat(sample.path("fdSoftLimit").asLong()).isPositive();assertThat(sample.path("maxPendingOperations").asLong()).isEqualTo(100);assertThat(sample.path("maxPendingBytes").asLong()).isEqualTo(819200);assertThat(sample.path("sampleIntervalNanos").asLong()).isPositive();assertThat(sample.path("headroom").size()).isEqualTo(6);var workload=sample.path("workload");assertThat(workload.path("authenticatedSockets").asLong(-1)).isEqualTo(2);assertThat(workload.path("establishedCallerCalls").asLong(-1)).isZero();assertThat(workload.path("registrations").asLong(-1)).isEqualTo(2);assertThat(workload.path("callAttempts").asLong(-1)).isZero();assertThat(workload.path("crossCellAttempts").asLong(-1)).isZero();assertThat(workload.path("relayFrames").asLong(-1)).isZero();var flags=sample.path("headroom").elements();while(flags.hasNext())observedLimited|=!flags.next().asBoolean();}
             assertThat(observedLimited).isEqualTo(summary.path("status").asText().equals("GENERATOR_LIMITED"));
             assertThat(Files.readString(evidence.resolve("summary.json"))).doesNotContain("TEST_ONLY_jti",tokens.toString());
-        }finally{if(server!=null)server.close().sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+        }finally{pressureStop.set(true);if(pressureObserver!=null)pressureObserver.join(2000);if(server!=null)server.close().sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
     }
 }

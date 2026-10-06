@@ -164,8 +164,17 @@ is at most16 and at most `localSocketLimit - assignedSocketCount`. No spare loca
 socket budget means GENERATOR_LIMITED without opening a replacement. Slot release
 requires original physical cleanup; terminal drain freezes new replacements.
 
-`slowConsumer`, `revokedJti` and `retiredSigningKey` remain
-unsupported by scenario scheduling. The complete `security-abuse.yaml` profile still fails
+`slowConsumer` is scheduled on the original arrival stream. It owns the actual
+client read pause, resumes at original intended+10s and accepts only native
+1013/RESYNC_REQUIRED inside original12s. `readPauseVerified` retains actual
+pause/resume verification separately from logical/physical rejection. Silence
+or an unrelated close remains unknown. At workload stop, new admissions and
+business followups freeze while original observations keep their deadlines;
+physical drain follows logical settlement. The separate cleanup interval cannot
+enlarge the published workload duration. Native queue pressure fixtures are
+TEST_ONLY writability fault injection, not measured kernel capacity or isolation.
+
+`revokedJti` and `retiredSigningKey` remain unsupported by scenario scheduling. The complete `security-abuse.yaml` profile still fails
 preflight until all requested modes and their approved inputs are implemented.
 
 Profiles requesting any remaining unsupported mode still fail preflight before opening sockets.

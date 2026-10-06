@@ -254,3 +254,29 @@ metadata are independently checked. Native fixture authority is TEST_ONLY.
 slowConsumer, revokedJti and retiredSigningKey remain unsupported. Complete Main/
 source/policy installation and genuine same-candidate staged/drill qualification
 remain open. Tasks22–24 remain **IN PROGRESS / NOT_QUALIFIED**.
+
+### Native slow-consumer scheduling and original observation cleanup
+
+Four security scheduler modes are now implemented: malformed, oversized,
+staleGeneration and slowConsumer. Slow scheduling owns the actual read pause,
+resumes at original intended+10s and requires native1013/RESYNC_REQUIRED inside
+original12s. Mode counters include verified actual pause/resume observations.
+The original offered setup arrival scope and ordinary availability/HDR denominator
+are unchanged. The verifier requires those original counters in every source
+snapshot, with strict finite outcomes, monotonic integers and no pending final
+logical/physical receipts.
+
+Worker stop freezes new business followups and admissions. It awaits original
+client and replacement logical observations before separate physical drain;
+original timers are never renewed and cleanup cannot extend workload duration.
+An actual two-second WSS worker retains its slow observation through original
+read resume. Pressure fixtures use TEST_ONLY native writability fault injection
+and the production bounded queue, not manufactured close frames or measured
+production pressure/isolation.
+
+Upstream module verification passed: loadgen128, gateway50unit/16IT, zero
+failures/errors/skips (2026-10-06T11:33:30Z). Python verifier/exporter69 passed;
+static harness contract passed. Whole-source verification follows this checkpoint.
+revokedJti/retiredSigningKey, full Main/source/policy installation and genuine
+same-candidate staged qualification remain open. Tasks22–24 are IN PROGRESS and
+release remains NOT_QUALIFIED.

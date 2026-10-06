@@ -18,7 +18,7 @@ policies or native factories, and does not demonstrate serving a business listen
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The scenario orchestrator now schedules
-`malformed`, `oversized` and `staleGeneration`, with separate original-source counters. The three
+`malformed`, `oversized`, `staleGeneration` and `slowConsumer`, with separate original-source counters. The two
 other modes in `security-abuse.yaml` remain unwired and the complete six-mode
 profile still rejects before socket startup. Bounded raw wire probes observe
 native gateway close codes and original physical completion over WSS. A separate
@@ -29,7 +29,13 @@ Stale scheduling requires spare declared local socket budget; replacement owners
 are capped at16 and remain admitted until both original socket/write receipts
 settle. The native replacement ACK and stale closure retain their original5s
 window. The verifier recomputes slot capacity from retained configuration and
-checks original counters and replacement AUTH accounting. The three unsupported
+checks original counters and replacement AUTH accounting. Slow-consumer scheduling owns an actual
+read pause until original intended+10s and observes native1013/RESYNC_REQUIRED within
+the original12s window. Its readPauseVerified counter requires actual pause/resume
+receipts; silence or an unrelated security close cannot prove pressure rejection.
+Workload finish freezes new work and waits for original logical observations before
+separate physical cleanup; cleanup does not extend the published workload duration.
+The two unsupported
 YAML labels cannot count as successful security drills.
 
 ## Required external inputs

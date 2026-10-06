@@ -51,7 +51,14 @@ Counts cannot regress, exceed the final source, change scope or include boolean
 values. Successful source evidence requires observed traffic and no pending or
 unknown receipts. These counts do not substitute for the security gate's trusted
 drill observations or enter ordinary availability/HDR denominators. The remaining
-three scheduler modes are rejected as unimplemented.
+two scheduler modes are rejected as unimplemented.
+
+Native `slowConsumer` counters require `BACKPRESSURE_REJECTED` and a separate
+integer `readPauseVerified` in every mode snapshot. Verified pauses cannot regress,
+exceed attempted/final counts or remain unobserved at successful completion. The
+producer checks actual read pause/resume times against the original10s/12s window
+and matching native1013/RESYNC_REQUIRED. These receipts do not attest kernel
+throughput, isolation of unrelated users or the independent trusted security gate.
 
 Native `staleGeneration` source counters require the finite `REPLACED` outcome,
 the same receipt conservation and original `securityReplacementSlots` in every

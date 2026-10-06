@@ -11,7 +11,7 @@ final class SecurityWorkload {
     private final EnumMap<VirtualClient.ProbeKind,Counts> counts=new EnumMap<>(VirtualClient.ProbeKind.class);
     private String failure;private boolean generatorLimited;
     private static final class Counts {
-        long attempted,pendingLogical,logicalRejected,pendingPhysical,physicalCompleted,verifiedRejected,unknown,cleanupUnknown;
+        long attempted,pendingLogical,logicalRejected,pendingPhysical,physicalCompleted,verifiedRejected,unknown,cleanupUnknown,readPauseVerified;
         final Map<String,Long> outcomes=new TreeMap<>();
         Map<String,Object> snapshot(){return Map.of("attempted",attempted,"pendingLogical",pendingLogical,"logicalRejected",logicalRejected,
             "pendingPhysical",pendingPhysical,"physicalCompleted",physicalCompleted,"verifiedRejected",verifiedRejected,"unknown",unknown,"cleanupUnknown",cleanupUnknown);}
@@ -23,7 +23,7 @@ final class SecurityWorkload {
             if(!requested.isArray()||requested.size()>6)throw new IllegalArgumentException("Invalid abuse profile");
             for(var item:requested){
                 if(!item.isTextual())throw new IllegalArgumentException("Invalid abuse mode");
-                var mode=switch(item.textValue()){case "malformed"->VirtualClient.ProbeKind.MALFORMED;case "oversized"->VirtualClient.ProbeKind.OVERSIZED;case "staleGeneration"->VirtualClient.ProbeKind.SECURITY_CLOSURE;default->throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");};
+                var mode=switch(item.textValue()){case "malformed"->VirtualClient.ProbeKind.MALFORMED;case "oversized"->VirtualClient.ProbeKind.OVERSIZED;case "staleGeneration"->VirtualClient.ProbeKind.SECURITY_CLOSURE;case "slowConsumer"->VirtualClient.ProbeKind.SLOW_CONSUMER;default->throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");};
                 if(modes.contains(mode))throw new IllegalArgumentException("Duplicate abuse mode");modes.add(mode);
             }
         }
@@ -49,7 +49,7 @@ final class SecurityWorkload {
     synchronized boolean generatorLimited(){return generatorLimited;}
     synchronized Map<String,Object> snapshot(){
         var total=new Counts();var byMode=new LinkedHashMap<String,Object>();
-        counts.forEach((mode,c)->{var details=new LinkedHashMap<String,Object>(c.snapshot());details.put("outcomes",Map.copyOf(c.outcomes));byMode.put(mode==VirtualClient.ProbeKind.SECURITY_CLOSURE?"STALE_GENERATION":mode.name(),details);total.attempted+=c.attempted;total.pendingLogical+=c.pendingLogical;
+        counts.forEach((mode,c)->{var details=new LinkedHashMap<String,Object>(c.snapshot());details.put("outcomes",Map.copyOf(c.outcomes));if(mode==VirtualClient.ProbeKind.SLOW_CONSUMER)details.put("readPauseVerified",c.readPauseVerified);byMode.put(mode==VirtualClient.ProbeKind.SECURITY_CLOSURE?"STALE_GENERATION":mode.name(),details);total.attempted+=c.attempted;total.pendingLogical+=c.pendingLogical;
             total.logicalRejected+=c.logicalRejected;total.pendingPhysical+=c.pendingPhysical;total.physicalCompleted+=c.physicalCompleted;
             total.verifiedRejected+=c.verifiedRejected;total.unknown+=c.unknown;total.cleanupUnknown+=c.cleanupUnknown;});
         var result=new LinkedHashMap<String,Object>(total.snapshot());result.put("scope","offeredSetupFrameArrivals");result.put("fractionMillionths",millionths);result.put("modes",byMode);return Collections.unmodifiableMap(result);
@@ -72,6 +72,7 @@ final class SecurityWorkload {
             synchronized(this){
                 c.pendingLogical--;
                 if(error==null)c.outcomes.merge(receipt.outcome().name(),1L,Long::sum);
+                if(error==null&&kind==VirtualClient.ProbeKind.SLOW_CONSUMER&&readPauseObserved(intended,receipt))c.readPauseVerified++;
                 if(error==null&&expected(kind,generation,intended,receipt))c.logicalRejected++;
                 else {c.unknown++;boolean admission=error==null&&(receipt.outcome()==VirtualClient.ProbeOutcome.ADMISSION_REJECTED||receipt.outcome()==VirtualClient.ProbeOutcome.CREDIT_REJECTED);generatorLimited|=admission;failure=admission?"SECURITY_GENERATOR_ADMISSION":"SECURITY_REJECTION_NOT_OBSERVED";}
             }
@@ -108,8 +109,17 @@ final class SecurityWorkload {
         return receipt!=null&&receipt.outcome()==StaleGenerationProbe.Outcome.REPLACED&&receipt.originalGeneration()>0&&receipt.replacementGeneration()>receipt.originalGeneration()
             &&closure!=null&&closure.generation()==generation&&closure.intendedNanos()==intended&&elapsed>=0&&elapsed<TimeUnit.SECONDS.toNanos(5)&&authElapsed>=0&&authElapsed<TimeUnit.SECONDS.toNanos(5);
     }
+    private static boolean readPauseObserved(long intended,VirtualClient.ProbeReceipt receipt){
+        var pause=receipt==null?null:receipt.readPause();if(pause==null)return false;
+        long started=pause.startedNanos()-intended,resumed=pause.resumedNanos()-intended;
+        return started>=0&&started<TimeUnit.SECONDS.toNanos(2)&&resumed>=TimeUnit.SECONDS.toNanos(10)&&resumed<TimeUnit.SECONDS.toNanos(12)
+            &&pause.resumedNanos()>=pause.startedNanos()&&pause.resumedNanos()<=receipt.finishedNanos();
+    }
     private static boolean expected(VirtualClient.ProbeKind kind,long generation,long intended,VirtualClient.ProbeReceipt receipt){
         long elapsed=receipt==null?-1:receipt.finishedNanos()-intended;
+        if(kind==VirtualClient.ProbeKind.SLOW_CONSUMER)return receipt!=null&&receipt.kind()==kind&&receipt.generation()==generation&&receipt.intendedNanos()==intended
+            &&elapsed>=0&&elapsed<TimeUnit.SECONDS.toNanos(12)&&readPauseObserved(intended,receipt)
+            &&receipt.outcome()==VirtualClient.ProbeOutcome.BACKPRESSURE_REJECTED&&receipt.closeCode()==1013&&receipt.closeReason()==VirtualClient.CloseReason.RESYNC_REQUIRED;
         return receipt!=null&&receipt.kind()==kind&&receipt.generation()==generation&&receipt.intendedNanos()==intended&&elapsed>=0&&elapsed<TimeUnit.SECONDS.toNanos(2)
             &&receipt.outcome()==VirtualClient.ProbeOutcome.PROTOCOL_REJECTED&&receipt.closeCode()==(kind==VirtualClient.ProbeKind.MALFORMED?1002:1009);
     }

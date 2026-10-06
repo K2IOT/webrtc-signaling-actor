@@ -576,7 +576,7 @@ class EvidenceVerifierContractTest(unittest.TestCase):
     def test_source_cannot_claim_execution_of_unimplemented_security_modes(self):
         import json,hashlib
         context,worker,records,summary,_=self.worker_fixture()
-        for mode in ('slowConsumer','revokedJti','retiredSigningKey'):
+        for mode in ('revokedJti','retiredSigningKey'):
             with self.subTest(mode=mode):
                 path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text());scenario['abuse']=[mode];scenario['abuseFraction']=.01;path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
                 self.assertIn('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
@@ -683,5 +683,26 @@ class EvidenceVerifierContractTest(unittest.TestCase):
                 else:candidate['observed']['registrations']=4
                 path.write_text(json.dumps(point)+'\n')
                 self.assertIn('WORKER_SECURITY_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,candidate,context,records))
+
+    def test_slow_consumer_source_requires_verified_read_pause_and_native_pressure_outcome(self):
+        import json,hashlib,copy
+        context,worker,records,summary,sample=self.raw_security_fixture()
+        path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text());scenario['abuse']=['slowConsumer'];path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+        mode=copy.deepcopy(summary['observed']['security']['modes']['MALFORMED']);mode.update(outcomes={'BACKPRESSURE_REJECTED':1},readPauseVerified=1)
+        security={key:value for key,value in mode.items() if key not in ('outcomes','readPauseVerified')};security.update(scope='offeredSetupFrameArrivals',fractionMillionths=10000,modes={'SLOW_CONSUMER':mode})
+        summary['observed']['security']=security;sample['security']=copy.deepcopy(security)
+        path=self.root/'worker/generator.jsonl';path.write_text(json.dumps(sample)+'\n')
+        self.assertEqual(verifier.worker_source_errors(self.root,worker,summary,context,records),[])
+        for mutation in ('missing-proof','boolean-proof','unobserved-pause','wrong-outcome','regression','exceeds-final'):
+            with self.subTest(mutation=mutation):
+                final=copy.deepcopy(summary);first=copy.deepcopy(sample);last=copy.deepcopy(sample);node=last['security']['modes']['SLOW_CONSUMER']
+                if mutation=='missing-proof':node.pop('readPauseVerified')
+                elif mutation=='boolean-proof':node['readPauseVerified']=True
+                elif mutation=='unobserved-pause':final['observed']['security']['modes']['SLOW_CONSUMER']['readPauseVerified']=0
+                elif mutation=='wrong-outcome':node['outcomes']={'AUTHORIZATION_REJECTED':1}
+                elif mutation=='regression':node['readPauseVerified']=0
+                else:node['readPauseVerified']=2
+                path.write_text(json.dumps(first)+'\n'+json.dumps(last)+'\n')
+                self.assertIn('WORKER_SECURITY_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,final,context,records))
 
 if __name__=='__main__':unittest.main()

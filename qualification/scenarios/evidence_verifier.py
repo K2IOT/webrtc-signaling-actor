@@ -247,7 +247,7 @@ def worker_security_source_errors(root,worker,summary,config,scenario,records):
     requested=scenario.get('abuse',[]);fraction=scenario.get('abuseFraction',0)
     if not isinstance(requested,list) or len(requested)>6 or any(not isinstance(mode,str) for mode in requested):
         return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
-    labels={'malformed':'MALFORMED','oversized':'OVERSIZED','staleGeneration':'STALE_GENERATION'}
+    labels={'malformed':'MALFORMED','oversized':'OVERSIZED','staleGeneration':'STALE_GENERATION','slowConsumer':'SLOW_CONSUMER'}
     if any(mode not in labels for mode in requested):
         return ['WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE']
     if len(set(requested))!=len(requested) or not number(fraction,0,1):return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
@@ -276,7 +276,7 @@ def worker_security_source_errors(root,worker,summary,config,scenario,records):
         if node['scope']!='offeredSetupFrameArrivals' or type(node['fractionMillionths']) is not int or node['fractionMillionths']!=int(parts):raise ValueError('Rebound native security profile')
         if not isinstance(node['modes'],dict) or set(node['modes'])!=modes:raise ValueError('Rebound native modes')
         for name,values in [(None,node),*node['modes'].items()]:
-            if not isinstance(values,dict) or name is not None and set(values)!=set(counters+('outcomes',)):raise ValueError('Native mode shape')
+            if not isinstance(values,dict) or name is not None and set(values)!=set(counters+('outcomes',)+(('readPauseVerified',) if name=='SLOW_CONSUMER' else ())):raise ValueError('Native mode shape')
             before=previous if name is None else mapping(previous.get('modes')).get(name,{})
             limit=maximum if name is None else maximum['modes'][name]
             for field in counters:
@@ -284,6 +284,10 @@ def worker_security_source_errors(root,worker,summary,config,scenario,records):
                 if type(value) is not int or not 0<=value<=9223372036854775807:raise ValueError('Native security integer')
                 if field in cumulative and not before.get(field,0)<=value<=limit[field]:raise ValueError('Native cumulative security count')
             attempted=values['attempted']
+            if name=='SLOW_CONSUMER':
+                pause=values.get('readPauseVerified')
+                if type(pause) is not int or not before.get('readPauseVerified',0)<=pause<=limit['readPauseVerified'] or pause>attempted:raise ValueError('Original read pause count')
+                if final and pause!=attempted:raise ValueError('Original read pause not observed')
             if (values['unknown'] or values['cleanupUnknown'] or
                 values['pendingLogical']+values['logicalRejected']!=attempted or
                 values['pendingPhysical']+values['physicalCompleted']!=attempted or
@@ -292,7 +296,7 @@ def worker_security_source_errors(root,worker,summary,config,scenario,records):
             if final and (values['pendingLogical'] or values['pendingPhysical']):raise ValueError('Unretired original security receipt')
             if name is not None:
                 outcomes=values.get('outcomes')
-                expected='REPLACED' if name=='STALE_GENERATION' else 'PROTOCOL_REJECTED'
+                expected='REPLACED' if name=='STALE_GENERATION' else 'BACKPRESSURE_REJECTED' if name=='SLOW_CONSUMER' else 'PROTOCOL_REJECTED'
                 if not isinstance(outcomes,dict) or set(outcomes)-{expected}:raise ValueError('Unexpected native outcome')
                 if any(type(value) is not int or value<1 for value in outcomes.values()) or outcomes.get(expected,0)!=values['logicalRejected']:raise ValueError('Original native outcome count')
             elif any(values[field]!=sum(mode[field] for mode in node['modes'].values()) for field in counters):raise ValueError('Native aggregate accounting')
