@@ -238,3 +238,19 @@ Four security scenarios remain unimplemented in the scheduler: slowConsumer,
 staleGeneration, revokedJti and retiredSigningKey. Complete native Main/source/
 policy composition and genuine same-candidate staged qualification remain open.
 Tasks 22–24 remain **IN PROGRESS / NOT_QUALIFIED**.
+
+## Native stale-generation scheduler checkpoint (2026-10-06)
+
+Source `83ff76a` passed fresh `clean verify`: **642 tests / 141 reports**,
+zero failures/errors/skips, 5m47s, finished 2026-10-06T10:29:34Z. The full Python
+verifier/exporter passed **68 tests** and the static harness contract passed.
+Three scheduler modes are implemented: malformed, oversized and staleGeneration.
+Stale replacement uses the approved same-session inventory and native binding,
+explicit spare local socket budget capped at16 owners, original ACK/close timing
+inside5s and both original physical receipts. A late native ACK cannot defeat an
+overdue timer. Ordinary replacement AUTH accounting and retained source slot
+metadata are independently checked. Native fixture authority is TEST_ONLY.
+
+slowConsumer, revokedJti and retiredSigningKey remain unsupported. Complete Main/
+source/policy installation and genuine same-candidate staged/drill qualification
+remain open. Tasks22–24 remain **IN PROGRESS / NOT_QUALIFIED**.
