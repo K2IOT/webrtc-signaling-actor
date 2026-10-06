@@ -31,7 +31,7 @@ public final class VirtualClient {
     private final java.util.concurrent.atomic.AtomicLong generations=new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicReference<WireProbe> probeSlot=new java.util.concurrent.atomic.AtomicReference<>();
     private volatile Channel channel;private volatile Pending auth;private volatile boolean authenticated;private volatile long lastPong;
-    private volatile boolean draining;private volatile AuthBinding nativeAuth;
+    private volatile boolean draining,quiescing;private CompletableFuture<JsonNode> connectingReady;private volatile AuthBinding nativeAuth;
     public record AuthBinding(UUID incarnation,long connectionGeneration) {
         static Optional<AuthBinding> read(JsonNode value){
             try {
@@ -44,9 +44,9 @@ public final class VirtualClient {
     }
     public Optional<AuthBinding> authBinding(){return Optional.ofNullable(nativeAuth);}
     private final class Pending {
-        final String id;final long generation;final long intended;final EvidenceWriter.Operation operation;final Credits.Ticket ticket;final CompletableFuture<JsonNode> reply=new CompletableFuture<>();final CompletableFuture<Void> physical=new CompletableFuture<>();
+        final String id;final long generation;final long intended;final EvidenceWriter.Operation operation;final Credits.Ticket ticket;final CompletableFuture<JsonNode> reply=new CompletableFuture<>();final CompletableFuture<JsonNode> reported;final CompletableFuture<Void> physical=new CompletableFuture<>();
         boolean writeDone,logicalDone,retired;ScheduledFuture<?> timeout;
-        Pending(String id,long intended,EvidenceWriter.Operation operation,Credits.Ticket ticket){this.id=id;this.generation=generations.get();this.intended=intended;this.operation=operation;this.ticket=ticket;reply.whenComplete((value,error)->{evidence.record(operation,intended,System.nanoTime(),error==null&&!value.path("type").asText().equals("ERROR"));synchronized(this){logicalDone=true;if(timeout!=null)timeout.cancel(false);}retire();});}
+        Pending(String id,long intended,EvidenceWriter.Operation operation,Credits.Ticket ticket){this.id=id;this.generation=generations.get();this.intended=intended;this.operation=operation;this.ticket=ticket;reported=reply.whenComplete((value,error)->{evidence.record(operation,intended,System.nanoTime(),error==null&&!value.path("type").asText().equals("ERROR"));synchronized(this){logicalDone=true;if(timeout!=null)timeout.cancel(false);}retire();});}
         void written(boolean success){synchronized(this){writeDone=true;}if(!success)reply.completeExceptionally(new IllegalStateException("WSS write failed"));retire();}
         void retire(){synchronized(this){if(retired||!writeDone||!logicalDone)return;retired=true;}pending.remove(id,this);if(auth==this)auth=null;ticket.close();physical.complete(null);}
     }
@@ -55,13 +55,13 @@ public final class VirtualClient {
     private volatile RetryHint retryHint;
     public long retryAfterNanos(){var original=retryHint;return original==null||original.generation()!=generations.get()?0:Math.max(0,original.delayNanos()-(System.nanoTime()-original.observedNanos()));}
     public long generation(){return generations.get();}
-    public long index(){return index;}public String user(){return user;}public String cell(){return cell;}public boolean authenticated(){var c=channel;return !draining&&authenticated&&c!=null&&c.isActive();}public boolean writable(){var c=channel;return !draining&&probeSlot.get()==null&&authenticated&&c!=null&&c.isActive()&&c.isWritable()&&pending.size()<8;}
+    public long index(){return index;}public String user(){return user;}public String cell(){return cell;}public boolean authenticated(){var c=channel;return !draining&&!quiescing&&authenticated&&c!=null&&c.isActive();}public boolean writable(){var c=channel;return !draining&&!quiescing&&probeSlot.get()==null&&authenticated&&c!=null&&c.isActive()&&c.isWritable()&&pending.size()<8;}
     public synchronized boolean probeReady(){return writable()&&pending.isEmpty();}
     /** A separate owned socket using this client's approved same-session inventory and native transport. */
     VirtualClient replacement(){return new VirtualClient(index,user,cell,endpoint,source,tls,loops,credits,evidence,tokens,(client,event)->{});}
     public synchronized CompletionStage<JsonNode> connect(long intended){
-        if(draining||probeSlot.get()!=null||channel!=null&&channel.isOpen())return CompletableFuture.failedFuture(new IllegalStateException("Connection already owned"));authenticated=false;nativeAuth=null;long generation=generations.incrementAndGet();
-        var ready=new CompletableFuture<JsonNode>();ready.whenComplete((v,e)->evidence.record(EvidenceWriter.Operation.CONNECT,intended,System.nanoTime(),e==null));int port=endpoint.getPort()<0?443:endpoint.getPort();
+        if(draining||quiescing||probeSlot.get()!=null||channel!=null&&channel.isOpen())return CompletableFuture.failedFuture(new IllegalStateException("Connection already owned"));authenticated=false;nativeAuth=null;long generation=generations.incrementAndGet();
+        var ready=new CompletableFuture<JsonNode>();connectingReady=ready;ready.whenComplete((v,e)->evidence.record(EvidenceWriter.Operation.CONNECT,intended,System.nanoTime(),e==null));int port=endpoint.getPort()<0?443:endpoint.getPort();
         var bootstrap=new Bootstrap().group(loops).channel(NioSocketChannel.class).localAddress(source).option(ChannelOption.CONNECT_TIMEOUT_MILLIS,5000).option(ChannelOption.WRITE_BUFFER_WATER_MARK,new WriteBufferWaterMark(65536,131072)).handler(new ChannelInitializer<Channel>(){protected void initChannel(Channel c){
             var ssl=tls.newHandler(c.alloc(),endpoint.getHost(),port);var parameters=ssl.engine().getSSLParameters();parameters.setEndpointIdentificationAlgorithm("HTTPS");ssl.engine().setSSLParameters(parameters);c.pipeline().addLast("tls",ssl).addLast(new HttpClientCodec(),new HttpObjectAggregator(81920),new ChannelInboundHandlerAdapter(){@Override public void channelRead(ChannelHandlerContext ctx,Object message){if(generations.get()==generation&&message instanceof HttpResponse response&&response.status().code()!=101){var hints=response.headers().getAll(HttpHeaderNames.RETRY_AFTER);if(hints.size()==1){long observed=System.nanoTime();ReconnectBackoff.retryAfter(hints.getFirst(),Instant.now()).ifPresent(delay->retryHint=new RetryHint(generation,observed,delay.toNanos()));}}if(message instanceof CloseWebSocketFrame close){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.closedFrame(close.statusCode(),close.reasonText());}ctx.fireChannelRead(message);}},new WebSocketClientProtocolHandler(WebSocketClientProtocolConfig.newBuilder().webSocketUri(endpoint).subprotocol("webrtc-signaling.v1").version(WebSocketVersion.V13).allowExtensions(false).maxFramePayloadLength(81920).dropPongFrames(false).handshakeTimeoutMillis(5000).build()),new WebSocketFrameAggregator(81920),new SimpleChannelInboundHandler<WebSocketFrame>(){
                 @Override public void userEventTriggered(ChannelHandlerContext ctx,Object event){if(event==WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE){if(generations.get()!=generation){ctx.close();return;}authenticate(false,intended).whenComplete((r,e)->{if(e==null)ready.complete(r);else ready.completeExceptionally(e);});}else ctx.fireUserEventTriggered(event);}
@@ -79,14 +79,14 @@ public final class VirtualClient {
     public CompletionStage<JsonNode> request(JsonNode envelope,long intended,EvidenceWriter.Operation operation){return send(envelope,intended,operation,false);}
     private synchronized CompletionStage<JsonNode> send(JsonNode envelope,long intended,EvidenceWriter.Operation operation,boolean authentication){
         String encoded=envelope.toString();int bytes=encoded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;var c=channel;
-        if(draining||probeSlot.get()!=null||bytes>81920||c==null||!c.isActive()||!c.isWritable()||!authentication&&!authenticated||pending.size()>=8){evidence.missed(operation,intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator/client admission unavailable"));}
+        if(draining||quiescing&&!(authentication&&operation==EvidenceWriter.Operation.AUTH&&connectingReady!=null&&!connectingReady.isDone())||probeSlot.get()!=null||bytes>81920||c==null||!c.isActive()||!c.isWritable()||!authentication&&!authenticated||pending.size()>=8){evidence.missed(operation,intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator/client admission unavailable"));}
         var ticket=credits.acquire(bytes);if(ticket==null){evidence.missed(operation,intended,System.nanoTime());return CompletableFuture.failedFuture(new IllegalStateException("Generator credit exhausted"));}
         String id=authentication?"AUTH":envelope.path("requestId").asText();if(id.isEmpty()){ticket.close();throw new IllegalArgumentException("Request ID missing");}
         var p=new Pending(id,intended,operation,ticket);if(pending.putIfAbsent(id,p)!=null){ticket.close();throw new IllegalArgumentException("Duplicate in-flight ID");}if(authentication)auth=p;
         p.timeout=c.eventLoop().schedule(()->p.reply.completeExceptionally(new TimeoutException("Original WSS command deadline")),authentication?5:2,TimeUnit.SECONDS);
-        evidence.dispatched(intended,System.nanoTime());c.writeAndFlush(new TextWebSocketFrame(encoded)).addListener(write->p.written(write.isSuccess()));return p.reply.minimalCompletionStage();
+        evidence.dispatched(intended,System.nanoTime());c.writeAndFlush(new TextWebSocketFrame(encoded)).addListener(write->p.written(write.isSuccess()));return p.reported.minimalCompletionStage();
     }
-    public synchronized void heartbeat(){var c=channel;if(draining||c==null||!authenticated||probeSlot.get()!=null)return;long stamp=System.nanoTime();lastPong=stamp;c.writeAndFlush(new PingWebSocketFrame());c.eventLoop().schedule(()->{if(lastPong==stamp)c.close();},10,TimeUnit.SECONDS);}
+    public synchronized void heartbeat(){var c=channel;if(draining||quiescing||c==null||!authenticated||probeSlot.get()!=null)return;long stamp=System.nanoTime();lastPong=stamp;c.writeAndFlush(new PingWebSocketFrame());c.eventLoop().schedule(()->{if(lastPong==stamp)c.close();},10,TimeUnit.SECONDS);}
     public enum ProbeKind { MALFORMED, OVERSIZED, SECURITY_CLOSURE, SLOW_CONSUMER }
     public enum ProbeOutcome { PROTOCOL_REJECTED, AUTHORIZATION_REJECTED, BACKPRESSURE_REJECTED, SOURCE_UNKNOWN, UNCLASSIFIED_CLOSE, ADMISSION_REJECTED, CREDIT_REJECTED, TRANSPORT_FAILED, DEADLINE_UNKNOWN }
     public enum CloseReason { NONE, UNCLASSIFIED, PROTOCOL_REJECTED, PROTOCOL_FRAME_TOO_LARGE, PROTOCOL_INVALID_UTF8, AUTH_REVOKED, AUTH_FRESHNESS_UNKNOWN, AUTH_TOKEN_EXPIRED, AUTHORIZATION_REJECTED, AUTH_REQUIRED, STALE_CONNECTION, RESYNC_REQUIRED }
@@ -152,7 +152,7 @@ public final class VirtualClient {
     /** SECURITY_CLOSURE observes an already authenticated socket; it performs no drill or outgoing write. */
     public synchronized ProbeOperation probe(ProbeKind kind,long intended) {
         Objects.requireNonNull(kind);var owner=channel;long generation=generations.get();long elapsed=System.nanoTime()-intended;
-        if(draining||elapsed<0||elapsed>=probeWindow(kind)||probeSlot.get()!=null||owner==null||!authenticated||!owner.isActive()||!owner.isWritable())return rejectedProbe(kind,generation,intended,elapsed>=probeWindow(kind)?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED);
+        if(draining||quiescing||elapsed<0||elapsed>=probeWindow(kind)||probeSlot.get()!=null||owner==null||!authenticated||!owner.isActive()||!owner.isWritable())return rejectedProbe(kind,generation,intended,elapsed>=probeWindow(kind)?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED);
         var ticket=credits.acquire(kind==ProbeKind.OVERSIZED?81921:1);
         if(ticket==null)return rejectedProbe(kind,generation,intended,ProbeOutcome.CREDIT_REJECTED);
         var probe=new WireProbe(kind,generation,intended,owner,ticket);probeSlot.set(probe);
@@ -161,6 +161,14 @@ public final class VirtualClient {
     }
     private static ProbeOperation rejectedProbe(ProbeKind kind,long generation,long intended,ProbeOutcome outcome){return new ProbeOperation(CompletableFuture.completedFuture(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,-1)).minimalCompletionStage(),CompletableFuture.<Void>completedFuture(null).minimalCompletionStage());}
     public CompletionStage<Void> close(){var result=new CompletableFuture<Void>();var c=channel;if(c==null){result.complete(null);return result.minimalCompletionStage();}c.close().addListener(done->{if(done.isSuccess())result.complete(null);else result.completeExceptionally(new IllegalStateException("Socket cleanup unproven"));});return result.minimalCompletionStage();}
+    /** Stop new admission while original logical deadlines and inbound replies remain owned. */
+    public synchronized CompletionStage<Void> quiesce(){
+        quiescing=true;var originals=new ArrayList<CompletableFuture<?>>();
+        if(connectingReady!=null)originals.add(connectingReady.handle((v,error)->null));
+        for(var work:pending.values())originals.add(work.reported.handle((v,error)->null));
+        var probe=probeSlot.get();if(probe!=null)originals.add(probe.observed.handle((v,error)->null));
+        return CompletableFuture.allOf(originals.toArray(CompletableFuture[]::new)).minimalCompletionStage();
+    }
     /** Terminal drain joins original write/logical receipts as well as the actual socket. */
     public synchronized CompletionStage<Void> drain(){
         draining=true;
