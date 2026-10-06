@@ -241,6 +241,67 @@ def worker_skew_source_errors(root,worker,summary,config,scenario):
     except Exception:return ['WORKER_SKEW_MEASUREMENTS_INVALID']
     return []
 
+def worker_security_source_errors(root,worker,summary,scenario,records):
+    """Check native raw-probe accounting; this does not attest an external security drill."""
+    from decimal import Decimal
+    requested=scenario.get('abuse',[]);fraction=scenario.get('abuseFraction',0)
+    if not isinstance(requested,list) or len(requested)>6 or any(not isinstance(mode,str) for mode in requested):
+        return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
+    if any(mode not in ('malformed','oversized') for mode in requested):
+        return ['WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE']
+    if len(set(requested))!=len(requested) or not number(fraction,0,1):return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
+    parts=Decimal(str(fraction))*1000000
+    if parts!=parts.to_integral_value() or bool(requested)!=(parts>0):return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
+    measured=mapping(summary.get('observed')).get('security')
+    if requested and not isinstance(measured,dict):return ['WORKER_SECURITY_NOT_MEASURED']
+    counters=('attempted','pendingLogical','logicalRejected','pendingPhysical','physicalCompleted','verifiedRejected','unknown','cleanupUnknown')
+    cumulative=('attempted','logicalRejected','physicalCompleted','verifiedRejected','unknown','cleanupUnknown')
+    modes={mode.upper() for mode in requested}
+    def counts(node,final,previous,maximum):
+        if not isinstance(node,dict) or set(node)!=set(counters+('scope','fractionMillionths','modes')):raise ValueError('Native security shape')
+        if node['scope']!='offeredSetupFrameArrivals' or type(node['fractionMillionths']) is not int or node['fractionMillionths']!=int(parts):raise ValueError('Rebound native security profile')
+        if not isinstance(node['modes'],dict) or set(node['modes'])!=modes:raise ValueError('Rebound native modes')
+        for name,values in [(None,node),*node['modes'].items()]:
+            if not isinstance(values,dict) or name is not None and set(values)!=set(counters+('outcomes',)):raise ValueError('Native mode shape')
+            before=previous if name is None else mapping(previous.get('modes')).get(name,{})
+            limit=maximum if name is None else maximum['modes'][name]
+            for field in counters:
+                value=values.get(field)
+                if type(value) is not int or not 0<=value<=9223372036854775807:raise ValueError('Native security integer')
+                if field in cumulative and not before.get(field,0)<=value<=limit[field]:raise ValueError('Native cumulative security count')
+            attempted=values['attempted']
+            if (values['unknown'] or values['cleanupUnknown'] or
+                values['pendingLogical']+values['logicalRejected']!=attempted or
+                values['pendingPhysical']+values['physicalCompleted']!=attempted or
+                values['verifiedRejected']!=values['physicalCompleted'] or
+                values['verifiedRejected']>values['logicalRejected']):raise ValueError('Original security receipt accounting')
+            if final and (values['pendingLogical'] or values['pendingPhysical']):raise ValueError('Unretired original security receipt')
+            if name is not None:
+                outcomes=values.get('outcomes')
+                if not isinstance(outcomes,dict) or set(outcomes)-{'PROTOCOL_REJECTED'}:raise ValueError('Unexpected native outcome')
+                if any(type(value) is not int or value<1 for value in outcomes.values()) or outcomes.get('PROTOCOL_REJECTED',0)!=values['logicalRejected']:raise ValueError('Original native outcome count')
+            elif any(values[field]!=sum(mode[field] for mode in node['modes'].values()) for field in counters):raise ValueError('Native aggregate accounting')
+        if final and node['attempted']<1:raise ValueError('No native security traffic')
+    try:
+        if requested:counts(measured,True,{},measured)
+        elif measured is not None:raise ValueError('Unrequested security source')
+        relative=worker.get('generatorSamplesArtifact')
+        if relative not in records:raise ValueError('Original security source not retained')
+        path=artifact_path(root,relative)
+        if path.stat().st_size>134217728:raise ValueError('Original security source bytes')
+        previous={};observations=0
+        with path.open() as stream:
+            while line:=stream.readline(8193):
+                observations+=1
+                if len(line)>8192 or observations>100000:raise ValueError('Original security source bounds')
+                sample=_json_value(line)
+                if requested:
+                    node=sample.get('security');counts(node,False,previous,measured);previous=node
+                elif 'security' in sample:raise ValueError('Unrequested security source')
+        if observations==0:raise ValueError('No original security samples')
+    except Exception:return ['WORKER_SECURITY_MEASUREMENTS_INVALID']
+    return []
+
 def worker_source_errors(root,worker,summary,manifest,records):
     errors=[]
     for artifact,digest in (('configArtifact','configHash'),('scenarioArtifact','scenarioHash')):
@@ -269,8 +330,7 @@ def worker_source_errors(root,worker,summary,manifest,records):
                 and utc(summary['startedAt'])<utc(config['scheduledStartAt'])<utc(summary['finishedAt']))
         except Exception:valid=False
     if not valid:errors.append('WORKER_SOURCE_CONFIGURATION_MISMATCH')
-    if ('abuse' in scenario and (not isinstance(scenario['abuse'],list) or scenario['abuse'])) or ('abuseFraction' in scenario and not number(scenario['abuseFraction'],0,0)):
-        errors.append('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE')
+    errors.extend(worker_security_source_errors(root,worker,summary,scenario,records))
     errors.extend(worker_skew_source_errors(root,worker,summary,config,scenario))
     return errors
 

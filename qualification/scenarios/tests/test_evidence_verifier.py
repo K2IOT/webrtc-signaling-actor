@@ -576,9 +576,83 @@ class EvidenceVerifierContractTest(unittest.TestCase):
     def test_source_cannot_claim_execution_of_unimplemented_security_modes(self):
         import json,hashlib
         context,worker,records,summary,_=self.worker_fixture()
-        for mode in ('malformed','slowConsumer','oversized','staleGeneration','revokedJti','retiredSigningKey'):
+        for mode in ('slowConsumer','staleGeneration','revokedJti','retiredSigningKey'):
             with self.subTest(mode=mode):
                 path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text());scenario['abuse']=[mode];scenario['abuseFraction']=.01;path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
                 self.assertIn('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
+    def raw_security_fixture(self):
+        import json,hashlib,copy
+        context,worker,records,summary,sample=self.worker_fixture()
+        path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text())
+        scenario.update(abuse=['malformed','oversized'],abuseFraction=.01)
+        path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+        counts={'attempted':1,'pendingLogical':0,'logicalRejected':1,'pendingPhysical':0,'physicalCompleted':1,'verifiedRejected':1,'unknown':0,'cleanupUnknown':0}
+        security={key:2*value for key,value in counts.items()}
+        security.update(scope='offeredSetupFrameArrivals',fractionMillionths=10000,modes={mode:{**counts,'outcomes':{'PROTOCOL_REJECTED':1}} for mode in ('MALFORMED','OVERSIZED')})
+        summary['observed']['security']=security;sample['security']=copy.deepcopy(security)
+        (self.root/'worker/generator.jsonl').write_text(json.dumps(sample)+'\n')
+        return context,worker,records,summary,sample
+
+    def test_raw_security_source_accepts_coherent_original_logical_and_physical_counts(self):
+        import json,copy
+        context,worker,records,summary,last=self.raw_security_fixture()
+        first=copy.deepcopy(last)
+        # An actual logical rejection can precede original write/socket retirement.
+        for node in (first['security'],*first['security']['modes'].values()):
+            node['pendingPhysical']=node['attempted'];node['physicalCompleted']=node['verifiedRejected']=0
+        (self.root/'worker/generator.jsonl').write_text(json.dumps(first)+'\n'+json.dumps(last)+'\n')
+        self.assertEqual(verifier.worker_source_errors(self.root,worker,summary,context,records),[])
+
+    def test_raw_security_source_requires_original_measurements(self):
+        context,worker,records,summary,_=self.raw_security_fixture()
+        summary['observed'].pop('security')
+        self.assertIn('WORKER_SECURITY_NOT_MEASURED',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
+    def test_raw_security_source_rejects_rebound_regressing_and_unknown_receipts(self):
+        import json,copy
+        context,worker,records,summary,sample=self.raw_security_fixture()
+        for mutation in ('scope','fraction','mode','boolean','aggregate','outcome','pending-final','unknown-final','zero-final','missing-sample','regression','exceeds-summary','physical-before-logical'):
+            with self.subTest(mutation=mutation):
+                candidate=copy.deepcopy(summary);first=copy.deepcopy(sample);last=copy.deepcopy(sample)
+                node=last['security'];mode=node['modes']['MALFORMED']
+                if mutation=='scope':node['scope']='socketPopulation'
+                elif mutation=='fraction':node['fractionMillionths']=5000
+                elif mutation=='mode':node['modes']['SECURITY_CLOSURE']=node['modes'].pop('MALFORMED')
+                elif mutation=='boolean':mode['attempted']=True
+                elif mutation=='aggregate':node['attempted']=3
+                elif mutation=='outcome':mode['outcomes']={'AUTHORIZATION_REJECTED':1}
+                elif mutation=='pending-final':candidate['observed']['security']['pendingPhysical']=1
+                elif mutation=='unknown-final':candidate['observed']['security']['unknown']=1
+                elif mutation=='zero-final':
+                    final=candidate['observed']['security']
+                    for target in (final,*final['modes'].values()):
+                        for key in ('attempted','logicalRejected','physicalCompleted','verifiedRejected'):target[key]=0
+                    for target in final['modes'].values():target['outcomes']={}
+                    last['security']=copy.deepcopy(final);first=copy.deepcopy(last)
+                elif mutation=='missing-sample':last.pop('security')
+                elif mutation=='regression':
+                    for target in (node,mode):
+                        for key in ('logicalRejected','verifiedRejected'):target[key]-=1
+                        target['pendingLogical']+=1
+                    mode['outcomes']={}
+                elif mutation=='exceeds-summary':
+                    for target in (node,mode):
+                        for key in ('attempted','logicalRejected','physicalCompleted','verifiedRejected'):target[key]+=1
+                    mode['outcomes']['PROTOCOL_REJECTED']+=1
+                else:
+                    for target in (node,mode):target['logicalRejected']-=1;target['pendingLogical']+=1
+                    mode['outcomes']={}
+                (self.root/'worker/generator.jsonl').write_text(json.dumps(first)+'\n'+json.dumps(last)+'\n')
+                self.assertIn('WORKER_SECURITY_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,candidate,context,records))
+
+    def test_raw_security_profiles_cannot_hide_invalid_fraction_or_duplicate_modes(self):
+        import json,hashlib
+        context,worker,records,summary,_=self.raw_security_fixture()
+        path=self.root/'worker/scenario.yaml';original=json.loads(path.read_text())
+        for modes,fraction in ((['malformed','malformed'],.01),(['malformed'],0),(['malformed'],1.1),(['malformed'],True),(['malformed'],'0.01'),(['malformed'],.0000001),([], .01),('malformed',.01)):
+            with self.subTest(modes=modes,fraction=fraction):
+                scenario={**original,'abuse':modes,'abuseFraction':fraction};path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+                self.assertIn('WORKER_SOURCE_INVALID_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
 
 if __name__=='__main__':unittest.main()

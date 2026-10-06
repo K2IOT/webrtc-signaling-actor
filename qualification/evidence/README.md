@@ -44,6 +44,15 @@ host and disjoint socket range. The verifier recomputes CPU/NIC/FD/queue headroo
 from original samples; a declared `headroom: true` cannot override a failed measurement.
 Unmeasured intervals and missing decoder dependencies block qualification.
 
+For native `malformed`/`oversized` profiles, the verifier binds the original
+`abuseFraction` to `offeredSetupFrameArrivals` and checks separate aggregate/mode
+logical, physical and finite outcome counters in the summary and original JSONL.
+Counts cannot regress, exceed the final source, change scope or include boolean
+values. Successful source evidence requires observed traffic and no pending or
+unknown receipts. These counts do not substitute for the security gate's trusted
+drill observations or enter ordinary availability/HDR denominators. The remaining
+four scheduler modes are rejected as unimplemented.
+
 `tests/fixtures/TEST_ONLY_latency.hdr` is a four-sample Java-generated unit fixture.
 It is never release evidence and contains no credentials or production measurements.
 
