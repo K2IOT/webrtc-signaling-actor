@@ -61,7 +61,7 @@ class SecurityWireProbeWssTest {
             release.countDown();
             if(mode==Mode.WRITE_FAILURE_THEN_CLOSE){var ctx=delayedHandler.get(3,TimeUnit.SECONDS);original.eventLoop().submit(()->held.get().setFailure(new java.io.IOException("TEST_ONLY original write failed"))).get(3,TimeUnit.SECONDS);ctx.executor().submit(()->ctx.fireChannelRead(delayedInput.getAndSet(null))).get(3,TimeUnit.SECONDS);}
             var observed=probe.observed().toCompletableFuture().get(3,TimeUnit.SECONDS);
-            if(mode==Mode.HELD_WRITE){original.closeFuture().sync();assertThat(probe.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(credits.count()).isEqualTo(1);assertThat(credits.bytes()).isEqualTo(1);original.eventLoop().submit(()->held.get().setSuccess()).get(3,TimeUnit.SECONDS);}
+            if(mode==Mode.HELD_WRITE){original.closeFuture().sync();var drain=client.drain();original.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);assertThat(drain.toCompletableFuture()).isNotDone();assertThat(probe.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(credits.count()).isEqualTo(1);assertThat(credits.bytes()).isEqualTo(1);original.eventLoop().submit(()->held.get().setSuccess()).get(3,TimeUnit.SECONDS);drain.toCompletableFuture().get(3,TimeUnit.SECONDS);}
             probe.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             nativePeer.get().eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);
             switch(mode){

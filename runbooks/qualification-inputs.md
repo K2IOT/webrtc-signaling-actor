@@ -20,7 +20,11 @@ The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The six security drivers in
 `security-abuse.yaml` remain unwired in the scenario orchestrator and are rejected
 before socket startup. Bounded malformed/oversized wire primitives now observe
-native gateway close codes and original physical completion over WSS.
+native gateway close codes and original physical completion over WSS. A separate
+stale-generation probe now installs the original observer before opening a fresh
+same-user replacement, requires same-incarnation/newer native AUTH_OK plus the
+exact STALE_CONNECTION close reason, and joins both clients' original cleanup.
+The YAML scenario scheduling/accounting integration remains open.
 Their YAML labels cannot count as a successful security drill.
 
 ## Required external inputs
