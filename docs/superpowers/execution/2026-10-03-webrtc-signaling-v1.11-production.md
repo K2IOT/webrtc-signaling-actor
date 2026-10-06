@@ -280,3 +280,11 @@ static harness contract passed. Whole-source verification follows this checkpoin
 revokedJti/retiredSigningKey, full Main/source/policy installation and genuine
 same-candidate staged qualification remain open. Tasks22–24 are IN PROGRESS and
 release remains NOT_QUALIFIED.
+
+Fresh whole-source gate at3fcbf00: `./mvnw clean verify` passed651tests in141fresh
+XML reports, zero failures/errors/skips; BUILD SUCCESS6m35, finished
+2026-10-06T11:40:48Z. Python69 and static contract PASS are recorded for the same
+unchanged implementation. Main/source/policy bindings, revokedJti/retiredSigningKey
+and genuine staged qualification remain open. This source has no new qualified
+candidate image; the historical e3630d9 TEST_ONLY OCI bundle retains its own source
+and NOT_QUALIFIED decision. Tasks22–24 are not marked complete.
