@@ -51,8 +51,8 @@ public final class VirtualClient {
             var ssl=tls.newHandler(c.alloc(),endpoint.getHost(),port);var parameters=ssl.engine().getSSLParameters();parameters.setEndpointIdentificationAlgorithm("HTTPS");ssl.engine().setSSLParameters(parameters);c.pipeline().addLast("tls",ssl).addLast(new HttpClientCodec(),new HttpObjectAggregator(81920),new ChannelInboundHandlerAdapter(){@Override public void channelRead(ChannelHandlerContext ctx,Object message){if(generations.get()==generation&&message instanceof HttpResponse response&&response.status().code()!=101){var hints=response.headers().getAll(HttpHeaderNames.RETRY_AFTER);if(hints.size()==1){long observed=System.nanoTime();ReconnectBackoff.retryAfter(hints.getFirst(),Instant.now()).ifPresent(delay->retryHint=new RetryHint(generation,observed,delay.toNanos()));}}if(message instanceof CloseWebSocketFrame close){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.closedFrame(close.statusCode());}ctx.fireChannelRead(message);}},new WebSocketClientProtocolHandler(WebSocketClientProtocolConfig.newBuilder().webSocketUri(endpoint).subprotocol("webrtc-signaling.v1").version(WebSocketVersion.V13).allowExtensions(false).maxFramePayloadLength(81920).dropPongFrames(false).handshakeTimeoutMillis(5000).build()),new WebSocketFrameAggregator(81920),new SimpleChannelInboundHandler<WebSocketFrame>(){
                 @Override public void userEventTriggered(ChannelHandlerContext ctx,Object event){if(event==WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE){if(generations.get()!=generation){ctx.close();return;}authenticate(false,intended).whenComplete((r,e)->{if(e==null)ready.complete(r);else ready.completeExceptionally(e);});}else ctx.fireUserEventTriggered(event);}
                 @Override protected void channelRead0(ChannelHandlerContext ctx,WebSocketFrame frame)throws Exception {if(generations.get()!=generation)return;if(frame instanceof PongWebSocketFrame){lastPong=System.nanoTime();return;}if(frame instanceof TextWebSocketFrame text){var value=JSON.readTree(text.text());if(value.path("type").asText().equals("AUTH_OK")){retryHint=null;authenticated=true;var a=auth;if(a!=null&&a.generation==generation)a.reply.complete(value);}else{var p=pending.get(value.path("requestId").asText());if(p!=null&&p.generation==generation)p.reply.complete(value);events.accept(VirtualClient.this,value);}}}
-                @Override public void channelInactive(ChannelHandlerContext ctx){if(generations.get()==generation)authenticated=false;for(var p:pending.values())if(p.generation==generation)p.reply.completeExceptionally(new IllegalStateException("WSS closed"));ready.completeExceptionally(new IllegalStateException("WSS closed before authentication"));if(generations.get()==generation)events.accept(VirtualClient.this,JSON.createObjectNode().put("type","SOCKET_CLOSED").put("socketGeneration",generation));}
-                @Override public void exceptionCaught(ChannelHandlerContext ctx,Throwable error){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.finish(ProbeOutcome.TRANSPORT_FAILED,-1);ready.completeExceptionally(new IllegalStateException("WSS transport failed"));ctx.close();}
+                @Override public void channelInactive(ChannelHandlerContext ctx){if(generations.get()==generation)authenticated=false;var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.inactive();for(var p:pending.values())if(p.generation==generation)p.reply.completeExceptionally(new IllegalStateException("WSS closed"));ready.completeExceptionally(new IllegalStateException("WSS closed before authentication"));if(generations.get()==generation)events.accept(VirtualClient.this,JSON.createObjectNode().put("type","SOCKET_CLOSED").put("socketGeneration",generation));}
+                @Override public void exceptionCaught(ChannelHandlerContext ctx,Throwable error){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.transportFailed=true;ready.completeExceptionally(new IllegalStateException("WSS transport failed"));ctx.close();}
             });
         }});
         var connect=bootstrap.connect(endpoint.getHost(),port);var ownedChannel=connect.channel();channel=ownedChannel;connect.addListener(done->{if(!done.isSuccess()){ready.completeExceptionally(new IllegalStateException("WSS connect failed"));ownedChannel.close();}});
@@ -81,13 +81,14 @@ public final class VirtualClient {
     private final class WireProbe {
         final ProbeKind kind;final long generation,intended;final Channel owner;final Credits.Ticket ticket;
         final CompletableFuture<ProbeReceipt> observed=new CompletableFuture<>();final CompletableFuture<Void> physical=new CompletableFuture<>();
-        boolean dispatched,writeDone,writeFailed,closeDone,retired;ScheduledFuture<?> timeout;
+        boolean dispatched,writeDone,writeFailed,transportFailed,closeDone,retired;ScheduledFuture<?> timeout;
         WireProbe(ProbeKind kind,long generation,long intended,Channel owner,Credits.Ticket ticket){this.kind=kind;this.generation=generation;this.intended=intended;this.owner=owner;this.ticket=ticket;}
         ProbeOperation operation(){return new ProbeOperation(observed.minimalCompletionStage(),physical.minimalCompletionStage());}
         void finish(ProbeOutcome outcome,int code){
             if(observed.complete(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,code))&&timeout!=null)timeout.cancel(false);
             retire();
         }
+        void inactive(){finish(writeFailed||transportFailed?ProbeOutcome.TRANSPORT_FAILED:ProbeOutcome.UNCLASSIFIED_CLOSE,-1);}
         void closedFrame(int code){if(!dispatched)return;finish(code==(kind==ProbeKind.MALFORMED?1002:1009)?ProbeOutcome.PROTOCOL_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code);}
         void retire(){if(retired||!writeDone||!closeDone||!observed.isDone())return;retired=true;ticket.close();probeSlot.compareAndSet(this,null);physical.complete(null);}
         void start(){
@@ -95,7 +96,7 @@ public final class VirtualClient {
             if(remaining<=0||owner!=channel||generation!=generations.get()||!authenticated||!owner.isActive()||!owner.isWritable()||!pending.isEmpty()){
                 writeDone=true;closeDone=true;finish(remaining<=0?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED,-1);return;
             }
-            owner.closeFuture().addListener(done->{closeDone=true;finish(writeFailed?ProbeOutcome.TRANSPORT_FAILED:ProbeOutcome.UNCLASSIFIED_CLOSE,-1);});
+            owner.closeFuture().addListener(done->{closeDone=true;retire();});
             timeout=owner.eventLoop().schedule(()->{finish(ProbeOutcome.DEADLINE_UNKNOWN,-1);owner.close();},remaining,TimeUnit.NANOSECONDS);
             String raw=kind==ProbeKind.MALFORMED?"{":"x".repeat(81921);
             try {dispatched=true;owner.writeAndFlush(new TextWebSocketFrame(raw)).addListener(done->{writeDone=true;writeFailed=!done.isSuccess();retire();});}

@@ -3,23 +3,20 @@ package io.webrtc.signaling.gateway;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.http.websocketx.CorruptedWebSocketFrameException;
-import java.util.concurrent.TimeUnit;
 
 /**
- * The native decoder writes its close frame before throwing a protocol violation.
- * Install after that decoder and before WebSocketProtocolHandler, whose generic
- * exception path would close TLS before the original close-frame write settles.
- * Requires the decoder's closeOnProtocolViolation=true (the pinned native default).
+ * Owns the bounded response for a native decoder error. Install immediately before
+ * WebSocketProtocolHandler, after its UTF-8 validator, with closeOnProtocolViolation=false.
+ * The native decoder still rejects before allocating an oversized payload. Immediate
+ * transport close while unread TLS body bytes arrive can lose the response; allow
+ * the peer to consume it within the original one-second cleanup window.
  */
 public final class DecoderRejectionHandler extends ChannelInboundHandlerAdapter {
-    private boolean rejecting;
     @Override public void exceptionCaught(ChannelHandlerContext ctx,Throwable cause){
-        if(!(cause instanceof CorruptedWebSocketFrameException)){ctx.fireExceptionCaught(cause);return;}
-        if(rejecting)return;
-        rejecting=true;
-        // The decoder's original write owns normal closure. An unknown write must
-        // still have bounded socket cleanup; this timer never reports write success.
-        var deadline=ctx.executor().schedule(()->{ctx.close();},1,TimeUnit.SECONDS);
-        ctx.channel().closeFuture().addListener(done->deadline.cancel(false));
+        if(!(cause instanceof CorruptedWebSocketFrameException nativeError)){ctx.fireExceptionCaught(cause);return;}
+        var status=nativeError.closeStatus();
+        var reason=status!=null&&status.code()==1009?GatewayRejection.Reason.PROTOCOL_FRAME_TOO_LARGE:
+            status!=null&&status.code()==1007?GatewayRejection.Reason.PROTOCOL_INVALID_UTF8:GatewayRejection.Reason.PROTOCOL_REJECTED;
+        GatewayRejection.closeDecoder(ctx.channel(),reason);
     }
 }

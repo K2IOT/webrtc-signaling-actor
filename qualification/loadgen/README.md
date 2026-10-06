@@ -105,8 +105,15 @@ transport failure, rejected admission and an expired original two-second deadlin
 remain distinct. Probe results never enter ordinary traffic latency/error counters.
 The original write and actual original socket close must both settle before
 physical completion releases global count/byte credit or permits a new generation.
-The gateway preserves the decoder's original close write and bounds unknown-write
-socket cleanup to one second, without claiming that the write succeeded.
+The gateway derives fixed rejection codes from the original native decoder error,
+rejects further admission immediately and gives the peer up to one second to read
+that response before forced transport cleanup. Native size/UTF-8 validation still
+rejects the frame; framework automatic close is replaced by that bounded owner.
+Cleanup never reports a successful write. A client socket closeFuture is only
+physical proof: classification waits for the original inbound frame or final
+pipeline inactivity, so pending TLS input cannot be hidden by early closure.
+Known AUTH/security reasons use fixed1008 enums, separate from an unknown verifier
+or source failure. No token, jti or source detail enters those replies.
 
 These primitives are tested over real TLS1.3 with TEST_ONLY RS256 authority and
 production decoder/validator handlers. The scenario orchestrator and enrolled

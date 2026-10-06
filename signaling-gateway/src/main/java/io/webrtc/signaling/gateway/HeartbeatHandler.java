@@ -13,7 +13,11 @@ public final class HeartbeatHandler extends ChannelInboundHandlerAdapter {
     @Override public void handlerAdded(ChannelHandlerContext ctx){context=ctx;}
     @Override public void channelRead(ChannelHandlerContext ctx,Object message){if(message instanceof PongWebSocketFrame pong){try{if(pending&&pong.content().readableBytes()==8&&pong.content().getLong(pong.content().readerIndex())==sequence)pending=false;}finally{pong.release();}return;}if(message instanceof PingWebSocketFrame ping){ctx.writeAndFlush(new PongWebSocketFrame(ping.content().retain()));ping.release();return;}ctx.fireChannelRead(message);}
     public void tick(Instant now){if(context==null||!context.channel().isActive())return;var id=context.channel().attr(ConnectionRegistry.CONNECTION).get();var binding=registry.binding(id);if(binding==null)return;
-        if(!services.currentBoot()||!registry.current(id,binding.route())||services.cachedSecurity(binding.principal(),now)!=AuthorizationStatus.ALLOWED||pending&&!now.isBefore(pongDeadline)){context.close();return;}
+        if(GatewayRejection.rejecting(context.channel()))return;
+        if(!services.currentBoot()){context.close();return;}
+        if(!registry.current(id,binding.route())){GatewayRejection.close(context.channel(),GatewayRejection.Reason.STALE_CONNECTION);return;}
+        var security=services.cachedSecurity(binding.principal(),now);if(security!=AuthorizationStatus.ALLOWED){if(security==null)context.close();else GatewayRejection.close(context.channel(),GatewayRejection.security(security));return;}
+        if(pending&&!now.isBefore(pongDeadline)){context.close();return;}
         if(!binding.principal().expiresAt().isAfter(now.plusSeconds(60))&&!binding.principal().expiresAt().equals(expiringFor)){expiringFor=binding.principal().expiresAt();context.writeAndFlush(new TextWebSocketFrame("{\"v\":1,\"type\":\"AUTH_EXPIRING\"}"));}
         if(!now.isBefore(nextPing)){sequence++;pending=true;pongDeadline=now.plusSeconds(10);nextPing=now.plusSeconds(30);context.writeAndFlush(new PingWebSocketFrame(Unpooled.buffer(8).writeLong(sequence)));}
     }
