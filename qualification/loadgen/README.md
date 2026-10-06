@@ -115,6 +115,16 @@ pipeline inactivity, so pending TLS input cannot be hidden by early closure.
 Known AUTH/security reasons use fixed1008 enums, separate from an unknown verifier
 or source failure. No token, jti or source detail enters those replies.
 
+`SECURITY_CLOSURE` passively observes an already authenticated original socket
+within a five-second generator observation window. It sends no command and
+performs no issuer/key drill. A recognized fixed1008 reason records native
+revocation, token expiration, generic authorization rejection or stale connection;
+freshness-unknown remains `SOURCE_UNKNOWN`. Unknown reason strings are discarded.
+Neither a reason nor this generator timeout proves an issuer propagation bound:
+the orchestrator still needs approved scope, original source witnesses and the
+configured identity SLO. Observation keeps its one global credit until original
+socket cleanup and never enters ordinary evidence counters.
+
 These primitives are tested over real TLS1.3 with TEST_ONLY RS256 authority and
 production decoder/validator handlers. The scenario orchestrator and enrolled
 security observations still need all six drivers before security qualification.

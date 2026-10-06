@@ -48,7 +48,7 @@ public final class VirtualClient {
         if(probeSlot.get()!=null||channel!=null&&channel.isOpen())return CompletableFuture.failedFuture(new IllegalStateException("Connection already owned"));authenticated=false;long generation=generations.incrementAndGet();
         var ready=new CompletableFuture<JsonNode>();ready.whenComplete((v,e)->evidence.record(EvidenceWriter.Operation.CONNECT,intended,System.nanoTime(),e==null));int port=endpoint.getPort()<0?443:endpoint.getPort();
         var bootstrap=new Bootstrap().group(loops).channel(NioSocketChannel.class).localAddress(source).option(ChannelOption.CONNECT_TIMEOUT_MILLIS,5000).option(ChannelOption.WRITE_BUFFER_WATER_MARK,new WriteBufferWaterMark(65536,131072)).handler(new ChannelInitializer<Channel>(){protected void initChannel(Channel c){
-            var ssl=tls.newHandler(c.alloc(),endpoint.getHost(),port);var parameters=ssl.engine().getSSLParameters();parameters.setEndpointIdentificationAlgorithm("HTTPS");ssl.engine().setSSLParameters(parameters);c.pipeline().addLast("tls",ssl).addLast(new HttpClientCodec(),new HttpObjectAggregator(81920),new ChannelInboundHandlerAdapter(){@Override public void channelRead(ChannelHandlerContext ctx,Object message){if(generations.get()==generation&&message instanceof HttpResponse response&&response.status().code()!=101){var hints=response.headers().getAll(HttpHeaderNames.RETRY_AFTER);if(hints.size()==1){long observed=System.nanoTime();ReconnectBackoff.retryAfter(hints.getFirst(),Instant.now()).ifPresent(delay->retryHint=new RetryHint(generation,observed,delay.toNanos()));}}if(message instanceof CloseWebSocketFrame close){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.closedFrame(close.statusCode());}ctx.fireChannelRead(message);}},new WebSocketClientProtocolHandler(WebSocketClientProtocolConfig.newBuilder().webSocketUri(endpoint).subprotocol("webrtc-signaling.v1").version(WebSocketVersion.V13).allowExtensions(false).maxFramePayloadLength(81920).dropPongFrames(false).handshakeTimeoutMillis(5000).build()),new WebSocketFrameAggregator(81920),new SimpleChannelInboundHandler<WebSocketFrame>(){
+            var ssl=tls.newHandler(c.alloc(),endpoint.getHost(),port);var parameters=ssl.engine().getSSLParameters();parameters.setEndpointIdentificationAlgorithm("HTTPS");ssl.engine().setSSLParameters(parameters);c.pipeline().addLast("tls",ssl).addLast(new HttpClientCodec(),new HttpObjectAggregator(81920),new ChannelInboundHandlerAdapter(){@Override public void channelRead(ChannelHandlerContext ctx,Object message){if(generations.get()==generation&&message instanceof HttpResponse response&&response.status().code()!=101){var hints=response.headers().getAll(HttpHeaderNames.RETRY_AFTER);if(hints.size()==1){long observed=System.nanoTime();ReconnectBackoff.retryAfter(hints.getFirst(),Instant.now()).ifPresent(delay->retryHint=new RetryHint(generation,observed,delay.toNanos()));}}if(message instanceof CloseWebSocketFrame close){var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.closedFrame(close.statusCode(),close.reasonText());}ctx.fireChannelRead(message);}},new WebSocketClientProtocolHandler(WebSocketClientProtocolConfig.newBuilder().webSocketUri(endpoint).subprotocol("webrtc-signaling.v1").version(WebSocketVersion.V13).allowExtensions(false).maxFramePayloadLength(81920).dropPongFrames(false).handshakeTimeoutMillis(5000).build()),new WebSocketFrameAggregator(81920),new SimpleChannelInboundHandler<WebSocketFrame>(){
                 @Override public void userEventTriggered(ChannelHandlerContext ctx,Object event){if(event==WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE){if(generations.get()!=generation){ctx.close();return;}authenticate(false,intended).whenComplete((r,e)->{if(e==null)ready.complete(r);else ready.completeExceptionally(e);});}else ctx.fireUserEventTriggered(event);}
                 @Override protected void channelRead0(ChannelHandlerContext ctx,WebSocketFrame frame)throws Exception {if(generations.get()!=generation)return;if(frame instanceof PongWebSocketFrame){lastPong=System.nanoTime();return;}if(frame instanceof TextWebSocketFrame text){var value=JSON.readTree(text.text());if(value.path("type").asText().equals("AUTH_OK")){retryHint=null;authenticated=true;var a=auth;if(a!=null&&a.generation==generation)a.reply.complete(value);}else{var p=pending.get(value.path("requestId").asText());if(p!=null&&p.generation==generation)p.reply.complete(value);events.accept(VirtualClient.this,value);}}}
                 @Override public void channelInactive(ChannelHandlerContext ctx){if(generations.get()==generation)authenticated=false;var probe=probeSlot.get();if(probe!=null&&probe.generation==generation&&probe.owner==ctx.channel())probe.inactive();for(var p:pending.values())if(p.generation==generation)p.reply.completeExceptionally(new IllegalStateException("WSS closed"));ready.completeExceptionally(new IllegalStateException("WSS closed before authentication"));if(generations.get()==generation)events.accept(VirtualClient.this,JSON.createObjectNode().put("type","SOCKET_CLOSED").put("socketGeneration",generation));}
@@ -73,9 +73,12 @@ public final class VirtualClient {
     }
     public void heartbeat(){var c=channel;if(c==null||!authenticated||probeSlot.get()!=null)return;long stamp=System.nanoTime();lastPong=stamp;c.writeAndFlush(new PingWebSocketFrame());c.eventLoop().schedule(()->{if(lastPong==stamp)c.close();},10,TimeUnit.SECONDS);}
     public void slowConsumer(boolean slow){var c=channel;if(c!=null)c.config().setAutoRead(!slow);}
-    public enum ProbeKind { MALFORMED, OVERSIZED }
-    public enum ProbeOutcome { PROTOCOL_REJECTED, UNCLASSIFIED_CLOSE, ADMISSION_REJECTED, CREDIT_REJECTED, TRANSPORT_FAILED, DEADLINE_UNKNOWN }
-    public record ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode) {}
+    public enum ProbeKind { MALFORMED, OVERSIZED, SECURITY_CLOSURE }
+    public enum ProbeOutcome { PROTOCOL_REJECTED, AUTHORIZATION_REJECTED, SOURCE_UNKNOWN, UNCLASSIFIED_CLOSE, ADMISSION_REJECTED, CREDIT_REJECTED, TRANSPORT_FAILED, DEADLINE_UNKNOWN }
+    public enum CloseReason { NONE, UNCLASSIFIED, PROTOCOL_REJECTED, PROTOCOL_FRAME_TOO_LARGE, PROTOCOL_INVALID_UTF8, AUTH_REVOKED, AUTH_FRESHNESS_UNKNOWN, AUTH_TOKEN_EXPIRED, AUTHORIZATION_REJECTED, AUTH_REQUIRED, STALE_CONNECTION }
+    public record ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode,CloseReason closeReason) {
+        public ProbeReceipt(ProbeKind kind,long generation,long intendedNanos,long finishedNanos,ProbeOutcome outcome,int closeCode){this(kind,generation,intendedNanos,finishedNanos,outcome,closeCode,CloseReason.NONE);}
+    }
     public record ProbeOperation(CompletionStage<ProbeReceipt> observed,CompletionStage<Void> physicalCompletion) {}
     /** A receipt is a logical observation; physicalCompletion proves the original write and socket retired. */
     private final class WireProbe {
@@ -84,29 +87,44 @@ public final class VirtualClient {
         boolean dispatched,writeDone,writeFailed,transportFailed,closeDone,retired;ScheduledFuture<?> timeout;
         WireProbe(ProbeKind kind,long generation,long intended,Channel owner,Credits.Ticket ticket){this.kind=kind;this.generation=generation;this.intended=intended;this.owner=owner;this.ticket=ticket;}
         ProbeOperation operation(){return new ProbeOperation(observed.minimalCompletionStage(),physical.minimalCompletionStage());}
-        void finish(ProbeOutcome outcome,int code){
-            if(observed.complete(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,code))&&timeout!=null)timeout.cancel(false);
+        void finish(ProbeOutcome outcome,int code){finish(outcome,code,CloseReason.NONE);}
+        void finish(ProbeOutcome outcome,int code,CloseReason reason){
+            if(observed.complete(new ProbeReceipt(kind,generation,intended,System.nanoTime(),outcome,code,reason))&&timeout!=null)timeout.cancel(false);
             retire();
         }
         void inactive(){finish(writeFailed||transportFailed?ProbeOutcome.TRANSPORT_FAILED:ProbeOutcome.UNCLASSIFIED_CLOSE,-1);}
-        void closedFrame(int code){if(!dispatched)return;finish(code==(kind==ProbeKind.MALFORMED?1002:1009)?ProbeOutcome.PROTOCOL_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code);}
+        void closedFrame(int code,String text){
+            if(!dispatched)return;
+            CloseReason reason;try{reason=CloseReason.valueOf(text);}catch(IllegalArgumentException unknown){reason=CloseReason.UNCLASSIFIED;}
+            if(kind==ProbeKind.SECURITY_CLOSURE){
+                var outcome=code!=1008?ProbeOutcome.UNCLASSIFIED_CLOSE:switch(reason){
+                    case AUTH_FRESHNESS_UNKNOWN -> ProbeOutcome.SOURCE_UNKNOWN;
+                    case AUTH_REVOKED,AUTH_TOKEN_EXPIRED,AUTHORIZATION_REJECTED,AUTH_REQUIRED,STALE_CONNECTION -> ProbeOutcome.AUTHORIZATION_REJECTED;
+                    default -> ProbeOutcome.UNCLASSIFIED_CLOSE;
+                };
+                finish(outcome,code,reason);
+            }else finish(code==(kind==ProbeKind.MALFORMED?1002:1009)?ProbeOutcome.PROTOCOL_REJECTED:ProbeOutcome.UNCLASSIFIED_CLOSE,code,reason);
+        }
         void retire(){if(retired||!writeDone||!closeDone||!observed.isDone())return;retired=true;ticket.close();probeSlot.compareAndSet(this,null);physical.complete(null);}
         void start(){
-            long remaining=TimeUnit.SECONDS.toNanos(2)-(System.nanoTime()-intended);
+            long remaining=probeWindow(kind)-(System.nanoTime()-intended);
             if(remaining<=0||owner!=channel||generation!=generations.get()||!authenticated||!owner.isActive()||!owner.isWritable()||!pending.isEmpty()){
                 writeDone=true;closeDone=true;finish(remaining<=0?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED,-1);return;
             }
             owner.closeFuture().addListener(done->{closeDone=true;retire();});
             timeout=owner.eventLoop().schedule(()->{finish(ProbeOutcome.DEADLINE_UNKNOWN,-1);owner.close();},remaining,TimeUnit.NANOSECONDS);
+            if(kind==ProbeKind.SECURITY_CLOSURE){dispatched=true;writeDone=true;return;}
             String raw=kind==ProbeKind.MALFORMED?"{":"x".repeat(81921);
             try {dispatched=true;owner.writeAndFlush(new TextWebSocketFrame(raw)).addListener(done->{writeDone=true;writeFailed=!done.isSuccess();retire();});}
             catch(RuntimeException error){writeDone=true;finish(ProbeOutcome.TRANSPORT_FAILED,-1);owner.close();}
         }
     }
+    private static long probeWindow(ProbeKind kind){return TimeUnit.SECONDS.toNanos(kind==ProbeKind.SECURITY_CLOSURE?5:2);}
+    /** SECURITY_CLOSURE observes an already authenticated socket; it performs no drill or outgoing write. */
     public synchronized ProbeOperation probe(ProbeKind kind,long intended) {
         Objects.requireNonNull(kind);var owner=channel;long generation=generations.get();long elapsed=System.nanoTime()-intended;
-        if(elapsed<0||elapsed>=TimeUnit.SECONDS.toNanos(2)||probeSlot.get()!=null||owner==null||!authenticated||!owner.isActive()||!owner.isWritable())return rejectedProbe(kind,generation,intended,elapsed>=TimeUnit.SECONDS.toNanos(2)?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED);
-        var ticket=credits.acquire(kind==ProbeKind.MALFORMED?1:81921);
+        if(elapsed<0||elapsed>=probeWindow(kind)||probeSlot.get()!=null||owner==null||!authenticated||!owner.isActive()||!owner.isWritable())return rejectedProbe(kind,generation,intended,elapsed>=probeWindow(kind)?ProbeOutcome.DEADLINE_UNKNOWN:ProbeOutcome.ADMISSION_REJECTED);
+        var ticket=credits.acquire(kind==ProbeKind.OVERSIZED?81921:1);
         if(ticket==null)return rejectedProbe(kind,generation,intended,ProbeOutcome.CREDIT_REJECTED);
         var probe=new WireProbe(kind,generation,intended,owner,ticket);probeSlot.set(probe);
         try {owner.eventLoop().execute(probe::start);}catch(RejectedExecutionException error){probe.writeDone=true;probe.closeDone=true;probe.finish(ProbeOutcome.ADMISSION_REJECTED,-1);}
