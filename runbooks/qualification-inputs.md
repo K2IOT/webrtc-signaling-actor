@@ -11,8 +11,10 @@ and start a complete gateway, actor or control process. Its startup guard now
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are
 locally exercised. They must be joined in the launcher using explicit enrolled
-sources and policies. A runtime Secret mounted by Helm is not, by itself, evidence
-that the executable reads that Secret or serves its listeners.
+sources and policies. Boot now reads `SIGNALING_RUNTIME_CONTRACT` as bounded
+effective `signaling` configuration before binding; its current format is
+documented in `config/native-sources.md`. This does not install source enrollment,
+policies or native factories, and does not demonstrate serving a business listener.
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The six security drivers in

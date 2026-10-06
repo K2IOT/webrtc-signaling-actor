@@ -1,3 +1,23 @@
+# Mounted runtime configuration
+
+The native Boot environment processor reads `SIGNALING_RUNTIME_CONTRACT` when
+explicitly supplied. The path must be absolute and resolve to a regular file;
+Kubernetes projected Secret symlinks are supported. The current YAML format is
+one document with a single `signaling` root, containing the existing typed
+identity, lease, cluster, protocol, transport and queues sections from
+`production-defaults.yaml`. Partial sections retain packaged defaults. Deployment
+environment and command-line properties retain Boot precedence; the Secret
+overrides packaged configuration. Unsafe values and unknown typed properties
+reject binding before runtime installation.
+
+The original read is bounded to 64 KiB, strict UTF-8, depth16 and512 nodes.
+Duplicate keys, multiple documents, tags, anchors/aliases, dotted keys, nulls,
+sequences and other top-level namespaces are rejected. Parser failures expose
+only the fixed CONFIGURATION_REJECTED diagnostic. This is an effective
+configuration reader, not an enrollment for issuer keys, native source trust,
+calling policy or runtime factories. Those integrations remain required; do not
+place guessed production sources or permissive policies in the file.
+
 # Native clock source contract
 
 `NativeClockSource` is an adapter for an enrolled clock monitor. Its successful tests
