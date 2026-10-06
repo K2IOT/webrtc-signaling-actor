@@ -23,5 +23,7 @@ class StaleGenerationProbeTest {
         assertThat(StaleGenerationProbe.classify(original,null,close)).isEqualTo(StaleGenerationProbe.Outcome.REPLACEMENT_UNKNOWN);
         var revoked=new VirtualClient.ProbeReceipt(VirtualClient.ProbeKind.SECURITY_CLOSURE,1,1,2,VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED,1008,VirtualClient.CloseReason.AUTH_REVOKED);
         assertThat(StaleGenerationProbe.classify(original,auth(id,"3"),revoked)).isEqualTo(StaleGenerationProbe.Outcome.CLOSURE_UNKNOWN);
+        var late=new VirtualClient.ProbeReceipt(VirtualClient.ProbeKind.SECURITY_CLOSURE,1,1,6_000_000_001L,VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED,1008,VirtualClient.CloseReason.STALE_CONNECTION);
+        assertThat(StaleGenerationProbe.classify(original,auth(id,"3"),late)).isEqualTo(StaleGenerationProbe.Outcome.CLOSURE_UNKNOWN);
     }
 }

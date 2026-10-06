@@ -24,11 +24,12 @@ import org.junit.jupiter.api.Test;
 
 /** Real TLS/RS256 and native handlers; registration/feed are explicit TEST_ONLY fixtures. */
 class SecurityClosureWssTest {
-    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, REVOKED, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
+    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, REVOKED, REVOKED_LATE, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
     @Test void observesNativeReplacementWithoutAttributingNormalCounters()throws Exception {run(Mode.STALE);}
     @Test void newerGenerationWithAnotherIncarnationCannotProveReplacement()throws Exception {run(Mode.STALE_WRONG_INCARNATION);}
     @Test void replacementAuthCreditFailureCannotProveReplacement()throws Exception {run(Mode.STALE_CREDIT_LIMIT);}
     @Test void observesOriginalRevokedReason()throws Exception {run(Mode.REVOKED);}
+    @Test void lateRevokedFrameCannotBeatTheOriginalFiveSecondDeadline()throws Exception {run(Mode.REVOKED_LATE);}
     @Test void expirationCannotBeReportedAsRevocation()throws Exception {run(Mode.EXPIRED);}
     @Test void unknownSourceCannotBeReportedAsAuthenticationRejection()throws Exception {run(Mode.FRESHNESS_UNKNOWN);}
     @Test void unknownReasonIsDiscardedAndCannotBeReportedAsSecurityRejection()throws Exception {run(Mode.UNKNOWN_REASON);}
@@ -72,12 +73,25 @@ class SecurityClosureWssTest {
             var observation=old.probe(VirtualClient.ProbeKind.SECURITY_CLOSURE,intended);
             assertThat(observation.admission().toCompletableFuture().get(3,TimeUnit.SECONDS)).isTrue();
             assertThat(observation.observed().toCompletableFuture()).isNotDone();
+            var heldClose=new CountDownLatch(1);var releaseClose=new CountDownLatch(1);
+            if(mode==Mode.REVOKED_LATE)original.eventLoop().submit(()->{
+                ChannelHandlerContext observer=null;
+                for(var entry:original.pipeline()){var handler=entry.getValue();if(handler.getClass().isAnonymousClass()&&handler instanceof ChannelInboundHandlerAdapter&&!(handler instanceof SimpleChannelInboundHandler<?>)){observer=original.pipeline().context(handler);break;}}
+                if(observer==null)throw new AssertionError("TEST_ONLY observer absent");
+                original.pipeline().addBefore(observer.name(),"TEST_ONLY_late_security",new ChannelInboundHandlerAdapter(){
+                    @Override public void channelRead(ChannelHandlerContext ctx,Object message)throws Exception{
+                        if(message instanceof CloseWebSocketFrame){heldClose.countDown();if(!releaseClose.await(6,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY source loop barrier expired");}
+                        ctx.fireChannelRead(message);
+                    }
+                });
+            }).get(3,TimeUnit.SECONDS);
             if(mode==Mode.UNKNOWN_REASON)peer.get().writeAndFlush(new CloseWebSocketFrame(1008,"TEST_ONLY_PRIVATE_SOURCE_REASON")).addListener(ChannelFutureListener.CLOSE);
-            else if(mode!=Mode.SILENT){status.set(mode==Mode.REVOKED?AuthorizationStatus.REVOKED:mode==Mode.EXPIRED?AuthorizationStatus.TOKEN_EXPIRED:AuthorizationStatus.FRESHNESS_UNKNOWN);var owned=peer.get();owned.eventLoop().submit(()->owned.pipeline().get(HeartbeatHandler.class).tick(Instant.now())).get(3,TimeUnit.SECONDS);}
+            else if(mode!=Mode.SILENT){status.set(mode==Mode.REVOKED||mode==Mode.REVOKED_LATE?AuthorizationStatus.REVOKED:mode==Mode.EXPIRED?AuthorizationStatus.TOKEN_EXPIRED:AuthorizationStatus.FRESHNESS_UNKNOWN);var owned=peer.get();owned.eventLoop().submit(()->owned.pipeline().get(HeartbeatHandler.class).tick(Instant.now())).get(3,TimeUnit.SECONDS);}
+            if(mode==Mode.REVOKED_LATE){assertThat(heldClose.await(3,TimeUnit.SECONDS)).isTrue();Thread.sleep(5150);releaseClose.countDown();}
             var receipt=observation.observed().toCompletableFuture().get(6,TimeUnit.SECONDS);observation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(receipt.intendedNanos()).isEqualTo(intended);assertThat(receipt.generation()).isEqualTo(old.generation());assertThat(evidence.attempts()).isEqualTo(ordinary);assertThat(receipt.toString()).doesNotContain("PRIVATE","TEST_ONLY_jti",token);assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
             if(mode==Mode.SILENT){assertThat(receipt.outcome()).isEqualTo(VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN);assertThat(receipt.finishedNanos()-intended).isBetween(TimeUnit.MILLISECONDS.toNanos(4900),TimeUnit.MILLISECONDS.toNanos(5600));}
-            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT->throw new AssertionError();case REVOKED->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});}
+            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.REVOKED_LATE?VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN:mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT->throw new AssertionError();case REVOKED,REVOKED_LATE->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});if(mode==Mode.REVOKED_LATE)assertThat(receipt.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));}
         }finally{if(old!=null)old.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(newer!=null)newer.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();loops.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
     }
 }

@@ -55,7 +55,7 @@ public final class VirtualClient {
     private volatile RetryHint retryHint;
     public long retryAfterNanos(){var original=retryHint;return original==null||original.generation()!=generations.get()?0:Math.max(0,original.delayNanos()-(System.nanoTime()-original.observedNanos()));}
     public long generation(){return generations.get();}
-    public long index(){return index;}public String user(){return user;}public String cell(){return cell;}public boolean authenticated(){return authenticated;}public boolean writable(){var c=channel;return !draining&&probeSlot.get()==null&&authenticated&&c!=null&&c.isWritable()&&pending.size()<8;}
+    public long index(){return index;}public String user(){return user;}public String cell(){return cell;}public boolean authenticated(){var c=channel;return !draining&&authenticated&&c!=null&&c.isActive();}public boolean writable(){var c=channel;return !draining&&probeSlot.get()==null&&authenticated&&c!=null&&c.isActive()&&c.isWritable()&&pending.size()<8;}
     public synchronized CompletionStage<JsonNode> connect(long intended){
         if(draining||probeSlot.get()!=null||channel!=null&&channel.isOpen())return CompletableFuture.failedFuture(new IllegalStateException("Connection already owned"));authenticated=false;nativeAuth=null;long generation=generations.incrementAndGet();
         var ready=new CompletableFuture<JsonNode>();ready.whenComplete((v,e)->evidence.record(EvidenceWriter.Operation.CONNECT,intended,System.nanoTime(),e==null));int port=endpoint.getPort()<0?443:endpoint.getPort();
@@ -111,6 +111,8 @@ public final class VirtualClient {
         void closedFrame(int code,String text){
             if(!dispatched)return;
             CloseReason reason;try{reason=CloseReason.valueOf(text);}catch(IllegalArgumentException unknown){reason=CloseReason.UNCLASSIFIED;}
+            // I/O can resume before a delayed timer. The original monotonic deadline still applies.
+            if(System.nanoTime()-intended>=probeWindow(kind)){finish(ProbeOutcome.DEADLINE_UNKNOWN,code,reason);return;}
             if(kind==ProbeKind.SECURITY_CLOSURE){
                 var outcome=code!=1008?ProbeOutcome.UNCLASSIFIED_CLOSE:switch(reason){
                     case AUTH_FRESHNESS_UNKNOWN -> ProbeOutcome.SOURCE_UNKNOWN;

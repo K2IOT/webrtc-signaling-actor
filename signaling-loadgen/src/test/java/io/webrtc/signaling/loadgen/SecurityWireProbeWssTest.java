@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 class SecurityWireProbeWssTest {
     @Test void malformedProbeObservesOriginalNativeProtocolClose()throws Exception {run(false);}
     @org.junit.jupiter.api.RepeatedTest(10) void oversizedProbeObservesOriginalNativeDecoderClose()throws Exception {run(true);}
-    enum Mode { NORMAL, SILENT, ABRUPT, WRONG_CLOSE, EARLY_CLOSE, HELD_WRITE, WRITE_FAILURE_THEN_CLOSE, CLOSE_FUTURE_FIRST, CREDIT_LIMIT }
+    enum Mode { NORMAL, SILENT, ABRUPT, WRONG_CLOSE, EARLY_CLOSE, LATE_CLOSE, HELD_WRITE, WRITE_FAILURE_THEN_CLOSE, CLOSE_FUTURE_FIRST, CREDIT_LIMIT }
     @Test void missingCloseCodeIsNeverCountedAsProtocolRejection()throws Exception {run(false,Mode.ABRUPT);}
     @Test void unrelatedCloseCodeIsNeverCountedAsProtocolRejection()throws Exception {run(false,Mode.WRONG_CLOSE);}
     @Test void silenceExpiresAtOriginalDeadlineWithoutClaimingRejection()throws Exception {run(false,Mode.SILENT);}
@@ -33,6 +33,7 @@ class SecurityWireProbeWssTest {
     @Test void originalServerRejectionCanStillArriveAfterLocalWriteFailure()throws Exception {run(false,Mode.WRITE_FAILURE_THEN_CLOSE);}
     @Test void closeBeforeProbeDispatchCannotBeAttributedToProbe()throws Exception {run(false,Mode.EARLY_CLOSE);}
     @Test void insufficientCreditDoesNotWriteOrCloseSocket()throws Exception {run(true,Mode.CREDIT_LIMIT);}
+    @Test void lateNativeCloseBeforeDelayedTimerCannotRenewOriginalDeadline()throws Exception {run(false,Mode.LATE_CLOSE);}
     void run(boolean oversized)throws Exception {run(oversized,Mode.NORMAL);}
     void run(boolean oversized,Mode mode)throws Exception {
         var keys=KeyPairGenerator.getInstance("RSA");keys.initialize(2048);var pair=keys.generateKeyPair();String token=LoadGeneratorTlsTest.token(pair);
@@ -45,6 +46,17 @@ class SecurityWireProbeWssTest {
             client.connect(System.nanoTime()).toCompletableFuture().get(3,TimeUnit.SECONDS);long ordinary;
             var field=VirtualClient.class.getDeclaredField("channel");field.setAccessible(true);var original=(Channel)field.get(client);original.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);ordinary=evidence.attempts();
             var held=new java.util.concurrent.atomic.AtomicReference<ChannelPromise>();var queued=new CountDownLatch(1);var release=new CountDownLatch(1);
+            if(mode==Mode.LATE_CLOSE)original.eventLoop().submit(()->{
+                ChannelHandlerContext observer=null;
+                for(var entry:original.pipeline()){var handler=entry.getValue();if(handler.getClass().isAnonymousClass()&&handler instanceof ChannelInboundHandlerAdapter&&!(handler instanceof SimpleChannelInboundHandler<?>)){observer=original.pipeline().context(handler);break;}}
+                if(observer==null)throw new AssertionError("TEST_ONLY observer absent");
+                original.pipeline().addBefore(observer.name(),"TEST_ONLY_late_close",new ChannelInboundHandlerAdapter(){
+                    @Override public void channelRead(ChannelHandlerContext ctx,Object message)throws Exception{
+                        if(message instanceof CloseWebSocketFrame){queued.countDown();if(!release.await(3,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY original loop barrier expired");}
+                        ctx.fireChannelRead(message);
+                    }
+                });
+            }).get(3,TimeUnit.SECONDS);
             if(mode==Mode.HELD_WRITE||mode==Mode.WRITE_FAILURE_THEN_CLOSE)original.eventLoop().submit(()->original.pipeline().addLast(new ChannelOutboundHandlerAdapter(){@Override public void write(ChannelHandlerContext ctx,Object message,ChannelPromise promise){if(message instanceof TextWebSocketFrame text&&text.text().equals("{")){held.set(promise);ctx.write(message,ctx.newPromise());}else ctx.write(message,promise);}})).get(3,TimeUnit.SECONDS);
             if(mode==Mode.CLOSE_FUTURE_FIRST)original.eventLoop().submit(()->{
                 ChannelHandlerContext observer=null;
@@ -58,6 +70,7 @@ class SecurityWireProbeWssTest {
             if(mode==Mode.EARLY_CLOSE){original.eventLoop().execute(()->{queued.countDown();try{if(!release.await(3,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY barrier timeout");for(var entry:original.pipeline()){var handler=entry.getValue();if(handler.getClass().isAnonymousClass()&&handler instanceof ChannelInboundHandlerAdapter inbound&&!(handler instanceof SimpleChannelInboundHandler<?>)){inbound.channelRead(original.pipeline().context(handler),new CloseWebSocketFrame(1002,"TEST_ONLY_UNRELATED"));break;}}}catch(Exception error){throw new AssertionError(error);}});assertThat(queued.await(3,TimeUnit.SECONDS)).isTrue();}
             long intended=System.nanoTime();
             var probe=client.probe(oversized?VirtualClient.ProbeKind.OVERSIZED:VirtualClient.ProbeKind.MALFORMED,intended);
+            if(mode==Mode.LATE_CLOSE){assertThat(queued.await(3,TimeUnit.SECONDS)).isTrue();Thread.sleep(2150);}
             release.countDown();
             if(mode==Mode.WRITE_FAILURE_THEN_CLOSE){var ctx=delayedHandler.get(3,TimeUnit.SECONDS);original.eventLoop().submit(()->held.get().setFailure(new java.io.IOException("TEST_ONLY original write failed"))).get(3,TimeUnit.SECONDS);ctx.executor().submit(()->ctx.fireChannelRead(delayedInput.getAndSet(null))).get(3,TimeUnit.SECONDS);}
             var observed=probe.observed().toCompletableFuture().get(3,TimeUnit.SECONDS);
@@ -71,6 +84,7 @@ class SecurityWireProbeWssTest {
                 case SILENT -> {assertThat(observed.closeCode()).isEqualTo(-1);assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN);assertThat(observed.finishedNanos()-intended).isBetween(TimeUnit.MILLISECONDS.toNanos(1900),TimeUnit.MILLISECONDS.toNanos(2600));}
                 case EARLY_CLOSE -> assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.ADMISSION_REJECTED);
                 case CREDIT_LIMIT -> {assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.CREDIT_REJECTED);assertThat(original.isActive()).isTrue();assertThat(client.authenticated()).isTrue();}
+                case LATE_CLOSE -> {assertThat(observed.outcome()).isEqualTo(VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN);assertThat(observed.closeCode()).isEqualTo(1002);assertThat(observed.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(2));}
             }assertThat(observed.intendedNanos()).isEqualTo(intended);assertThat(observed.generation()).isEqualTo(client.generation());assertThat(evidence.attempts()).isEqualTo(ordinary);assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();assertThat(budget.count()).isZero();
         }finally{var retained=delayedInput.getAndSet(null);if(retained!=null)retained.release();if(client!=null)client.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();loops.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
     }

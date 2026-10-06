@@ -22,7 +22,9 @@ public final class StaleGenerationProbe {
         return stale(closure)?Outcome.REPLACED:Outcome.CLOSURE_UNKNOWN;
     }
     private static boolean stale(VirtualClient.ProbeReceipt closure){
+        long elapsed=closure==null?-1:closure.finishedNanos()-closure.intendedNanos();
         return closure!=null&&closure.kind()==VirtualClient.ProbeKind.SECURITY_CLOSURE
+            &&elapsed>=0&&elapsed<TimeUnit.SECONDS.toNanos(5)
             &&closure.outcome()==VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED&&closure.closeCode()==1008
             &&closure.closeReason()==VirtualClient.CloseReason.STALE_CONNECTION;
     }
