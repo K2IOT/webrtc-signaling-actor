@@ -191,6 +191,17 @@ production gate, source inventory or measured capacity is invented. No image
 was pushed or deployment performed. Complete Main, six security drivers and
 genuine staged/drill qualification remain open; Tasks 22–24 remain in progress.
 
+## Native security closure checkpoint (2026-10-06)
+
+Source `879c5e1` passed a fresh `clean verify`: **601 tests / 136 reports**,
+zero failures/errors/skips, 4m58s, finished 2026-10-06T00:38:01Z. The static
+loadgen contract also passed. The six passive WSS observation tests use native
+gateway handlers and explicit TEST_ONLY registration/security sources. They
+verify fixed close reasons, original socket ownership and physical retirement;
+they do not attest actual revocation drills or wire the six scenario drivers.
+Tasks 22–24 remain open, including complete Main composition, and the release
+remains **NOT_QUALIFIED**.
+
 ## Native security wire checkpoint (2026-10-05)
 
 Source `c4958b7` passed a fresh `clean verify`: **580 tests / 134 reports**,
