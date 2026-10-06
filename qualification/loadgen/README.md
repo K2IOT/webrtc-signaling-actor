@@ -148,10 +148,24 @@ or their success/error denominator. Authorized reconnect/AUTH traffic retains
 ordinary accounting. WSS smoke tests exercise both actual worker modes with
 TEST_ONLY issuer keys and registration; they do not qualify real capacity.
 
-`slowConsumer`, `staleGeneration`, `revokedJti` and `retiredSigningKey` remain
-unsupported by scenario scheduling. The stale-generation primitive requires a
-native same-incarnation/newer AUTH_OK and exact original stale closure, but is
-not yet a scheduled mode. The complete `security-abuse.yaml` profile still fails
+`staleGeneration` is also scheduled on that original arrival stream. It requires
+an idle authenticated original session with a native binding. A replacement uses
+the same approved inventory, source IP, TLS and endpoint; its authorized AUTH and
+connection remain in ordinary accounting. Its native same-incarnation/newer
+AUTH_OK and original stale closure must both be observed inside the original
+five-second window. The receipt retains the replacement ACK's original time;
+a late ACK cannot defeat an overdue timer. Verified source rejection joins both
+owned sockets and every original write. Reconnect of the original session waits
+for that drill's physical receipt.
+
+`securityReplacementSlots` reports actual admitted owner slots, their capacity,
+pending count and peak separately from the logical stage socket gauge. Capacity
+is at most16 and at most `localSocketLimit - assignedSocketCount`. No spare local
+socket budget means GENERATOR_LIMITED without opening a replacement. Slot release
+requires original physical cleanup; terminal drain freezes new replacements.
+
+`slowConsumer`, `revokedJti` and `retiredSigningKey` remain
+unsupported by scenario scheduling. The complete `security-abuse.yaml` profile still fails
 preflight until all requested modes and their approved inputs are implemented.
 
 Profiles requesting any remaining unsupported mode still fail preflight before opening sockets.

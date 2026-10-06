@@ -576,7 +576,7 @@ class EvidenceVerifierContractTest(unittest.TestCase):
     def test_source_cannot_claim_execution_of_unimplemented_security_modes(self):
         import json,hashlib
         context,worker,records,summary,_=self.worker_fixture()
-        for mode in ('slowConsumer','staleGeneration','revokedJti','retiredSigningKey'):
+        for mode in ('slowConsumer','revokedJti','retiredSigningKey'):
             with self.subTest(mode=mode):
                 path=self.root/'worker/scenario.yaml';scenario=json.loads(path.read_text());scenario['abuse']=[mode];scenario['abuseFraction']=.01;path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
                 self.assertIn('WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
@@ -654,5 +654,34 @@ class EvidenceVerifierContractTest(unittest.TestCase):
             with self.subTest(modes=modes,fraction=fraction):
                 scenario={**original,'abuse':modes,'abuseFraction':fraction};path.write_text(json.dumps(scenario));summary['scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
                 self.assertIn('WORKER_SOURCE_INVALID_SECURITY_PROFILE',verifier.worker_source_errors(self.root,worker,summary,context,records))
+
+    def test_stale_generation_source_requires_original_replacement_slot_budget_and_receipts(self):
+        import json,hashlib,copy
+        context,worker,records,summary,sample=self.raw_security_fixture()
+        scenario=json.loads((self.root/'worker/scenario.yaml').read_text());scenario['abuse']=['staleGeneration'];scenario['abuseFraction']=1
+        config=json.loads((self.root/'worker/config.json').read_text());config['localSocketLimit']=5
+        for name,body in (('config.json',config),('scenario.yaml',scenario)):
+            path=self.root/'worker'/name;path.write_text(json.dumps(body));summary['configHash' if name=='config.json' else 'scenarioHash']=hashlib.sha256(path.read_bytes()).hexdigest()
+        counts=summary['observed']['security']['modes']['MALFORMED'];counts['outcomes']={'REPLACED':1}
+        security={key:value for key,value in counts.items() if key!='outcomes'}
+        security.update(scope='offeredSetupFrameArrivals',fractionMillionths=1000000,modes={'STALE_GENERATION':counts})
+        summary['observed']['security']=security;summary['observed']['securityReplacementSlots']={'capacity':1,'pending':0,'peak':1}
+        summary['observed']['registrations']=5
+        sample['security']=copy.deepcopy(security);sample['securityReplacementSlots']=copy.deepcopy(summary['observed']['securityReplacementSlots']);sample['workload']['registrations']=5
+        path=self.root/'worker/generator.jsonl';path.write_text(json.dumps(sample)+'\n')
+        self.assertEqual(verifier.worker_source_errors(self.root,worker,summary,context,records),[])
+        for mutation in ('missing-budget','invented-headroom','boolean-slot','pending-final','wrong-outcome','missing-sample','exceeds-final','missing-auth'):
+            with self.subTest(mutation=mutation):
+                candidate=copy.deepcopy(summary);point=copy.deepcopy(sample)
+                if mutation=='missing-budget':candidate['observed'].pop('securityReplacementSlots')
+                elif mutation=='invented-headroom':candidate['observed']['securityReplacementSlots']['capacity']=2
+                elif mutation=='boolean-slot':point['securityReplacementSlots']['pending']=True
+                elif mutation=='pending-final':candidate['observed']['securityReplacementSlots']['pending']=1
+                elif mutation=='wrong-outcome':point['security']['modes']['STALE_GENERATION']['outcomes']={'AUTHORIZATION_REJECTED':1}
+                elif mutation=='missing-sample':point.pop('securityReplacementSlots')
+                elif mutation=='exceeds-final':point['securityReplacementSlots']['peak']=2
+                else:candidate['observed']['registrations']=4
+                path.write_text(json.dumps(point)+'\n')
+                self.assertIn('WORKER_SECURITY_MEASUREMENTS_INVALID',verifier.worker_source_errors(self.root,worker,candidate,context,records))
 
 if __name__=='__main__':unittest.main()

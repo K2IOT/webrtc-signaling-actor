@@ -7,7 +7,8 @@ import java.util.concurrent.*;
 public final class StaleGenerationProbe {
     private StaleGenerationProbe(){}
     public enum Outcome { REPLACED, REPLACEMENT_UNKNOWN, BINDING_MISMATCH, CLOSURE_UNKNOWN }
-    public record Receipt(Outcome outcome,long originalGeneration,long replacementGeneration,VirtualClient.ProbeReceipt closure){}
+    public record Receipt(Outcome outcome,long originalGeneration,long replacementGeneration,long replacementFinishedNanos,VirtualClient.ProbeReceipt closure){}
+    private record AuthObservation(VirtualClient.AuthBinding binding,long finishedNanos){}
     public record Operation(CompletionStage<Receipt> observed,CompletionStage<Void> physicalCompletion){}
     static boolean replacement(JsonNode original,JsonNode newer){
         var before=VirtualClient.AuthBinding.read(original);var after=VirtualClient.AuthBinding.read(newer);
@@ -36,11 +37,11 @@ public final class StaleGenerationProbe {
         var watch=original.probe(VirtualClient.ProbeKind.SECURITY_CLOSURE,intended);
         // The replacement cannot start before the old socket has physically installed its observer.
         var connected=watch.admission().thenCompose(admitted->admitted?newer.connect(intended):CompletableFuture.<JsonNode>completedFuture(null))
-            .handle((ack,error)->error==null?newer.authBinding().orElse(null):null);
+            .handle((ack,error)->new AuthObservation(error==null?newer.authBinding().orElse(null):null,System.nanoTime()));
         var observed=watch.observed().thenCombine(connected,(closure,after)->new Receipt(
-            after==null?Outcome.REPLACEMENT_UNKNOWN:!replacement(before,after)?Outcome.BINDING_MISMATCH:
+            after.binding()==null||after.finishedNanos()-intended<0||after.finishedNanos()-intended>=TimeUnit.SECONDS.toNanos(5)?Outcome.REPLACEMENT_UNKNOWN:!replacement(before,after.binding())?Outcome.BINDING_MISMATCH:
                 stale(closure)?Outcome.REPLACED:Outcome.CLOSURE_UNKNOWN,
-            before.connectionGeneration(),after==null?0:after.connectionGeneration(),closure));
+            before.connectionGeneration(),after.binding()==null?0:after.binding().connectionGeneration(),after.finishedNanos(),closure));
         var cleanup=observed.handle((receipt,error)->null).thenCompose(v->newer.drain());
         var physical=CompletableFuture.allOf(watch.physicalCompletion().toCompletableFuture(),cleanup.toCompletableFuture());
         return new Operation(observed.toCompletableFuture().minimalCompletionStage(),physical.minimalCompletionStage());

@@ -241,13 +241,14 @@ def worker_skew_source_errors(root,worker,summary,config,scenario):
     except Exception:return ['WORKER_SKEW_MEASUREMENTS_INVALID']
     return []
 
-def worker_security_source_errors(root,worker,summary,scenario,records):
-    """Check native raw-probe accounting; this does not attest an external security drill."""
+def worker_security_source_errors(root,worker,summary,config,scenario,records):
+    """Check original native probe accounting; this does not attest an external security drill."""
     from decimal import Decimal
     requested=scenario.get('abuse',[]);fraction=scenario.get('abuseFraction',0)
     if not isinstance(requested,list) or len(requested)>6 or any(not isinstance(mode,str) for mode in requested):
         return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
-    if any(mode not in ('malformed','oversized') for mode in requested):
+    labels={'malformed':'MALFORMED','oversized':'OVERSIZED','staleGeneration':'STALE_GENERATION'}
+    if any(mode not in labels for mode in requested):
         return ['WORKER_SOURCE_UNIMPLEMENTED_SECURITY_PROFILE']
     if len(set(requested))!=len(requested) or not number(fraction,0,1):return ['WORKER_SOURCE_INVALID_SECURITY_PROFILE']
     parts=Decimal(str(fraction))*1000000
@@ -256,7 +257,20 @@ def worker_security_source_errors(root,worker,summary,scenario,records):
     if requested and not isinstance(measured,dict):return ['WORKER_SECURITY_NOT_MEASURED']
     counters=('attempted','pendingLogical','logicalRejected','pendingPhysical','physicalCompleted','verifiedRejected','unknown','cleanupUnknown')
     cumulative=('attempted','logicalRejected','physicalCompleted','verifiedRejected','unknown','cleanupUnknown')
-    modes={mode.upper() for mode in requested}
+    modes={labels[mode] for mode in requested}
+    stale='STALE_GENERATION' in modes
+    replacement=mapping(summary.get('observed')).get('securityReplacementSlots')
+    def slots(node,final,previous,maximum,security):
+        assigned=worker['socketEnd']-worker['socketStart'];limit=config['localSocketLimit']
+        if type(assigned) is not int or type(limit) is not int or not 0<=assigned<=limit<=200000:raise ValueError('Original local socket bound')
+        capacity=min(16,limit-assigned)
+        if not isinstance(node,dict) or set(node)!={'capacity','pending','peak'} or any(type(value) is not int for value in node.values()):raise ValueError('Native replacement slot shape')
+        if node['capacity']!=capacity or not 0<=node['pending']<=node['peak']<=capacity:raise ValueError('Native replacement capacity')
+        if not previous.get('peak',0)<=node['peak']<=maximum['peak'] or node['peak']>security['modes']['STALE_GENERATION']['attempted']:raise ValueError('Native replacement peak')
+        if final:
+            attempted=security['modes']['STALE_GENERATION']['attempted'];registered=mapping(summary.get('observed')).get('registrations')
+            if node['pending'] or attempted>0 and node['peak']<1:raise ValueError('Original replacement not retired')
+            if type(registered) is not int or registered<assigned+attempted:raise ValueError('Original replacement AUTH not observed')
     def counts(node,final,previous,maximum):
         if not isinstance(node,dict) or set(node)!=set(counters+('scope','fractionMillionths','modes')):raise ValueError('Native security shape')
         if node['scope']!='offeredSetupFrameArrivals' or type(node['fractionMillionths']) is not int or node['fractionMillionths']!=int(parts):raise ValueError('Rebound native security profile')
@@ -278,18 +292,21 @@ def worker_security_source_errors(root,worker,summary,scenario,records):
             if final and (values['pendingLogical'] or values['pendingPhysical']):raise ValueError('Unretired original security receipt')
             if name is not None:
                 outcomes=values.get('outcomes')
-                if not isinstance(outcomes,dict) or set(outcomes)-{'PROTOCOL_REJECTED'}:raise ValueError('Unexpected native outcome')
-                if any(type(value) is not int or value<1 for value in outcomes.values()) or outcomes.get('PROTOCOL_REJECTED',0)!=values['logicalRejected']:raise ValueError('Original native outcome count')
+                expected='REPLACED' if name=='STALE_GENERATION' else 'PROTOCOL_REJECTED'
+                if not isinstance(outcomes,dict) or set(outcomes)-{expected}:raise ValueError('Unexpected native outcome')
+                if any(type(value) is not int or value<1 for value in outcomes.values()) or outcomes.get(expected,0)!=values['logicalRejected']:raise ValueError('Original native outcome count')
             elif any(values[field]!=sum(mode[field] for mode in node['modes'].values()) for field in counters):raise ValueError('Native aggregate accounting')
         if final and node['attempted']<1:raise ValueError('No native security traffic')
     try:
         if requested:counts(measured,True,{},measured)
         elif measured is not None:raise ValueError('Unrequested security source')
+        if stale:slots(replacement,True,{},replacement,measured)
+        elif replacement is not None:raise ValueError('Unrequested replacement source')
         relative=worker.get('generatorSamplesArtifact')
         if relative not in records:raise ValueError('Original security source not retained')
         path=artifact_path(root,relative)
         if path.stat().st_size>134217728:raise ValueError('Original security source bytes')
-        previous={};observations=0
+        previous={};previous_slots={};observations=0
         with path.open() as stream:
             while line:=stream.readline(8193):
                 observations+=1
@@ -298,6 +315,9 @@ def worker_security_source_errors(root,worker,summary,scenario,records):
                 if requested:
                     node=sample.get('security');counts(node,False,previous,measured);previous=node
                 elif 'security' in sample:raise ValueError('Unrequested security source')
+                if stale:
+                    owned=sample.get('securityReplacementSlots');slots(owned,False,previous_slots,replacement,node);previous_slots=owned
+                elif 'securityReplacementSlots' in sample:raise ValueError('Unrequested replacement source')
         if observations==0:raise ValueError('No original security samples')
     except Exception:return ['WORKER_SECURITY_MEASUREMENTS_INVALID']
     return []
@@ -330,7 +350,7 @@ def worker_source_errors(root,worker,summary,manifest,records):
                 and utc(summary['startedAt'])<utc(config['scheduledStartAt'])<utc(summary['finishedAt']))
         except Exception:valid=False
     if not valid:errors.append('WORKER_SOURCE_CONFIGURATION_MISMATCH')
-    errors.extend(worker_security_source_errors(root,worker,summary,scenario,records))
+    errors.extend(worker_security_source_errors(root,worker,summary,config,scenario,records))
     errors.extend(worker_skew_source_errors(root,worker,summary,config,scenario))
     return errors
 

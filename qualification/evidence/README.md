@@ -51,7 +51,15 @@ Counts cannot regress, exceed the final source, change scope or include boolean
 values. Successful source evidence requires observed traffic and no pending or
 unknown receipts. These counts do not substitute for the security gate's trusted
 drill observations or enter ordinary availability/HDR denominators. The remaining
-four scheduler modes are rejected as unimplemented.
+three scheduler modes are rejected as unimplemented.
+
+Native `staleGeneration` source counters require the finite `REPLACED` outcome,
+the same receipt conservation and original `securityReplacementSlots` in every
+snapshot. Slot capacity is recomputed from retained configuration and assigned
+range, capped at16; peaks cannot regress or exceed final observations. No pending
+replacement may remain at successful completion. Actual authorized registration
+counts must include the replacement AUTHs. A native stale close alone does not
+prove a newer same-incarnation binding or an issuer/key-retirement drill.
 
 `tests/fixtures/TEST_ONLY_latency.hdr` is a four-sample Java-generated unit fixture.
 It is never release evidence and contains no credentials or production measurements.

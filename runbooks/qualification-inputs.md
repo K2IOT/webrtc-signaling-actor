@@ -18,15 +18,19 @@ policies or native factories, and does not demonstrate serving a business listen
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The scenario orchestrator now schedules
-`malformed` and `oversized`, with separate original-source counters. The four
+`malformed`, `oversized` and `staleGeneration`, with separate original-source counters. The three
 other modes in `security-abuse.yaml` remain unwired and the complete six-mode
 profile still rejects before socket startup. Bounded raw wire probes observe
 native gateway close codes and original physical completion over WSS. A separate
 stale-generation probe now installs the original observer before opening a fresh
 same-user replacement, requires same-incarnation/newer native AUTH_OK plus the
 exact STALE_CONNECTION close reason, and joins both clients' original cleanup.
-The YAML scenario scheduling/accounting integration remains open.
-Their YAML labels cannot count as a successful security drill.
+Stale scheduling requires spare declared local socket budget; replacement owners
+are capped at16 and remain admitted until both original socket/write receipts
+settle. The native replacement ACK and stale closure retain their original5s
+window. The verifier recomputes slot capacity from retained configuration and
+checks original counters and replacement AUTH accounting. The three unsupported
+YAML labels cannot count as successful security drills.
 
 ## Required external inputs
 

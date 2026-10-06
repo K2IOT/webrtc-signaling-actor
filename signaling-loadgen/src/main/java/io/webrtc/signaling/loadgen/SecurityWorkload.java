@@ -12,7 +12,7 @@ final class SecurityWorkload {
     private String failure;private boolean generatorLimited;
     private static final class Counts {
         long attempted,pendingLogical,logicalRejected,pendingPhysical,physicalCompleted,verifiedRejected,unknown,cleanupUnknown;
-        final EnumMap<VirtualClient.ProbeOutcome,Long> outcomes=new EnumMap<>(VirtualClient.ProbeOutcome.class);
+        final Map<String,Long> outcomes=new TreeMap<>();
         Map<String,Object> snapshot(){return Map.of("attempted",attempted,"pendingLogical",pendingLogical,"logicalRejected",logicalRejected,
             "pendingPhysical",pendingPhysical,"physicalCompleted",physicalCompleted,"verifiedRejected",verifiedRejected,"unknown",unknown,"cleanupUnknown",cleanupUnknown);}
     }
@@ -23,7 +23,7 @@ final class SecurityWorkload {
             if(!requested.isArray()||requested.size()>6)throw new IllegalArgumentException("Invalid abuse profile");
             for(var item:requested){
                 if(!item.isTextual())throw new IllegalArgumentException("Invalid abuse mode");
-                var mode=switch(item.textValue()){case "malformed"->VirtualClient.ProbeKind.MALFORMED;case "oversized"->VirtualClient.ProbeKind.OVERSIZED;default->throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");};
+                var mode=switch(item.textValue()){case "malformed"->VirtualClient.ProbeKind.MALFORMED;case "oversized"->VirtualClient.ProbeKind.OVERSIZED;case "staleGeneration"->VirtualClient.ProbeKind.SECURITY_CLOSURE;default->throw new IllegalArgumentException("ABUSE_PROFILE_NOT_IMPLEMENTED");};
                 if(modes.contains(mode))throw new IllegalArgumentException("Duplicate abuse mode");modes.add(mode);
             }
         }
@@ -37,6 +37,7 @@ final class SecurityWorkload {
         return new SecurityWorkload(modes,parts);
     }
     boolean enabled(){return !modes.isEmpty();}
+    boolean staleEnabled(){return modes.contains(VirtualClient.ProbeKind.SECURITY_CLOSURE);}
     Optional<VirtualClient.ProbeKind> kind(long seed,long ordinal){
         if(ordinal<0)throw new IllegalArgumentException("Original arrival ordinal required");
         if(!enabled())return Optional.empty();
@@ -48,15 +49,16 @@ final class SecurityWorkload {
     synchronized boolean generatorLimited(){return generatorLimited;}
     synchronized Map<String,Object> snapshot(){
         var total=new Counts();var byMode=new LinkedHashMap<String,Object>();
-        counts.forEach((mode,c)->{var details=new LinkedHashMap<String,Object>(c.snapshot());details.put("outcomes",Map.copyOf(c.outcomes));byMode.put(mode.name(),details);total.attempted+=c.attempted;total.pendingLogical+=c.pendingLogical;
+        counts.forEach((mode,c)->{var details=new LinkedHashMap<String,Object>(c.snapshot());details.put("outcomes",Map.copyOf(c.outcomes));byMode.put(mode==VirtualClient.ProbeKind.SECURITY_CLOSURE?"STALE_GENERATION":mode.name(),details);total.attempted+=c.attempted;total.pendingLogical+=c.pendingLogical;
             total.logicalRejected+=c.logicalRejected;total.pendingPhysical+=c.pendingPhysical;total.physicalCompleted+=c.physicalCompleted;
             total.verifiedRejected+=c.verifiedRejected;total.unknown+=c.unknown;total.cleanupUnknown+=c.cleanupUnknown;});
         var result=new LinkedHashMap<String,Object>(total.snapshot());result.put("scope","offeredSetupFrameArrivals");result.put("fractionMillionths",millionths);result.put("modes",byMode);return Collections.unmodifiableMap(result);
     }
     synchronized void unavailable(VirtualClient.ProbeKind kind){
-        var c=Objects.requireNonNull(counts.get(kind));c.attempted++;c.unknown++;c.outcomes.merge(VirtualClient.ProbeOutcome.ADMISSION_REJECTED,1L,Long::sum);generatorLimited=true;failure="SECURITY_GENERATOR_ADMISSION";
+        var c=Objects.requireNonNull(counts.get(kind));c.attempted++;c.unknown++;c.outcomes.merge("ADMISSION_REJECTED",1L,Long::sum);generatorLimited=true;failure="SECURITY_GENERATOR_ADMISSION";
     }
     VirtualClient.ProbeOperation start(VirtualClient client,VirtualClient.ProbeKind kind,long intended){
+        if(kind==VirtualClient.ProbeKind.SECURITY_CLOSURE)throw new IllegalArgumentException("Native replacement proof required");
         final Counts c;long generation=client.generation();
         synchronized(this){c=Objects.requireNonNull(counts.get(kind));c.attempted++;c.pendingLogical++;c.pendingPhysical++;}
         final VirtualClient.ProbeOperation original;
@@ -69,7 +71,7 @@ final class SecurityWorkload {
         var observed=original.observed().whenComplete((receipt,error)->{
             synchronized(this){
                 c.pendingLogical--;
-                if(error==null)c.outcomes.merge(receipt.outcome(),1L,Long::sum);
+                if(error==null)c.outcomes.merge(receipt.outcome().name(),1L,Long::sum);
                 if(error==null&&expected(kind,generation,intended,receipt))c.logicalRejected++;
                 else {c.unknown++;boolean admission=error==null&&(receipt.outcome()==VirtualClient.ProbeOutcome.ADMISSION_REJECTED||receipt.outcome()==VirtualClient.ProbeOutcome.CREDIT_REJECTED);generatorLimited|=admission;failure=admission?"SECURITY_GENERATOR_ADMISSION":"SECURITY_REJECTION_NOT_OBSERVED";}
             }
@@ -80,6 +82,31 @@ final class SecurityWorkload {
             return (Void)null;
         }).whenComplete((v,error)->{if(error!=null)synchronized(this){c.cleanupUnknown++;failure="SECURITY_CLEANUP_UNKNOWN";}});
         return new VirtualClient.ProbeOperation(observed,physical,original.admission());
+    }
+    StaleGenerationProbe.Operation startStale(VirtualClient original,VirtualClient newer,long intended){
+        final Counts c;long generation=original.generation();
+        synchronized(this){c=Objects.requireNonNull(counts.get(VirtualClient.ProbeKind.SECURITY_CLOSURE));c.attempted++;c.pendingLogical++;c.pendingPhysical++;}
+        final StaleGenerationProbe.Operation operation;
+        try {operation=StaleGenerationProbe.run(original,newer,intended);}
+        catch(RuntimeException unknown){
+            synchronized(this){c.pendingLogical--;c.unknown++;c.cleanupUnknown++;failure="SECURITY_CLEANUP_UNKNOWN";}
+            return new StaleGenerationProbe.Operation(CompletableFuture.failedFuture(new IllegalStateException("Security start unknown")),new CompletableFuture<Void>());
+        }
+        var observed=operation.observed().whenComplete((receipt,error)->{
+            synchronized(this){c.pendingLogical--;if(error==null)c.outcomes.merge(receipt.outcome().name(),1L,Long::sum);
+                if(error==null&&expectedStale(generation,intended,receipt))c.logicalRejected++;
+                else{c.unknown++;failure="SECURITY_REJECTION_NOT_OBSERVED";}}
+        });
+        var physical=observed.handle((receipt,error)->receipt).thenCombine(operation.physicalCompletion(),(receipt,v)->{
+            synchronized(this){c.pendingPhysical--;c.physicalCompleted++;if(expectedStale(generation,intended,receipt))c.verifiedRejected++;}
+            return (Void)null;
+        }).whenComplete((v,error)->{if(error!=null)synchronized(this){c.cleanupUnknown++;failure="SECURITY_CLEANUP_UNKNOWN";}});
+        return new StaleGenerationProbe.Operation(observed,physical);
+    }
+    private static boolean expectedStale(long generation,long intended,StaleGenerationProbe.Receipt receipt){
+        var closure=receipt==null?null:receipt.closure();long elapsed=closure==null?-1:closure.finishedNanos()-intended,authElapsed=receipt==null?-1:receipt.replacementFinishedNanos()-intended;
+        return receipt!=null&&receipt.outcome()==StaleGenerationProbe.Outcome.REPLACED&&receipt.originalGeneration()>0&&receipt.replacementGeneration()>receipt.originalGeneration()
+            &&closure!=null&&closure.generation()==generation&&closure.intendedNanos()==intended&&elapsed>=0&&elapsed<TimeUnit.SECONDS.toNanos(5)&&authElapsed>=0&&authElapsed<TimeUnit.SECONDS.toNanos(5);
     }
     private static boolean expected(VirtualClient.ProbeKind kind,long generation,long intended,VirtualClient.ProbeReceipt receipt){
         long elapsed=receipt==null?-1:receipt.finishedNanos()-intended;

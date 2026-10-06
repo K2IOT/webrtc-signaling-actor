@@ -24,7 +24,10 @@ import org.junit.jupiter.api.Test;
 
 /** Real TLS/RS256 and native handlers; registration/feed are explicit TEST_ONLY fixtures. */
 class SecurityClosureWssTest {
-    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, REVOKED, REVOKED_LATE, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
+    enum Mode { STALE, STALE_WRONG_INCARNATION, STALE_CREDIT_LIMIT, STALE_POOLED, STALE_NO_HEADROOM, STALE_LATE_AUTH, REVOKED, REVOKED_LATE, EXPIRED, FRESHNESS_UNKNOWN, UNKNOWN_REASON, SILENT }
+    @Test void nativeReplacementAckAfterOriginalDeadlineCannotProveTimelyReplacement()throws Exception {run(Mode.STALE_LATE_AUTH);}
+    @Test void boundedReplacementPoolRecordsOriginalNativeProofAndRetiresBothSockets()throws Exception {run(Mode.STALE_POOLED);}
+    @Test void noReplacementHeadroomNeverOpensAnExtraSocketOrClaimsARejection()throws Exception {run(Mode.STALE_NO_HEADROOM);}
     @Test void observesNativeReplacementWithoutAttributingNormalCounters()throws Exception {run(Mode.STALE);}
     @Test void newerGenerationWithAnotherIncarnationCannotProveReplacement()throws Exception {run(Mode.STALE_WRONG_INCARNATION);}
     @Test void replacementAuthCreditFailureCannotProveReplacement()throws Exception {run(Mode.STALE_CREDIT_LIMIT);}
@@ -37,13 +40,14 @@ class SecurityClosureWssTest {
     void run(Mode mode)throws Exception {
         var keys=KeyPairGenerator.getInstance("RSA");keys.initialize(2048);var pair=keys.generateKeyPair();String token=LoadGeneratorTlsTest.token(pair);
         var verifier=new Rs256TokenVerifier(new IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofHours(1),Duration.ZERO,Duration.ofSeconds(4),Duration.ofSeconds(5),true,"TEST_ONLY_SOURCE"),new TrustedRsaKeys(Map.of("test",(RSAPublicKey)pair.getPublic()),null,Duration.ofSeconds(1)),8192);
-        var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);var loops=new NioEventLoopGroup(1);Channel server=null;VirtualClient old=null,newer=null;
+        var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);var loops=new NioEventLoopGroup(mode==Mode.STALE_LATE_AUTH?2:1);Channel server=null;VirtualClient old=null,newer=null;
+        var registrationReady=new CountDownLatch(1);var delayedRegistration=new CompletableFuture<SessionRepository.Route>();var replacementRoute=new AtomicReference<SessionRepository.Route>();
         var boot=UUID.randomUUID();var incarnation=new SessionIncarnation(UUID.randomUUID());var generations=new AtomicLong();var registry=new ConnectionRegistry("TEST_ONLY_gw",boot,8);var status=new AtomicReference<>(AuthorizationStatus.ALLOWED);var peer=new AtomicReference<Channel>();var credits=new VirtualClient.Credits(mode==Mode.STALE_CREDIT_LIMIT?1:8,1048576);var evidence=new EvidenceWriter();
         GatewayServices services=new GatewayServices(){
             public boolean currentBoot(){return true;}
             public CompletionStage<AuthPrincipal> verify(String value,Instant at){try{return CompletableFuture.completedFuture(verifier.validate(value,at));}catch(AuthException denied){return CompletableFuture.failedFuture(denied);}}
             public AuthorizationStatus cachedSecurity(AuthPrincipal p,Instant at){return status.get();}
-            public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID connection,Duration budget){long generation=generations.incrementAndGet();var nativeIncarnation=mode==Mode.STALE_WRONG_INCARNATION&&generation>1?new SessionIncarnation(UUID.randomUUID()):incarnation;return CompletableFuture.completedFuture(new SessionRepository.Route(p.userId(),p.key(),nativeIncarnation,generation,"TEST_ONLY_gw",boot,connection,p.expiresAt(),p.signingKeyId(),1));}
+            public CompletionStage<SessionRepository.Route> register(AuthPrincipal p,UUID connection,Duration budget){long generation=generations.incrementAndGet();var nativeIncarnation=mode==Mode.STALE_WRONG_INCARNATION&&generation>1?new SessionIncarnation(UUID.randomUUID()):incarnation;var route=new SessionRepository.Route(p.userId(),p.key(),nativeIncarnation,generation,"TEST_ONLY_gw",boot,connection,p.expiresAt(),p.signingKeyId(),1);if(mode==Mode.STALE_LATE_AUTH&&generation>1){replacementRoute.set(route);registrationReady.countDown();return delayedRegistration;}return CompletableFuture.completedFuture(route);}
             public CompletionStage<SessionRepository.Route> refresh(SessionRepository.Route route,AuthPrincipal p,Duration budget){return CompletableFuture.failedFuture(new UnsupportedOperationException("TEST_ONLY"));}
             public CompletionStage<Void> close(SessionRepository.Route route){return CompletableFuture.completedFuture(null);}
             public CompletionStage<String> command(CallCommand command,Duration budget){throw new AssertionError("Passive observation must not send business commands");}
@@ -54,9 +58,42 @@ class SecurityClosureWssTest {
             var endpoint=URI.create("wss://localhost:"+((InetSocketAddress)server.localAddress()).getPort()+"/ws");var clientTls=SslContextBuilder.forClient().trustManager(LoadGeneratorTlsTest.cert("ca.crt")).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
             old=new VirtualClient(0,"test-user","c001",endpoint,new InetSocketAddress("127.0.0.1",0),clientTls,loops,credits,evidence,()->token,(c,event)->{});
             var originalAuth=old.connect(System.nanoTime()).toCompletableFuture().get(3,TimeUnit.SECONDS);var field=VirtualClient.class.getDeclaredField("channel");field.setAccessible(true);var original=(Channel)field.get(old);original.eventLoop().submit(()->{}).get(3,TimeUnit.SECONDS);long ordinary=evidence.attempts(),intended=System.nanoTime();
-            if(mode==Mode.STALE||mode==Mode.STALE_WRONG_INCARNATION||mode==Mode.STALE_CREDIT_LIMIT){
+            if(mode==Mode.STALE_POOLED||mode==Mode.STALE_NO_HEADROOM){
+                var source=SecurityWorkload.parse(new com.fasterxml.jackson.databind.ObjectMapper().readTree("{\"abuse\":[\"staleGeneration\"],\"abuseFraction\":1}"));
+                var pool=new SecurityReplacementPool(1,mode==Mode.STALE_NO_HEADROOM?1:2);
+                var operation=pool.start(source,old,intended);
+                if(mode==Mode.STALE_NO_HEADROOM){
+                    assertThat(operation).isEmpty();assertThat(generations).hasValue(1);
+                    assertThat(source.snapshot().get("unknown")).isEqualTo(1L);assertThat(source.generatorLimited()).isTrue();
+                    assertThat(pool.snapshot()).containsEntry("capacity",0).containsEntry("pending",0);
+                    assertThat(evidence.attempts()).isEqualTo(ordinary);assertThat(old.authenticated()).isTrue();
+                }else{
+                    assertThat(operation).isPresent();var admitted=operation.orElseThrow();
+                    assertThat(admitted.observed().toCompletableFuture().get(6,TimeUnit.SECONDS).outcome()).isEqualTo(StaleGenerationProbe.Outcome.REPLACED);
+                    admitted.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                    assertThat(source.snapshot()).containsEntry("attempted",1L).containsEntry("logicalRejected",1L).containsEntry("verifiedRejected",1L).containsEntry("pendingPhysical",0L).containsEntry("unknown",0L);
+                    assertThat(pool.snapshot()).containsEntry("capacity",1).containsEntry("pending",0).containsEntry("peak",1);
+                    assertThat(generations).hasValue(2);assertThat(evidence.attempts()).isEqualTo(ordinary+2);
+                    assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
+                }
+                pool.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);return;
+            }
+            if(mode==Mode.STALE||mode==Mode.STALE_WRONG_INCARNATION||mode==Mode.STALE_CREDIT_LIMIT||mode==Mode.STALE_LATE_AUTH){
                 newer=new VirtualClient(1,"test-user","c001",endpoint,new InetSocketAddress("127.0.0.1",0),clientTls,loops,credits,new EvidenceWriter(),()->token,(c,event)->{});
                 var operation=StaleGenerationProbe.run(old,newer,intended);
+                if(mode==Mode.STALE_LATE_AUTH){
+                    assertThat(registrationReady.await(3,TimeUnit.SECONDS)).isTrue();var replacement=(Channel)field.get(newer);
+                    assertThat(replacement.eventLoop()).isNotSameAs(original.eventLoop());
+                    var ackHeld=new CountDownLatch(1);var releaseAck=new CountDownLatch(1);
+                    replacement.eventLoop().submit(()->replacement.pipeline().addBefore(replacement.pipeline().lastContext().name(),"TEST_ONLY_late_auth",new ChannelInboundHandlerAdapter(){
+                        @Override public void channelRead(ChannelHandlerContext ctx,Object message)throws Exception{
+                            if(message instanceof TextWebSocketFrame){ackHeld.countDown();if(!releaseAck.await(6,TimeUnit.SECONDS))throw new AssertionError("TEST_ONLY auth barrier expired");}
+                            ctx.fireChannelRead(message);
+                        }
+                    })).get(3,TimeUnit.SECONDS);
+                    delayedRegistration.complete(replacementRoute.get());assertThat(ackHeld.await(3,TimeUnit.SECONDS)).isTrue();
+                    Thread.sleep(5150);releaseAck.countDown();
+                }
                 var result=operation.observed().toCompletableFuture().get(6,TimeUnit.SECONDS);
                 operation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
                 assertThat(result.outcome()).isEqualTo(mode==Mode.STALE?StaleGenerationProbe.Outcome.REPLACED:mode==Mode.STALE_WRONG_INCARNATION?StaleGenerationProbe.Outcome.BINDING_MISMATCH:StaleGenerationProbe.Outcome.REPLACEMENT_UNKNOWN);
@@ -91,7 +128,7 @@ class SecurityClosureWssTest {
             var receipt=observation.observed().toCompletableFuture().get(6,TimeUnit.SECONDS);observation.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
             assertThat(receipt.intendedNanos()).isEqualTo(intended);assertThat(receipt.generation()).isEqualTo(old.generation());assertThat(evidence.attempts()).isEqualTo(ordinary);assertThat(receipt.toString()).doesNotContain("PRIVATE","TEST_ONLY_jti",token);assertThat(credits.count()).isZero();assertThat(credits.bytes()).isZero();
             if(mode==Mode.SILENT){assertThat(receipt.outcome()).isEqualTo(VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN);assertThat(receipt.finishedNanos()-intended).isBetween(TimeUnit.MILLISECONDS.toNanos(4900),TimeUnit.MILLISECONDS.toNanos(5600));}
-            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.REVOKED_LATE?VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN:mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT->throw new AssertionError();case REVOKED,REVOKED_LATE->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});if(mode==Mode.REVOKED_LATE)assertThat(receipt.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));}
+            else {assertThat(receipt.closeCode()).isEqualTo(1008);assertThat(receipt.outcome()).isEqualTo(mode==Mode.REVOKED_LATE?VirtualClient.ProbeOutcome.DEADLINE_UNKNOWN:mode==Mode.UNKNOWN_REASON?VirtualClient.ProbeOutcome.UNCLASSIFIED_CLOSE:mode==Mode.FRESHNESS_UNKNOWN?VirtualClient.ProbeOutcome.SOURCE_UNKNOWN:VirtualClient.ProbeOutcome.AUTHORIZATION_REJECTED);assertThat(receipt.closeReason()).isEqualTo(switch(mode){case STALE,STALE_WRONG_INCARNATION,STALE_CREDIT_LIMIT,STALE_POOLED,STALE_NO_HEADROOM,STALE_LATE_AUTH->throw new AssertionError();case REVOKED,REVOKED_LATE->VirtualClient.CloseReason.AUTH_REVOKED;case EXPIRED->VirtualClient.CloseReason.AUTH_TOKEN_EXPIRED;case FRESHNESS_UNKNOWN->VirtualClient.CloseReason.AUTH_FRESHNESS_UNKNOWN;case UNKNOWN_REASON->VirtualClient.CloseReason.UNCLASSIFIED;case SILENT->throw new AssertionError();});if(mode==Mode.REVOKED_LATE)assertThat(receipt.finishedNanos()-intended).isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));}
         }finally{if(old!=null)old.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(newer!=null)newer.close().toCompletableFuture().get(3,TimeUnit.SECONDS);if(server!=null)server.close().sync();loops.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
     }
 }
