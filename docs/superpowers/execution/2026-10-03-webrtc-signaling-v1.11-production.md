@@ -221,3 +221,20 @@ are still required; **Tasks22–24 remain IN PROGRESS / NOT_QUALIFIED**.
 The setup microburst keeps call and setup-frame arrivals coupled through §35
 `C×S`, including their transient population. No steady-concurrency target is
 doubled and no authorization/fencing/TTL rule was relaxed.
+
+## Runtime Secret and native security scheduler checkpoint (2026-10-06)
+
+Source `9f62896` passed fresh `clean verify`: **637 tests / 141 reports**,
+zero failures/errors/skips, 5m51s, finished 2026-10-06T10:00:25Z. The static
+loadgen contract passed. Mounted runtime Secrets use the existing typed
+configuration namespace and reject duplicate, ambiguous and oversized input.
+Actual WSS workers schedule malformed/oversized probes and retain separate
+original logical/physical source counters; these probes do not enter ordinary
+availability or latency denominators. Original scenario duplicate keys reject
+before source initialization. Native registration, issuer and candidate fixtures
+remain explicitly TEST_ONLY.
+
+Four security scenarios remain unimplemented in the scheduler: slowConsumer,
+staleGeneration, revokedJti and retiredSigningKey. Complete native Main/source/
+policy composition and genuine same-candidate staged qualification remain open.
+Tasks 22–24 remain **IN PROGRESS / NOT_QUALIFIED**.
