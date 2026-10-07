@@ -14,6 +14,38 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** Actual mTLS transport; the source factory pause is an explicit TEST_ONLY fault. */
 class CellRpcConstructionDeadlineIT {
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void coldDestinationOrRelayLaneCannotBlockHealthyControlOrDrain(boolean sameDestination)throws Exception {
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var factories=new AtomicInteger();
+        var tls=RpcTlsContexts.clients("test",CellRpcPhysicalCompletionIT.cert("ca.crt"),CellRpcPhysicalCompletionIT.cert("actor.crt"),CellRpcPhysicalCompletionIT.cert("actor.key")).context("c002");
+        var service=ServerServiceDefinition.builder(CellIngressGrpc.SERVICE_NAME)
+            .addMethod(CellIngressGrpc.getExecuteCallCommandMethod(),ServerCalls.asyncUnaryCall((InternalCommand c,io.grpc.stub.StreamObserver<InternalReply> reply)->{reply.onNext(reply(c));reply.onCompleted();})).build();
+        var server=NettyServerBuilder.forPort(0).sslContext(RpcTlsContexts.server("test","c002",CellRpcPhysicalCompletionIT.cert("ca.crt"),CellRpcPhysicalCompletionIT.cert("server.crt"),CellRpcPhysicalCompletionIT.cert("server.key"))).addService(service).build().start();
+        var tasks=Executors.newVirtualThreadPerTaskExecutor();
+        var admission=new RpcAdmission(4,393216,4,393216);
+        var endpoint=new CellRpcClient.Endpoint("localhost",server.getPort(),"localhost");
+        var client=new CellRpcClient("test",Map.of("c001",endpoint,"c002",endpoint),cell->{
+            if(factories.incrementAndGet()>1){entered.countDown();try{if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("TEST_ONLY_FACTORY_RELEASE_MISSING");}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}}return tls;
+        },admission);
+        try{
+            var healthy=InternalCommand.newBuilder().setDestinationCell("c002").setOperationId(UUID.randomUUID().toString()).setCallId("c002.e1."+UUID.randomUUID()).setRemainingBudgetMs(2000).build();
+            assertThat(client.call(CellRpcServer.Operation.EXECUTE,healthy,Duration.ofSeconds(2)).toCompletableFuture().get(3,TimeUnit.SECONDS).getStatus()).isEqualTo("WRITE_COMPLETED");
+            var cold=tasks.submit(()->client.callTracked(sameDestination?CellRpcServer.Operation.RELAY:CellRpcServer.Operation.EXECUTE,healthy.toBuilder().setDestinationCell(sameDestination?"c002":"c001").build(),Duration.ofSeconds(1)));
+            assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+            var warm=tasks.submit(()->client.call(CellRpcServer.Operation.EXECUTE,healthy,Duration.ofSeconds(1)).toCompletableFuture().join());
+            assertThatCode(()->assertThat(warm.get(750,TimeUnit.MILLISECONDS).getStatus()).isEqualTo("WRITE_COMPLETED")).as("cold TLS must not serialize unrelated native traffic").doesNotThrowAnyException();
+            var draining=tasks.submit(client::drain);
+            var originalDrain=draining.get(750,TimeUnit.MILLISECONDS).toCompletableFuture();
+            assertThat(originalDrain).isNotDone();
+            assertThat(admission.inFlight(sameDestination?RpcAdmission.Lane.RELAY:RpcAdmission.Lane.CONTROL)).isPositive();
+            release.countDown();
+            var original=cold.get(3,TimeUnit.SECONDS);
+            assertThat(original.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
+            original.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+            originalDrain.get(4,TimeUnit.SECONDS);
+            assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)+admission.inFlight(RpcAdmission.Lane.RELAY)).isZero();
+        }finally{release.countDown();client.drain().toCompletableFuture().get(5,TimeUnit.SECONDS);tasks.close();server.shutdownNow().awaitTermination(3,TimeUnit.SECONDS);}
+    }
     @ParameterizedTest @ValueSource(strings={"EXECUTE","RELAY","SESSION","DELIVER"})
     void expiredOriginalBudgetCannotDispatchAfterColdChannelConstruction(String kind)throws Exception {
         var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var delivered=new AtomicInteger();

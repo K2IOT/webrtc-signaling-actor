@@ -11,13 +11,37 @@ import java.util.concurrent.*;
 public final class CellRpcClient implements AutoCloseable {
     public record Endpoint(String host,int port,String tlsAuthority){public Endpoint{if(host==null||host.isBlank()||port<1||port>65535||tlsAuthority==null||tlsAuthority.isBlank())throw new IllegalArgumentException("Invalid trusted RPC endpoint");}}
     private record ChannelKey(String cell,RpcAdmission.Lane lane) {}
+    private static final class ChannelSlot { ManagedChannel channel; }
+    private final Map<ChannelKey,ChannelSlot> slots=new HashMap<>();
     private final Map<String,Endpoint> destinations;private final RpcTlsContexts.ClientTls tls;private final String environment;private final RpcAdmission admission;private final ConcurrentHashMap<ChannelKey,ManagedChannel> channels=new ConcurrentHashMap<>();private volatile boolean closed;
     private final ExecutorService callbacks=new ThreadPoolExecutor(4,4,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(256),Thread.ofPlatform().daemon().name("cell-rpc-client-",0).factory(),new ThreadPoolExecutor.AbortPolicy());
     /** Test-only raw context adapter; production supplies cell-bound handshake verification. */
     CellRpcClient(Map<String,Endpoint> destinations,SslContext tls,RpcAdmission admission){this("test",destinations,cell->tls,admission);}
     public CellRpcClient(String environment,Map<String,Endpoint> destinations,RpcTlsContexts.ClientTls tls,RpcAdmission admission){if(environment==null||!environment.matches("[a-z0-9-]{1,32}")||destinations.isEmpty()||destinations.size()>50||destinations.keySet().stream().anyMatch(c->!c.matches("[a-z][a-z0-9-]{0,23}")))throw new IllegalArgumentException("Invalid bounded destination topology");this.environment=environment;this.destinations=Map.copyOf(destinations);this.tls=Objects.requireNonNull(tls);this.admission=Objects.requireNonNull(admission);retryTimers.setRemoveOnCancelPolicy(true);}
     public int channelCount(){return channels.size();}
-    private synchronized ManagedChannel channel(String cell,RpcAdmission.Lane lane){if(closed)throw new IllegalStateException("RPC client draining");Endpoint endpoint=destinations.get(cell);if(endpoint==null)throw new IllegalArgumentException("Unknown destination");return channels.computeIfAbsent(new ChannelKey(cell,lane),key->NettyChannelBuilder.forAddress(endpoint.host(),endpoint.port()).overrideAuthority(endpoint.tlsAuthority()).sslContext(tls.context(cell)).disableRetry().maxInboundMessageSize(98304).executor(callbacks).intercept(new ClientInterceptor(){@Override public <Q,A> ClientCall<Q,A> interceptCall(MethodDescriptor<Q,A> method,CallOptions options,Channel next){var delegate=next.newCall(method,options);return new ForwardingClientCall.SimpleForwardingClientCall<>(delegate){@Override public void start(ClientCall.Listener<A> listener,Metadata headers){super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(listener){boolean rejected;@Override public void onHeaders(Metadata metadata){var peer=RpcTlsIdentity.extract(delegate.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION),environment);if(peer==null||!peer.cell().equals(cell)||!peer.role().equals("actor")){rejected=true;delegate.cancel("UNAUTHORIZED",null);}else super.onHeaders(metadata);}@Override public void onMessage(A message){if(!rejected)super.onMessage(message);}@Override public void onClose(Status status,Metadata trailers){super.onClose(rejected?Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"):status,trailers);}},headers);}};}}).build());}
+    private ManagedChannel channel(String cell,RpcAdmission.Lane lane) {
+        var key=new ChannelKey(cell,lane);
+        final ChannelSlot slot;
+        synchronized(this) {
+            if(closed)throw new IllegalStateException("RPC client draining");
+            if(!destinations.containsKey(cell))throw new IllegalArgumentException("Unknown destination");
+            slot=slots.computeIfAbsent(key,ignored->new ChannelSlot());
+        }
+        // Serialize only this destination/lane. TLS creation must never hold the process owner lock.
+        synchronized(slot) {
+            if(slot.channel!=null)return slot.channel;
+            if(closed)throw new IllegalStateException("RPC client draining");
+            Endpoint endpoint=destinations.get(cell);
+            var built=NettyChannelBuilder.forAddress(endpoint.host(),endpoint.port()).overrideAuthority(endpoint.tlsAuthority()).sslContext(tls.context(cell)).disableRetry().maxInboundMessageSize(98304).executor(callbacks).intercept(new ClientInterceptor(){@Override public <Q,A> ClientCall<Q,A> interceptCall(MethodDescriptor<Q,A> method,CallOptions options,Channel next){var delegate=next.newCall(method,options);return new ForwardingClientCall.SimpleForwardingClientCall<>(delegate){@Override public void start(ClientCall.Listener<A> listener,Metadata headers){super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(listener){boolean rejected;@Override public void onHeaders(Metadata metadata){var peer=RpcTlsIdentity.extract(delegate.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION),environment);if(peer==null||!peer.cell().equals(cell)||!peer.role().equals("actor")){rejected=true;delegate.cancel("UNAUTHORIZED",null);}else super.onHeaders(metadata);}@Override public void onMessage(A message){if(!rejected)super.onMessage(message);}@Override public void onClose(Status status,Metadata trailers){super.onClose(rejected?Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"):status,trailers);}},headers);}};}}).build();
+            synchronized(this) {
+                slot.channel=built;
+                channels.put(key,built);
+                // A construction admitted before drain still belongs to its original flight.
+                if(closed)built.shutdown();
+            }
+            return built;
+        }
+    }
     private final ScheduledThreadPoolExecutor retryTimers=new ScheduledThreadPoolExecutor(1,Thread.ofPlatform().daemon().name("cell-rpc-retry").factory());
     private final Set<Flight<?>> active = new HashSet<>();
     private final CompletableFuture<Void> drained = new CompletableFuture<>(), settled = new CompletableFuture<>();
@@ -175,7 +199,9 @@ public final class CellRpcClient implements AutoCloseable {
         if (!closed) {
             closed = true;
             channels.values().forEach(ManagedChannel::shutdown);
-            RpcTransportDrain.await(settled,List.copyOf(channels.values()),drained,callbacks,retryTimers);
+            // Capture channels only after original flights (including lazy construction) retire.
+            settled.whenComplete((ignored,failure)->
+                RpcTransportDrain.await(settled,List.copyOf(channels.values()),drained,callbacks,retryTimers));
             if (active.isEmpty()) settled.complete(null);
         }
         return drained.minimalCompletionStage();
