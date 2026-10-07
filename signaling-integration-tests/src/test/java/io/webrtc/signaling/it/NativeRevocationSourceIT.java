@@ -98,6 +98,29 @@ class NativeRevocationSourceIT {
                     original.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(globalDrain.get().toCompletableFuture()).isNotDone();assertThat(reentrant.usable()).isFalse();
                 }
                 mode.set(0);
+                var identity=new io.webrtc.signaling.auth.IdentitySecurityContract(route.key().issuer(),"TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofMillis(500),Duration.ofSeconds(1),true,"TEST_ONLY_SOURCE");
+                var sourceEnrollment=new NativeActorSourceEnrollment("c001",1,pod,boot,identity,
+                    new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:"+port+"/v1/clock-bound"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic())),
+                    new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic())));
+                var sourceDefaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+                for(var plane:io.webrtc.signaling.app.SignalingApplication.Plane.values()){
+                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+                        .withBean(NativeActorSourceEnrollment.class,()->sourceEnrollment).withBean(SqlTransactions.class,()->f.runtime.sql)
+                        .withInitializer(context->{sourceDefaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));})
+                        .withPropertyValues("signaling.identity.issuer="+identity.issuer(),"signaling.identity.audience="+identity.audience())
+                        .run(context->{
+                            assertThat(context).hasNotFailed();
+                            if(plane!=io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR){assertThat(context).doesNotHaveBean(NativeClockSource.class).doesNotHaveBean(NativeRevocationSource.class);return;}
+                            assertThat(context).hasSingleBean(NativeClockSource.class).hasSingleBean(NativeRevocationSource.class).hasSingleBean(NativeCellHealthSource.class).hasSingleBean(NativeActorSecurityPolicies.class);
+                            var nativeClock=context.getBean(NativeClockSource.class);var nativeRevocations=context.getBean(NativeRevocationSource.class);var nativePrimary=context.getBean(NativeCellHealthSource.class);var nativeMonitor=context.getBean(ClockSafetyMonitor.class);
+                            assertThat(nativeMonitor.valid()).isFalse();assertThat(nativeRevocations.usable()).isFalse();assertThat(nativePrimary.usable()).isFalse();
+                            assertThat(nativeClock.poll(Duration.ofSeconds(1))).isTrue();settled(nativeRevocations.poll(Duration.ofSeconds(2)));settled(nativePrimary.poll(Duration.ofSeconds(2)));
+                            assertThat(nativeMonitor.valid()).isTrue();assertThat(nativeRevocations.usable()).isTrue();assertThat(nativePrimary.usable()).isTrue();
+                            boolean allowed=SessionAuthReadIT.done(f.runtime.sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),connection->context.getBean(NativeActorSecurityPolicies.class).allowed(connection,principal)));assertThat(allowed).isFalse();
+                            nativeClock.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);nativeRevocations.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);nativePrimary.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);
+                            assertThat(nativeMonitor.valid()).isFalse();assertThat(nativeRevocations.usable()).isFalse();assertThat(nativePrimary.usable()).isFalse();
+                        });
+                }
                 var system=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config("a"));
                 var systems=new ArrayList<org.apache.pekko.actor.typed.ActorSystem<Void>>();systems.add(system);
                 var installed=new AtomicReference<io.webrtc.signaling.rpc.NativeActorComposition>();
