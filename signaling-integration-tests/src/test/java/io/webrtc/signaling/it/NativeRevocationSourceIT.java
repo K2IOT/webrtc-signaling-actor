@@ -24,6 +24,29 @@ import org.junit.jupiter.api.Test;
 
 /** Actual mTLS source and PostgreSQL, with explicit TEST_ONLY source identity and PKI. */
 class NativeRevocationSourceIT {
+    @Test void mainRejectsSourceAndActorAuthorityMismatchBeforeRegionStartup()throws Exception {
+        try(var f=new LocalInviteAtomicIT.Fixture();var tokens=new io.webrtc.signaling.auth.BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
+            var system=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-mismatched-source-c001",NativeActorCompositionIT.config("a"));
+            try{
+                UUID pod=UUID.randomUUID(),boot=UUID.randomUUID();var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+                var proofs=new io.webrtc.signaling.rpc.HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
+                var business=new NativeActorBusinessEnrollment(system,"c001",1,1,pod,proofs,user->new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001",1,1),(connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
+                var identity=new io.webrtc.signaling.auth.IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofMillis(500),Duration.ofSeconds(1),true,"TEST_ONLY_SOURCE");
+                var endpoint=new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:1/v1/source"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic()));
+                var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+                var mismatches=List.of(new NativeActorSourceEnrollment("c002",1,pod,boot,identity,endpoint,endpoint),
+                    new NativeActorSourceEnrollment("c001",2,pod,boot,identity,endpoint,endpoint),
+                    new NativeActorSourceEnrollment("c001",1,UUID.randomUUID(),boot,identity,endpoint,endpoint));
+                for(var sources:mismatches){
+                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+                        .withBean(NativeActorBusinessEnrollment.class,()->business).withBean(NativeActorSourceEnrollment.class,()->sources).withBean(SqlTransactions.class,()->f.runtime.sql)
+                        .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
+                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                        .run(context->{assertThat(context).hasFailed();assertThat(context.getStartupFailure()).hasRootCauseMessage("Native actor authority differs from source enrollment");});
+                }
+            }finally{system.terminate();system.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);}
+        }
+    }
     @Test void originalSignedSourcePagesCommitRevocationAndKeepPartialCatchUpUnhealthy()throws Exception {
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var route=SessionAuthReadIT.route(f,f.sender("native-source-revoked"));var principal=SessionAuthReadIT.principal(route);
