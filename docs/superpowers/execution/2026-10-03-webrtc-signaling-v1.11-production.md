@@ -306,3 +306,22 @@ Selected21 cases passed (native policy8, native claims2, startup3, revocation7 a
 joined source1). Full source verification follows. Complete plane factories,
 runtime Secret enrollment/source/policy contracts, revoke/key scheduling and real
 qualification remain open; Tasks22–24 IN PROGRESS/NOT_QUALIFIED.
+
+Fresh whole source59288bf: `./mvnw clean verify` passed659tests in142fresh XML
+reports, zero failures/errors/skips; BUILD SUCCESS6m30, finished
+2026-10-07T03:58:44Z. The same verified executable was built into local image
+`signaling-candidate:59288bf`. Actual pinned JRE/nonroot/read-only/network-none
+checks and all six negative startup cases passed; no enrolled/native plane was
+invented to make startup succeed.
+
+New TEST_ONLY record `20261007-1059-59288bf-be7f7ebe585b` uses Bangkok time in its
+candidate ID and retains original UTC build timestamps. Native OCI manifest is
+`sha256:be7f7ebe585b3a36720c9f5b4a50728d809395b6a6fc77071a44a48dead65afb`;
+Docker/config identity is separately
+`sha256:bd0117e89aebf93e16b3d868f61b0a45ca69796d88eecfc5d47db52f001925ca`.
+Seven original layers total404870656bytes; every descriptor hash/size and the
+original executable bytes matched the fresh verified build. The verifier returns
+NOT_QUALIFIED with37 blockers; all12 trusted production gates remain absent.
+The historical e3630d9 source/image/decision is unchanged. Main complete factories,
+source/policy enrollment, two security modes and genuine staged qualification
+remain open. Tasks22–24 remain IN PROGRESS.

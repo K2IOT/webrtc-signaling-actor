@@ -1,0 +1,28 @@
+manifestVersion: 1
+candidateId: 20261007-1059-59288bf-be7f7ebe585b
+gitCommit: 59288bffcbd5abd734f7d99a5339e1cbd5bbbbc0
+imageDigests:
+  actor: sha256:be7f7ebe585b3a36720c9f5b4a50728d809395b6a6fc77071a44a48dead65afb
+  gateway: sha256:be7f7ebe585b3a36720c9f5b4a50728d809395b6a6fc77071a44a48dead65afb
+  control: sha256:be7f7ebe585b3a36720c9f5b4a50728d809395b6a6fc77071a44a48dead65afb
+testOnly: true
+builtAt: '2026-10-07T03:59:29.130766+00:00'
+evidenceValidUntil: '2026-10-08T03:59:29.130766+00:00'
+artifacts:
+  local-build.json:
+    sha256: 796b5b49276d5c41de302212a0c8c6aa9b04bcbbcb81d0d9baf18a167778efac
+    bytes: 1012
+  native-image-smoke.log:
+    sha256: 800f49cbc5605d1f42f4b2273fc0b7f1a47c4f794a0938f89e333da9ea930fb6
+    bytes: 144
+  release-decision.md:
+    sha256: 8cfd01f863909cda73e3e5903ea3cc2f4cd2abd103b03ae5a16abb4cdd143eee
+    bytes: 1579
+  oci-integrity.json:
+    sha256: 2e98e48b1d32c7b9e98663c4cbb9da3d4f612d069d308c00e7ddfb23fad74c67
+    bytes: 624
+gates: {}
+environment:
+  scope: LOCAL_NATIVE_BUILD
+  testOnly: true
+declaredEnvelope: {}

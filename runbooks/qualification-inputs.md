@@ -6,8 +6,9 @@ receipts from test fixtures.
 
 ## Implementation still open
 
-The Spring launcher currently selects and validates a plane; it does not assemble
-and start a complete gateway, actor or control process. Its startup guard now
+The Spring launcher selects and validates a plane and installs native actor
+policy bindings from explicit source/clock beans. It does not yet assemble and
+start a complete gateway, actor or control process. Its startup guard now
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are
 locally exercised. They must be joined in the launcher using explicit enrolled
@@ -15,6 +16,10 @@ sources and policies. Boot now reads `SIGNALING_RUNTIME_CONTRACT` as bounded
 effective `signaling` configuration before binding; its current format is
 documented in `config/native-sources.md`. This does not install source enrollment,
 policies or native factories, and does not demonstrate serving a business listener.
+The actor policy auto-configuration processes enrollment bean definitions before
+its conditional binding; actual session/route/freshness checks use native primary
+progress, scoped revocation/key state and live clock trust. Runtime Secret-to-source
+factories and full ownership/listener composition remain required.
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The scenario orchestrator now schedules
@@ -95,3 +100,9 @@ to the original native Docker image ID and verify every descriptor hash/size.
 `qualification/evidence/20261005-2302-e3630d9-3d330291c09f` records one local
 TEST_ONLY build and negative startup smoke. Its intentionally incomplete manifest
 fails the verifier. It contains no production qualification measurements.
+
+`qualification/evidence/20261007-1059-59288bf-be7f7ebe585b` records a newer local
+TEST_ONLY build after native actor policy binding. Its659 fresh Java tests, actual
+native image smoke, original OCI bytes and executable match are recorded. Its
+verifier decision remains NOT_QUALIFIED with37 missing/test-only blockers. It does
+not replace the historical e3630d9 source record or supply production enrollment.
