@@ -153,7 +153,24 @@ class NativeRevocationSourceIT {
                     var primary=new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql,"c001",1));
                     var revocations=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot);
                     assertThatThrownBy(()->new NativeActorSafetySources(system,readiness,Set.of("az-a"),"b".repeat(64),monitor,clockSource,primary,revocations)).isInstanceOf(IllegalArgumentException.class);
-                    try(var sources=new NativeActorSafetySources(system,readiness,Set.of("az-a","az-b","az-c"),"a".repeat(64),monitor,clockSource,primary,revocations);var scheduler=new NativeWorkerScheduler(sources.jobs(),event->{})){
+                    var protectedJob=clockSource.job(Duration.ofMillis(100));
+                    org.junit.jupiter.api.Assertions.assertAll(
+                        ()->assertThatThrownBy(()->new NativeActorSchedulingEnrollment(system,Set.of("az-a"),"a".repeat(64),List.of(protectedJob),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Maintenance"),
+                        ()->assertThatThrownBy(()->new NativeActorSchedulingEnrollment(system,Set.of("az-a"),"a".repeat(64),Collections.nCopies(13,protectedJob),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Maintenance"));
+                    var sourceOwners=new AtomicReference<NativeActorSafetySources>();var workerOwner=new AtomicReference<NativeWorkerScheduler>();var healthOwner=new AtomicReference<PrivateHealthServer>();
+                    var scheduling=new NativeActorSchedulingEnrollment(system,Set.of("az-a","az-b","az-c"),"a".repeat(64),List.of(),event->{},new InetSocketAddress("127.0.0.1",0),()->!system.getWhenTerminated().toCompletableFuture().isDone(),()->"TEST_ONLY 1\n");
+                    var schedulingDefaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+                        .withBean(NativeActorSchedulingEnrollment.class,()->scheduling).withBean(ClusterReadiness.class,()->readiness)
+                        .withBean(ClockSafetyMonitor.class,()->monitor).withBean(NativeClockSource.class,()->clockSource,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
+                        .withBean(NativeCellHealthSource.class,()->primary,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
+                        .withBean(NativeRevocationSource.class,()->revocations,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
+                        .withInitializer(context->{schedulingDefaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
+                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                        .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeActorSafetySources.class).hasSingleBean(NativeWorkerScheduler.class).hasSingleBean(PrivateHealthServer.class);
+                            sourceOwners.set(context.getBean(NativeActorSafetySources.class));workerOwner.set(context.getBean(NativeWorkerScheduler.class));healthOwner.set(context.getBean(PrivateHealthServer.class));
+                            assertThat(healthOwner.get().port()).isPositive();});
+                    try(var sources=sourceOwners.get();var scheduler=workerOwner.get();var health=healthOwner.get()){
                         scheduler.start();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->monitor.valid()&&primary.usable()&&revocations.usable());
                         var facts=sources.refresh();assertThat(facts.fingerprintValid()).isTrue();assertThat(facts.cellActive()).isTrue();assertThat(facts.safetyPoolUsable()).isTrue();assertThat(facts.clockBoundValid()).isTrue();
                         assertThat(readiness.businessReady()).isFalse();assertThat(facts.upActors()).isZero();assertThat(facts.regionsRegistered()).isFalse();
