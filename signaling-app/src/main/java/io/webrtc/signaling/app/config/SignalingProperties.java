@@ -119,7 +119,8 @@ public record SignalingProperties(Identity identity, Lease lease, Cluster cluste
     private static void identifier(String value, int maxBytes, String name) {
         require(value != null && !value.isBlank() && !value.contains("${")
             && value.getBytes(StandardCharsets.UTF_8).length <= maxBytes
-            && value.codePoints().noneMatch(Character::isISOControl), "invalid " + name);
+            && value.codePoints().noneMatch(cp -> Character.isISOControl(cp)
+                || cp >= Character.MIN_SURROGATE && cp <= Character.MAX_SURROGATE), "invalid " + name);
     }
     private static void limit(int value, int max, String name) {
         require(value > 0 && value <= max, "invalid " + name + " limit");

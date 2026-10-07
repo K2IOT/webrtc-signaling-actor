@@ -22,7 +22,7 @@ public record NativeActorSourceEnrollment(String cell, long storageEpoch, UUID p
             // Reuse the transport's canonical validation. Construction performs no I/O.
             if(tls==null||keys==null||keys.isEmpty()||keys.size()>256)
                 throw new IllegalArgumentException("Explicit native source trust required");
-            new NativeSourceHttp(uri,tls,new UUID(0,0),new UUID(0,0));
+            NativeSourceHttp.validateEndpoint(uri);
             keys=Map.copyOf(keys);
         }
     }

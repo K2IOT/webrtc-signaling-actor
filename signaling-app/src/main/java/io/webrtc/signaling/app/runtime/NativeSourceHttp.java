@@ -12,11 +12,14 @@ final class NativeSourceHttp {
     private final URI endpoint;private final SSLContext tls;private final UUID podUid,processBoot;
     private volatile boolean physicallySettled=true;
     NativeSourceHttp(URI endpoint,SSLContext tls,UUID podUid,UUID processBoot){
+        validateEndpoint(endpoint);
+        this.endpoint=endpoint;this.tls=Objects.requireNonNull(tls);this.podUid=Objects.requireNonNull(podUid);this.processBoot=Objects.requireNonNull(processBoot);
+    }
+    static void validateEndpoint(URI endpoint){
         if(endpoint==null||!"https".equals(endpoint.getScheme())||endpoint.getHost()==null||endpoint.getUserInfo()!=null||endpoint.getQuery()!=null||endpoint.getFragment()!=null
             ||endpoint.getPort()==0||endpoint.getPort()<-1||endpoint.getPort()>65535||endpoint.getRawPath()==null
             ||!endpoint.getRawPath().matches("/[A-Za-z0-9/_%.~-]{0,2047}")||!endpoint.normalize().equals(endpoint))
             throw new IllegalArgumentException("Pinned canonical HTTPS source endpoint required");
-        this.endpoint=endpoint;this.tls=Objects.requireNonNull(tls);this.podUid=Objects.requireNonNull(podUid);this.processBoot=Objects.requireNonNull(processBoot);
     }
     boolean physicallySettled(){return physicallySettled;}
     byte[] fetch(long end,Long cursor)throws IOException {

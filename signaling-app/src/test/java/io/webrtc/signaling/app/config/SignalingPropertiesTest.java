@@ -6,6 +6,8 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.io.FileSystemResource;
@@ -64,6 +66,23 @@ class SignalingPropertiesTest {
     @Test void mapsEffectiveConfigurationIntoProtocolLimits() throws IOException {
         context().run(ctx -> assertThat(ctx.getBean(SignalingProperties.class).protocol().limits())
             .isEqualTo(io.webrtc.signaling.protocol.ProtocolLimits.v1()));
+    }
+    static java.util.stream.Stream<Arguments> malformedIdentityScalars() {
+        return java.util.stream.Stream.of("signaling.identity.issuer","signaling.identity.audience")
+            .flatMap(field->java.util.stream.Stream.of("x\ud800","x\udc00","x\ud800y")
+                .map(value->Arguments.of(field,value)));
+    }
+    @ParameterizedTest @MethodSource("malformedIdentityScalars")
+    void malformedUtf16CannotEnterTheEffectiveConfigurationFingerprint(String field,String value)throws IOException {
+        context(field+"="+value).run(ctx->assertThat(ctx).hasFailed());
+    }
+    @Test void validSupplementaryUnicodeRemainsAnUnambiguousIdentity()throws IOException {
+        context("signaling.identity.issuer=https://identity.example.test/\ud83d\ude00").run(a->
+            contextUnchecked("signaling.identity.issuer=https://identity.example.test/?").run(b->{
+                assertThat(a).hasNotFailed();assertThat(b).hasNotFailed();
+                assertThat(a.getBean(SignalingProperties.class).identity().issuer()).endsWith("\ud83d\ude00");
+                assertThat(a.getBean(SignalingProperties.class).fingerprint()).isNotEqualTo(b.getBean(SignalingProperties.class).fingerprint());
+            }));
     }
     private ApplicationContextRunner contextUnchecked(String... values) {
         try { return context(values); } catch (IOException e) { throw new IllegalStateException(e); }
