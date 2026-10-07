@@ -105,7 +105,7 @@ class NativeActorCompositionIT {
             var existing=host.relayAuthorization(network).load(offer,offerProof,Duration.ofSeconds(2));assertThat(existing.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).recipient()).isEqualTo(callee);existing.physicalCompletion().toCompletableFuture().get(5,TimeUnit.SECONDS);
             // Joined TEST_ONLY native PostgreSQL + EntityRef authority + actual TLS RPC + Netty write.
             try(var gatewayClient=recipientGateway.client();
-                    var ingress=host.rpcIngress("test",0,RpcTlsContexts.server("test","c001",RelayGatewayFixture.cert("ca.crt"),RelayGatewayFixture.cert("actor.crt"),RelayGatewayFixture.cert("actor.key")),new RpcAdmission(16,1048576,16,1048576),network,4,new RelayBufferBudget(262144),gatewayClient,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),event->CompletableFuture.failedFuture(new IllegalArgumentException("TEST_ONLY_NO_CONTROL_DELIVERY"))).start();
+                    var ingress=mainIngress(host,new io.webrtc.signaling.app.runtime.NativeActorIngressEnrollment("test",0,RpcTlsContexts.server("test","c001",RelayGatewayFixture.cert("ca.crt"),RelayGatewayFixture.cert("actor.crt"),RelayGatewayFixture.cert("actor.key")),new RpcAdmission(16,1048576,16,1048576),network,4,new RelayBufferBudget(262144),gatewayClient,(peer,gateway)->peer.workloadId().equals(gateway.gatewayId()),event->CompletableFuture.failedFuture(new IllegalArgumentException("TEST_ONLY_NO_CONTROL_DELIVERY"))));
                     var relayClient=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",ingress.server().port(),"localhost")),RpcTlsContexts.clients("test",RelayGatewayFixture.cert("ca.crt"),RelayGatewayFixture.cert("gateway.crt"),RelayGatewayFixture.cert("gateway.key")),new RpcAdmission(16,1048576,16,1048576))){
                 var protocol=new ProtocolValidator(ProtocolLimits.v1());var originalOffer=new java.util.concurrent.atomic.AtomicReference<CallCommand>();var originalOfferProof=new java.util.concurrent.atomic.AtomicReference<String>();
                 for(var type:List.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES)){
@@ -134,6 +134,16 @@ class NativeActorCompositionIT {
             cell.readiness().beginDrain();new NativeClusterMembership(cell.system(),cell.readiness(),Set.of("az-a","az-b","az-c")).refresh();assertThat(cell.readiness().snapshot().draining()).isTrue();assertThat(cell.readiness().businessReady()).isFalse();
 
         }finally{for(var system:systems)system.terminate();for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);for(var composition:compositions)composition.drainRoots().toCompletableFuture().get(8,TimeUnit.SECONDS);f.close();}
+    }
+    private static NativeActorRpcIngress mainIngress(NativeActorComposition actors,io.webrtc.signaling.app.runtime.NativeActorIngressEnrollment enrollment)throws Exception {
+        var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+        var installed=new java.util.concurrent.atomic.AtomicReference<NativeActorRpcIngress>();
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+            .withBean(NativeActorComposition.class,()->actors).withBean(io.webrtc.signaling.app.runtime.NativeActorIngressEnrollment.class,()->enrollment)
+            .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
+            .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+            .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeActorRpcIngress.class);installed.set(context.getBean(NativeActorRpcIngress.class));assertThat(installed.get().server().port()).isPositive();});
+        return installed.get();
     }
     /** TEST_ONLY boot/security adapters; native current sessions/routes and TLS/Netty writes are real. */
     static final class RelayGatewayFixture implements AutoCloseable {
