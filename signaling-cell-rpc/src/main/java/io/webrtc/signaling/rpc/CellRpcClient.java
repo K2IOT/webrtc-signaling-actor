@@ -50,6 +50,7 @@ public final class CellRpcClient implements AutoCloseable {
         return callTracked(op, original, budget).logical();
     }
     public RpcOperation<InternalReply> callTracked(CellRpcServer.Operation op, InternalCommand original, Duration budget) {
+        long started=System.nanoTime();
         if (closed || budget == null || budget.isNegative() || budget.isZero() || original.getRemainingBudgetMs() <= 0)
             return completed(error(original, "OUTCOME_UNKNOWN"));
         if (!destinations.containsKey(original.getDestinationCell())) return completed(error(original, "WRONG_CELL"));
@@ -59,7 +60,7 @@ public final class CellRpcClient implements AutoCloseable {
         try { flight = begin(lane, original.getSerializedSize()); }
         catch (RpcAdmission.Overloaded full) { return completed(error(original, "OVERLOADED")); }
         if (flight == null) return completed(error(original, "OUTCOME_UNKNOWN"));
-        try { attempt(op, original, System.nanoTime() + nanos, 0, lane, flight); }
+        try { attempt(op, original, started + nanos, 0, lane, flight); }
         catch (RuntimeException failed) { flight.logical.complete(error(original, "OUTCOME_UNKNOWN")); }
         finally { flight.ended(); }
         return flight.operation();
@@ -67,8 +68,12 @@ public final class CellRpcClient implements AutoCloseable {
     private void attempt(CellRpcServer.Operation op, InternalCommand original, long end, int attempt, RpcAdmission.Lane lane, Flight<InternalReply> flight) {
         long remaining = end - System.nanoTime();
         if (closed || remaining <= 0) { flight.logical.complete(error(original, "OUTCOME_UNKNOWN")); return; }
+        var transport=channel(original.getDestinationCell(),lane);
+        remaining=end-System.nanoTime();
+        if(closed||remaining<=0){flight.logical.complete(error(original,"OUTCOME_UNKNOWN"));return;}
+        var deadline=Deadline.after(remaining,TimeUnit.NANOSECONDS);
         var command = original.toBuilder().setRemainingBudgetMs(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining))).build();
-        var stub = CellIngressGrpc.newStub(channel(original.getDestinationCell(), lane)).withDeadlineAfter(remaining, TimeUnit.NANOSECONDS).withWaitForReady();
+        var stub = CellIngressGrpc.newStub(transport).withDeadline(deadline).withWaitForReady();
         flight.opened();
         var terminal = new java.util.concurrent.atomic.AtomicBoolean();
         var observer = new StreamObserver<InternalReply>() {
@@ -113,6 +118,7 @@ public final class CellRpcClient implements AutoCloseable {
         return deliverTracked(destination, event, budget).logical();
     }
     public RpcOperation<InternalReply> deliverTracked(String destination, ControlEvent event, Duration budget) {
+        long started=System.nanoTime();
         var unknown = InternalReply.newBuilder().setOperationId(event.getEventId()).setCallId(event.getCallId()).setErrorCode("OUTCOME_UNKNOWN").build();
         if (closed || !destinations.containsKey(destination) || budget == null || budget.isNegative() || budget.isZero()) return completed(unknown);
         Flight<InternalReply> flight;
@@ -120,7 +126,11 @@ public final class CellRpcClient implements AutoCloseable {
         catch (RpcAdmission.Overloaded full) { return completed(unknown.toBuilder().setErrorCode("OVERLOADED").build()); }
         if (flight == null) return completed(unknown);
         try {
-            var stub = CellIngressGrpc.newStub(channel(destination, RpcAdmission.Lane.CONTROL)).withDeadlineAfter(Math.min(budget.toNanos(), Duration.ofSeconds(2).toNanos()), TimeUnit.NANOSECONDS);
+            long end=started+Math.min(budget.toNanos(),Duration.ofSeconds(2).toNanos());
+            var transport=channel(destination,RpcAdmission.Lane.CONTROL);long remaining=end-System.nanoTime();
+            if(closed||remaining<=0){flight.logical.complete(unknown);return flight.operation();}
+            var deadline=Deadline.after(remaining,TimeUnit.NANOSECONDS);
+            var stub = CellIngressGrpc.newStub(transport).withDeadline(deadline);
             flight.opened();
             var terminal = new java.util.concurrent.atomic.AtomicBoolean();
             var observer = new StreamObserver<InternalReply>() {
@@ -135,6 +145,7 @@ public final class CellRpcClient implements AutoCloseable {
     }
     public CompletionStage<SessionReply> session(SessionCommand command, Duration budget) { return sessionTracked(command, budget).logical(); }
     public RpcOperation<SessionReply> sessionTracked(SessionCommand command, Duration budget) {
+        long started=System.nanoTime();
         if (closed || budget == null || budget.isNegative() || budget.isZero() || command.getRemainingBudgetMs() <= 0 || !destinations.containsKey(command.getDestinationCell())) return completed(sessionError(command, "OUTCOME_UNKNOWN"));
         Flight<SessionReply> flight;
         try { flight = begin(RpcAdmission.Lane.CONTROL, command.getSerializedSize()); }
@@ -142,7 +153,11 @@ public final class CellRpcClient implements AutoCloseable {
         if (flight == null) return completed(sessionError(command, "OUTCOME_UNKNOWN"));
         try {
             long nanos = Math.min(Duration.ofSeconds(2).toNanos(), Math.min(budget.toNanos(), TimeUnit.MILLISECONDS.toNanos(command.getRemainingBudgetMs())));
-            var stub = SessionIngressGrpc.newStub(channel(command.getDestinationCell(), RpcAdmission.Lane.CONTROL)).withDeadlineAfter(nanos, TimeUnit.NANOSECONDS);
+            long end=started+nanos;var transport=channel(command.getDestinationCell(),RpcAdmission.Lane.CONTROL);
+            long remaining=end-System.nanoTime();
+            if(closed||remaining<=0){flight.logical.complete(sessionError(command,"OUTCOME_UNKNOWN"));return flight.operation();}
+            var deadline=Deadline.after(remaining,TimeUnit.NANOSECONDS);
+            var stub = SessionIngressGrpc.newStub(transport).withDeadline(deadline);
             flight.opened(); var terminal = new java.util.concurrent.atomic.AtomicBoolean();
             var observer = new StreamObserver<SessionReply>() {
                 @Override public void onNext(SessionReply value) { flight.logical.complete(command.getOperationId().equals(value.getOperationId()) ? value : sessionError(command, "OUTCOME_UNKNOWN")); }
