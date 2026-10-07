@@ -141,6 +141,10 @@ class NativeRevocationSourceIT {
                                 (connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
                             var policyBean=new AtomicReference<NativeActorSecurityPolicies>();
                             var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+                            for(String zone:List.of("a","b","c"))systems.add(org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config(zone)));
+                            var seed=org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().address();
+                            for(var member:systems)org.apache.pekko.cluster.typed.Cluster.get(member).manager().tell(new org.apache.pekko.cluster.typed.JoinSeedNodes(List.of(seed)));
+                            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(25)).until(()->systems.stream().allMatch(member->org.apache.pekko.cluster.typed.Cluster.get(member).selfMember().status().equals(org.apache.pekko.cluster.MemberStatus.up())));
                             for(var plane:io.webrtc.signaling.app.SignalingApplication.Plane.values()) {
                                 new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class,LateNativePolicyEnrollment.class)
                                     .withBean(NativePolicyEnrollment.class,()->new NativePolicyEnrollment(reconciler,monitor))
@@ -151,15 +155,11 @@ class NativeRevocationSourceIT {
                                     .run(context->{assertThat(context).hasNotFailed();if(plane==io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR){
                                         assertThat(context).hasSingleBean(NativeActorSecurityPolicies.class).hasSingleBean(io.webrtc.signaling.rpc.NativeActorComposition.class);
                                         policyBean.set(context.getBean(NativeActorSecurityPolicies.class));installed.set(context.getBean(io.webrtc.signaling.rpc.NativeActorComposition.class));
+                                        assertThat(context).hasSingleBean(io.webrtc.signaling.actors.cluster.ShardingBootstrap.Regions.class);
                                     }else assertThat(context).doesNotHaveBean(NativeActorSecurityPolicies.class).doesNotHaveBean(io.webrtc.signaling.rpc.NativeActorComposition.class);});
                             }
                             var policies=policyBean.get();
                             var actors=installed.get();assertThat(actors.system()).isSameAs(system);assertThat(actors.readiness()).isSameAs(readiness);
-                            for(String zone:List.of("a","b","c"))systems.add(org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config(zone)));
-                            var seed=org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().address();
-                            for(var member:systems)org.apache.pekko.cluster.typed.Cluster.get(member).manager().tell(new org.apache.pekko.cluster.typed.JoinSeedNodes(List.of(seed)));
-                            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(25)).until(()->systems.stream().allMatch(member->org.apache.pekko.cluster.typed.Cluster.get(member).selfMember().status().equals(org.apache.pekko.cluster.MemberStatus.up())));
-                            actors.register();
                             org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->{sources.refresh();return readiness.businessReady();});
                             assertThat(readiness.snapshot().upActors()).isEqualTo(4);assertThat(readiness.snapshot().reachableAzCount()).isEqualTo(3);assertThat(readiness.snapshot().regionsRegistered()).isTrue();
                             boolean current=SessionAuthReadIT.done(f.runtime.sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),connection->policies.current(connection,route.user())));assertThat(current).isTrue();

@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
+import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
 import io.webrtc.signaling.auth.ClockSafetyMonitor;
 import io.webrtc.signaling.rpc.NativeActorComposition;
 import io.webrtc.signaling.storage.NativeActorSecurityPolicies;
@@ -28,5 +29,11 @@ public class NativeActorCompositionConfiguration {
             enrollment.podUid(),enrollment.proofs(),enrollment.homes(),security,security,enrollment.epochAdoption(),
             enrollment.tokens(),enrollment.callingPolicy(),Clock.systemUTC(),clock::valid,security);
         return new NativeActorComposition(enrollment.system(),inputs,readiness);
+    }
+
+    @Bean ShardingBootstrap.Regions nativeActorRegions(NativeActorComposition actors) {
+        // The native bootstrap enforces actual local Up and the installed lease provider.
+        // An enrolled but not-yet-Up process cannot bind its business RPC listener.
+        return actors.register();
     }
 }
