@@ -20,7 +20,7 @@ public final class NativeGatewayIngress implements AutoCloseable {
             NativeGatewayServices services,ClockSafetyMonitor clock)throws Exception {
         var identity=business.identity();
         connections=new ConnectionRegistry(identity.gatewayId(),identity.bootId(),inputs.maxUnauthenticated(),inputs.maxConnections());
-        wss=new GatewayServer(inputs.wssTls(),inputs.upgradePolicy(),connections,services,Clock.systemUTC(),inputs.eventLoops(),inputs.edgeLimits());
+        wss=new GatewayServer(inputs.wssTls(),inputs.upgradePolicy(),connections,services,Clock.systemUTC(),inputs.eventLoops(),inputs.edgeLimits(),inputs.securitySweep());
         writes=new GatewayRelayStream(connections,services,Clock.systemUTC(),cpu,inputs.writeAdmission(),clock::valid);
         relay=new GatewayRelayRpcServer(identity.cell(),identity.gatewayId(),identity.bootId(),inputs.rpcEnvironment(),
             inputs.rpcPort(),inputs.rpcTls(),inputs.rpcAdmission(),writes::send);
