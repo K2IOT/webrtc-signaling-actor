@@ -6,3 +6,4 @@ io.webrtc.signaling.app.runtime.NativeActorSchedulingConfiguration
 io.webrtc.signaling.app.runtime.NativeActorLifecycleConfiguration
 io.webrtc.signaling.app.runtime.NativeGatewayBusinessConfiguration
 io.webrtc.signaling.app.runtime.NativeGatewayIngressConfiguration
+io.webrtc.signaling.app.runtime.NativeGatewayLifecycleConfiguration

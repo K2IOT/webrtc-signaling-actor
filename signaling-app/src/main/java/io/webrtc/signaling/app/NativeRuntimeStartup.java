@@ -25,6 +25,7 @@ final class NativeRuntimeStartup {
                     bound(one(context,NativeActorRpcIngress.class,plane).server().port(),plane);
                 }
                 case GATEWAY -> {
+                    one(context,NativeGatewaySpringLifecycle.class,plane);
                     one(context,CellRpcClient.class,plane);
                     bound(one(context,GatewayServer.class,plane).port(),plane);
                     bound(one(context,GatewayRelayRpcServer.class,plane).port(),plane);

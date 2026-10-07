@@ -26,4 +26,14 @@ public final class ConnectionRegistry {
     public synchronized int authenticatedCount(){return bindings.size();}
     public synchronized int unauthenticatedCount(){return unauthenticated;}
     public synchronized List<Binding> snapshot(){return List.copyOf(bindings.values());}
+    /** Detach at most one fixed reconnect batch; native routes are closed by channelInactive. */
+    public synchronized List<Channel> detachBatch(int maximum){
+        if(maximum<1||maximum>128)throw new IllegalArgumentException("Reconnect batch outside bound");
+        var ids=new ArrayList<UUID>(maximum);var iterator=channels.keySet().iterator();
+        while(iterator.hasNext()&&ids.size()<maximum)ids.add(iterator.next());
+        var selected=new ArrayList<Channel>(ids.size());
+        for(var id:ids){selected.add(channels.get(id));remove(id);}
+        return List.copyOf(selected);
+    }
+    public synchronized int connectionCount(){return channels.size();}
 }
