@@ -58,7 +58,7 @@ Current verified reactor result after Task 6: **87 tests, zero failures/errors/s
 
 One fresh-context whole-implemented-branch review inspected `a3301a8..5bf8797` using Superpowers requesting-code-review. No Critical findings. One Important finding: the Jackson byte decoder admitted UTF-16 and invalid UTF-8 inside strings. Eight regression cases failed first; strict UTF-8 decoding with REPORT and Unicode scalar validation then made them pass. Final reactor verification passes 51 tests.
 
-One Minor finding remains deferred as the inline skill prescribes: config issuer/audience validation accepts lone UTF-16 surrogates, whose UTF-8 replacement can collide with `?` in the fingerprint. Reject these invalid operator inputs before production. The planned production compatibility and security gates remain blocked; this is not a production-ready release.
+The previously deferred Minor finding concerned lone UTF-16 surrogates in issuer/audience, whose UTF-8 replacement could collide with `?` in the fingerprint. Task22 now reproduces and rejects these invalid operator inputs with six RED→GREEN cases while preserving valid supplementary Unicode. Production compatibility and security gates remain blocked; this is not a production-ready release.
 
 5. Later cumulative ICE/order, current authorization/ownership, unknown-COMMIT reconciliation, stale-actor fencing, AZ capacity and revocation freshness were not counted as defects or passed gates in Tasks 1–2. They remain Tasks 3–24. Cost if wrong: overstating foundation readiness; no runtime or production claim is permitted.
 
@@ -325,3 +325,40 @@ NOT_QUALIFIED with37 blockers; all12 trusted production gates remain absent.
 The historical e3630d9 source/image/decision is unchanged. Main complete factories,
 source/policy enrollment, two security modes and genuine staged qualification
 remain open. Tasks22–24 remain IN PROGRESS.
+
+### Main factory continuation
+
+Actor-only Boot factories now construct explicit native source owners, assemble
+native actor backends with all three durable policies, register both regions after
+actual local membership Up, and bind the internal RPC listener. The joined native
+PostgreSQL/Pekko/mTLS tests obtain these components through Main; relay tests cross
+both actual RPC legs before the original Netty delivery. No default issuer, trust
+key, directory policy, calling permission or healthy clock is introduced.
+
+Source enrollment copies public-key trust and validates canonical HTTPS/process
+identity and the fixed100ms poll margin. Its issuer/audience/skew must match typed
+configuration; freshness never exceeds the enrolled identity hard bound or5s.
+The Unicode fingerprint defect now rejects lone surrogates; valid Unicode and
+existing valid fingerprints retain their behavior. Selected37 configuration cases
+passed after six actual regression failures. Full newer-source verification follows.
+
+Source/actor cell, storage epoch and pod UID must agree before backend/lease
+installation. A native Main regression showed mismatched source declarations
+reached region startup; the new tuple guard rejects them earlier. Selected40
+configuration/native cases passed, including three mismatched tuples, genuine
+source polling and both mTLS relay legs. A fresh final whole-source gate follows.
+
+One selected native relay run returned typed OUTCOME_UNKNOWN on the original1s
+operation; unchanged reproduction passed. Its cause is not established and no
+deadline or safety condition was weakened to conceal it. It remains an unqualified
+availability observation pending original timing/qualification evidence.
+
+Complete process formation/discovery/management, mounted source/business
+enrollment, maintenance/source scheduling, private health and ordered runtime
+hooks, gateway/control factories and two approved scoped security drill drivers
+remain open. There are no injected SIGNALING variables or supplied production
+enrollments in this workspace. Actual staged load, three-AZ HA/DR, N-1 and24h
+same-candidate qualification have not been collected. Tasks22–24 stay open;
+the existing immutable candidate records still describe their original sources.
+
+Fresh final source9ab4256: `./mvnw -B clean verify` passed671tests in143fresh XML reports, zero failures/errors/skips, finished2026-10-07T04:58:38Z. Both joined Main native tests and the original relay case passed. Fresh Python69 verifier/exporter tests and static loadgen contract also passed. Existing TEST_ONLY candidate verification still returns NOT_QUALIFIED37; no current-source image or production run was created. Remaining implementation and external inputs above keep Tasks22–24 open; the ledger and native originals are retained.

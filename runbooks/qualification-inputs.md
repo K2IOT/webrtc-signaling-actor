@@ -6,9 +6,12 @@ receipts from test fixtures.
 
 ## Implementation still open
 
-The Spring launcher selects and validates a plane and installs native actor
-policy bindings from explicit source/clock beans. It does not yet assemble and
-start a complete gateway, actor or control process. Its startup guard now
+The Spring launcher selects and validates a plane. Actor-only Boot factories now
+construct native safety sources, bind actor policies, assemble native backends,
+register both regions after actual membership Up, and bind the internal RPC
+listener from explicit typed enrollment. Complete process formation, source and
+maintenance scheduling, private health and ordered lifecycle installation, mounted
+enrollment and gateway/control factories remain open. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are
 locally exercised. They must be joined in the launcher using explicit enrolled
@@ -19,7 +22,7 @@ policies or native factories, and does not demonstrate serving a business listen
 The actor policy auto-configuration processes enrollment bean definitions before
 its conditional binding; actual session/route/freshness checks use native primary
 progress, scoped revocation/key state and live clock trust. Runtime Secret-to-source
-factories and full ownership/listener composition remain required.
+factories and full process/resource ownership composition remain required.
 
 The load generator implements ordinary WSS, recovery, reconnect, 2x burst and
 native 5x destination/bucket selection. The scenario orchestrator now schedules

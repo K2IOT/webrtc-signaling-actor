@@ -246,3 +246,42 @@ primary freshness read after four real Pekko members, registered regions and
 signed mTLS clock/revocation polls are live. Input homes, enrollment and denied
 calling policy remain explicit TEST_ONLY fixtures. This bean binding does not yet
 assemble all plane factories, listeners or runtime Secret enrollment.
+
+## Main native actor factories
+
+`NativeActorSourceEnrollment` supplies the explicit cell/storage epoch, actual pod
+UID and process boot UUID, complete `IdentitySecurityContract` and two enrolled
+HTTPS/TLS/public-key endpoints. Endpoint trust maps are copied; credentials,
+queries, noncanonical paths and cleartext URLs are rejected. Source factories run
+only on the actor profile and require admitted `SqlTransactions`. Enrolled
+issuer/audience/skew must match effective typed configuration. Reconciliation
+freshness is the smaller of the supplied hard safety bound and the existing
+five-second maximum. Bounds below200ms reject because fixed100ms source polls
+must retain their half-window margin; no identity policy is invented.
+
+Boot processes native source definitions before actor policy definitions.
+`NativeActorBusinessEnrollment` supplies the genuine native ActorSystem, cell/
+storage/routing/pod identity, proof signer, directory hints, epoch adoption, bounded
+token verifier and explicit calling policy. Main constructs native lease/backends
+with all three source-backed policy callbacks and live monitor validity. It
+rejects any cell/storage-epoch/pod mismatch with a supplied source enrollment
+before installing native lease/backends. Independently enrolled legacy source
+beans still undergo the existing native source/SQL/clock guards. Main registers
+both regions only after actual local membership Up. An enrollment whose
+process has not reached Up cannot proceed to business RPC startup.
+
+`NativeActorIngressEnrollment` supplies internal environment/TLS/workload identity,
+bounded RPC admission, native network, original relay memory/capacity, enrolled
+gateway transport and native control-delivery callback. Main resolves region
+registration before binding the actual `NativeActorRpcIngress`; an already
+installed composition still passes the factory's independent registration guard.
+Native owner drains retire the listener/source transports; inferred Spring
+destruction is disabled so it cannot stop safety sources before lease handoff.
+
+These are explicit factory bindings. The configuration-only mounted YAML reader
+does not enroll these objects, create the native ActorSystem/discovery/management,
+install maintenance/source scheduling, private health or ordered runtime hooks,
+or construct gateway/control planes. Those integrations and original source
+contracts remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko fixtures verify
+the factories and both relay RPC legs; no production topology or capacity claim
+follows from those tests.
