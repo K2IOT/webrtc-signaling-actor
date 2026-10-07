@@ -122,14 +122,23 @@ public final class PrivateHealthServer implements AutoCloseable {
 
     public synchronized CompletionStage<Void> stop() {
         if (stopping) return stopped;
-        stopping = true; scrape.shutdownNow();
+        stopping = true; scrape.shutdown();
         if (listener != null) listener.close();
         var accepted = accept.shutdownGracefully(0, 2, TimeUnit.SECONDS);
         var workers = io.shutdownGracefully(0, 2, TimeUnit.SECONDS);
         var a = new CompletableFuture<Void>(); var b = new CompletableFuture<Void>();
         accepted.addListener(f -> { if (f.isSuccess()) a.complete(null); else a.completeExceptionally(f.cause()); });
         workers.addListener(f -> { if (f.isSuccess()) b.complete(null); else b.completeExceptionally(f.cause()); });
-        CompletableFuture.allOf(a, b).whenComplete((v, e) -> { if (e == null) stopped.complete(null); else stopped.completeExceptionally(e); });
+        CompletableFuture.allOf(a, b).whenComplete((v, e) -> {
+            if(e!=null){stopped.completeExceptionally(e);return;}
+            Thread.startVirtualThread(()->{
+                try{
+                    if(!scrape.awaitTermination(2,TimeUnit.SECONDS))throw new TimeoutException("Native metrics cleanup unproven");
+                    stopped.complete(null);
+                }catch(InterruptedException interrupted){Thread.currentThread().interrupt();stopped.completeExceptionally(interrupted);}
+                catch(Exception unknown){stopped.completeExceptionally(unknown);}
+            });
+        });
         return stopped;
     }
     @Override public void close() throws Exception { stop().toCompletableFuture().get(5, TimeUnit.SECONDS); }

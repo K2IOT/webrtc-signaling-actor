@@ -24,13 +24,25 @@ public class SignalingApplication {
     public enum Plane { GATEWAY, ACTOR, CONTROL }
 
     public static void main(String[] args) {
+        application().run(args);
+    }
+
+    public static SpringApplication application(){
         var application=new SpringApplication(SignalingApplication.class);
-        application.addListeners((ApplicationListener<ApplicationFailedEvent>)event->System.err.println(SafeStartupFailure.render(event.getException())));
-        application.run(args);
+        var cleanup=new NativeStartupCleanup();
+        application.addInitializers(context->context.getBeanFactory().addBeanPostProcessor(cleanup));
+        application.addListeners((ApplicationListener<ApplicationFailedEvent>)event->{
+            cleanup.failed(event.getApplicationContext(),event.getException());
+            System.err.println(SafeStartupFailure.render(event.getException()));
+        });
+        return application;
     }
 
     @Bean ApplicationRunner requireNativePlane(Plane plane,ApplicationContext context){
-        return args->NativeRuntimeStartup.requireInstalled(plane,context);
+        return args->{
+            try{NativeRuntimeStartup.requireInstalled(plane,context);}
+            catch(RuntimeException failed){NativeStartupCleanup.gateway(context,failed);throw failed;}
+        };
     }
 
     @Bean Plane deploymentPlane(Environment environment) {

@@ -31,4 +31,25 @@ class PrivateHealthServerTest {
             release.countDown();var body=first.get(2,TimeUnit.SECONDS);assertThat(body.statusCode()).isEqualTo(200);assertThat(body.body()).isEqualTo("test_only_metric 1\n");assertThat(thread.get()).startsWith("private-metrics");
         }finally{release.countDown();}
     }
+    @Test void nativeStopDoesNotReportPhysicalCleanupWhileOriginalScrapeStillRuns()throws Exception {
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var exited=new AtomicBoolean();
+        try(var client=HttpClient.newHttpClient();
+            var health=new PrivateHealthServer(new InetSocketAddress("127.0.0.1",0),()->true,()->false,()->{
+                entered.countDown();
+                boolean interrupted=false;
+                try{while(true){try{release.await();break;}catch(InterruptedException ignored){interrupted=true;}}return "TEST_ONLY 1\n";}
+                finally{exited.set(true);if(interrupted)Thread.currentThread().interrupt();}
+            })){
+            health.start().toCompletableFuture().get(2,TimeUnit.SECONDS);
+            var original=client.sendAsync(request(health.port(),"/metrics"),HttpResponse.BodyHandlers.ofString());
+            assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
+            var stopped=health.stop().toCompletableFuture();
+            try{
+                assertThatThrownBy(()->stopped.get(150,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                assertThat(exited).isFalse();
+            }finally{release.countDown();}
+            stopped.get(3,TimeUnit.SECONDS);assertThat(exited).isTrue();
+            original.handle((v,e)->null).get(3,TimeUnit.SECONDS);
+        }finally{release.countDown();}
+    }
 }
