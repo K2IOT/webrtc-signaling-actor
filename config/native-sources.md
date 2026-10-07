@@ -215,3 +215,19 @@ ManagedChannel termination and callback executor termination. One shutdown
 waiter uses a shared2s transport/executor budget after stream settlement. An
 unproven close fails drain and cannot authorize database closure; an original
 stream with unknown cleanup continues to hold the barrier without a new deadline.
+
+`NativeActorSecurityPolicies` binds the native session, route and user-only home
+freshness callbacks to one `RevocationReconciler` and live trusted-clock source.
+It reads this cell's actual primary/progress in the already-admitted original
+transaction. Missing, future, expired or incomplete progress denies permission;
+scoped principal/route reads additionally require an unexpired token, known
+signing key and durable subject/key checks. Clock trust is checked again after
+SQL. No poll, executor or independently renewed timeout is created here.
+
+The user-only home callback establishes source freshness. It cannot identify an
+issuer/jti/key and does not grant scoped identity authorization; native session
+and route checks remain independent and mandatory. Existing native home, bucket,
+reservation, winner and ownership guards retain their authority. Constructor
+clock/source enrollment is explicit; constant suppliers in PostgreSQL correctness
+tests remain TEST_ONLY. Complete Main composition and real qualification are
+still required.

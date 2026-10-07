@@ -27,6 +27,17 @@ public final class RevocationReconciler implements SessionRegistryService.Native
         try(var q=c.prepareStatement("UPDATE security_progress SET source_offset=?,checked_at=clock_timestamp(),source_checked_at=CASE WHEN ? THEN ? ELSE 'epoch'::timestamptz END WHERE singleton_id=1 AND source_offset=?")){q.setLong(1,batch.highWater());q.setBoolean(2,batch.caughtUp());q.setTimestamp(3,Timestamp.from(batch.checkedAt()));q.setLong(4,current);if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();}return batch.highWater();});}
     @Override public boolean allowed(Connection c,AuthPrincipal principal)throws SQLException{return allowed(c,principal.userId(),principal.key(),principal.signingKeyId(),principal.securityEpoch());}
     public boolean allowedRoute(Connection c,SessionRepository.Route route)throws SQLException{return allowed(c,route.user(),route.key(),route.signingKeyId(),route.securityEpoch());}
+    /** Freshness is read from this cell's primary in the original caller transaction, not an empty cache. */
+    public boolean sourceCurrent(Connection c)throws SQLException{return currentProgress(c,null);}
+    public boolean sourceCurrent(Connection c,Instant tokenExpiresAt)throws SQLException{return currentProgress(c,Objects.requireNonNull(tokenExpiresAt));}
+    private boolean currentProgress(Connection c,Instant tokenExpiresAt)throws SQLException{
+        WorkerFence.cell(c,cell,epoch);
+        String expiry=tokenExpiresAt==null?"":" AND ?>clock_timestamp()";
+        try(var q=c.prepareStatement("SELECT NOT pg_is_in_recovery() AND checked_at<=clock_timestamp() AND source_checked_at<=clock_timestamp() AND LEAST(checked_at,source_checked_at)>clock_timestamp()-(? * interval '1 millisecond')"+expiry+" FROM security_progress WHERE singleton_id=1")){
+            q.setLong(1,freshness.toMillis());if(tokenExpiresAt!=null)q.setTimestamp(2,Timestamp.from(tokenExpiresAt));
+            try(var r=q.executeQuery()){return r.next()&&r.getBoolean(1);}
+        }
+    }
     private boolean allowed(Connection c,UserId user,SessionKey key,String signingKeyId,long securityEpoch)throws SQLException{try(var q=c.prepareStatement("SELECT p.checked_at<=clock_timestamp() AND p.source_checked_at<=clock_timestamp() AND LEAST(p.checked_at,p.source_checked_at)>clock_timestamp()-(? * interval '1 millisecond') AND NOT EXISTS (SELECT 1 FROM retired_signing_key k WHERE k.issuer=? AND k.signing_key_id=?) AND NOT EXISTS (SELECT 1 FROM security_epoch e WHERE e.issuer=? AND e.subject_key IN (?,?) AND e.epoch>=?) FROM security_progress p WHERE singleton_id=1")){q.setLong(1,freshness.toMillis());q.setString(2,key.issuer());q.setString(3,signingKeyId);q.setString(4,key.issuer());q.setString(5,subject(user,null));q.setString(6,subject(user,key.jti()));q.setLong(7,securityEpoch);try(var r=q.executeQuery()){return r.next()&&r.getBoolean(1);}}}
 
     public DbOperation<RevocationState.Progress> progress(){return progress(Duration.ofSeconds(2));}
