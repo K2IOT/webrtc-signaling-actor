@@ -33,6 +33,7 @@ public final class NativeGatewayIngress implements AutoCloseable {
     public synchronized CompletionStage<Void> drain(){
         if(!draining){
             draining=true;
+            wss.stopAccepting();
             relay.drain().thenCombine(writes.drain(),(a,b)->null).whenComplete((ignored,failure)->{
                 if(failure!=null){drained.completeExceptionally(failure);return;}
                 Thread.startVirtualThread(()->{

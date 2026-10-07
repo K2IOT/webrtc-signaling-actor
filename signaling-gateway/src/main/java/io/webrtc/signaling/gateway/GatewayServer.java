@@ -51,5 +51,5 @@ public final class GatewayServer implements AutoCloseable {
         });}catch(RejectedExecutionException stopped){channel.close();}
         return CompletableFuture.completedFuture(registry.connectionCount());
     }
-    @Override public void close(){stopAccepting();if(listener!=null)listener.close().awaitUninterruptibly();for(var binding:registry.snapshot())binding.channel().close();if(heartbeat!=null)heartbeat.close();if(workers!=null)workers.shutdownGracefully(0,5,TimeUnit.SECONDS).awaitUninterruptibly();if(boss!=null)boss.shutdownGracefully(0,5,TimeUnit.SECONDS).awaitUninterruptibly();cpu.shutdown();}
+    @Override public void close(){stopAccepting();if(listener!=null)listener.close().awaitUninterruptibly();for(var binding:registry.snapshot())binding.channel().close();if(heartbeat!=null)heartbeat.close();if(workers!=null)workers.shutdownGracefully(0,5,TimeUnit.SECONDS).awaitUninterruptibly();if(boss!=null)boss.shutdownGracefully(0,5,TimeUnit.SECONDS).awaitUninterruptibly();cpu.shutdown();try{if(!cpu.awaitTermination(2,TimeUnit.SECONDS))throw new IllegalStateException("Native gateway CPU cleanup unproven");}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException("Native gateway CPU cleanup interrupted",interrupted);}}
 }
