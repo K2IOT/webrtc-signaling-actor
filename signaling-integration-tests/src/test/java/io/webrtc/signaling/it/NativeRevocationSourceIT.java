@@ -136,20 +136,25 @@ class NativeRevocationSourceIT {
                         assertThat(readiness.businessReady()).isFalse();assertThat(facts.upActors()).isZero();assertThat(facts.regionsRegistered()).isFalse();
                         try(var tokens=new io.webrtc.signaling.auth.BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
                             var proofs=new io.webrtc.signaling.rpc.HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
+                            var businessEnrollment=new NativeActorBusinessEnrollment(system,"c001",1,1,pod,proofs,
+                                user->new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001",1,1),
+                                (connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
                             var policyBean=new AtomicReference<NativeActorSecurityPolicies>();
                             var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
                             for(var plane:io.webrtc.signaling.app.SignalingApplication.Plane.values()) {
                                 new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class,LateNativePolicyEnrollment.class)
                                     .withBean(NativePolicyEnrollment.class,()->new NativePolicyEnrollment(reconciler,monitor))
+                                    .withBean(NativeActorBusinessEnrollment.class,()->businessEnrollment)
+                                    .withBean(SqlTransactions.class,()->f.runtime.sql).withBean(ClusterReadiness.class,()->readiness)
                                     .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));})
                                     .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
                                     .run(context->{assertThat(context).hasNotFailed();if(plane==io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR){
-                                        assertThat(context).hasSingleBean(NativeActorSecurityPolicies.class);policyBean.set(context.getBean(NativeActorSecurityPolicies.class));
-                                    }else assertThat(context).doesNotHaveBean(NativeActorSecurityPolicies.class);});
+                                        assertThat(context).hasSingleBean(NativeActorSecurityPolicies.class).hasSingleBean(io.webrtc.signaling.rpc.NativeActorComposition.class);
+                                        policyBean.set(context.getBean(NativeActorSecurityPolicies.class));installed.set(context.getBean(io.webrtc.signaling.rpc.NativeActorComposition.class));
+                                    }else assertThat(context).doesNotHaveBean(NativeActorSecurityPolicies.class).doesNotHaveBean(io.webrtc.signaling.rpc.NativeActorComposition.class);});
                             }
                             var policies=policyBean.get();
-                            var inputs=new io.webrtc.signaling.rpc.NativeActorComposition.Inputs(f.runtime.sql,"c001",1,1,pod,proofs,user->new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001",1,1),policies,policies,(connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll(),Clock.systemUTC(),monitor::valid,policies);
-                            var actors=new io.webrtc.signaling.rpc.NativeActorComposition(system,inputs,readiness);installed.set(actors);
+                            var actors=installed.get();assertThat(actors.system()).isSameAs(system);assertThat(actors.readiness()).isSameAs(readiness);
                             for(String zone:List.of("a","b","c"))systems.add(org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config(zone)));
                             var seed=org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().address();
                             for(var member:systems)org.apache.pekko.cluster.typed.Cluster.get(member).manager().tell(new org.apache.pekko.cluster.typed.JoinSeedNodes(List.of(seed)));

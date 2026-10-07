@@ -1,2 +1,3 @@
 io.webrtc.signaling.app.runtime.NativeActorSourceConfiguration
 io.webrtc.signaling.app.runtime.NativeActorPolicyConfiguration
+io.webrtc.signaling.app.runtime.NativeActorCompositionConfiguration
