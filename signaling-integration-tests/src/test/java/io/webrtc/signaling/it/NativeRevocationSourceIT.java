@@ -44,6 +44,17 @@ class NativeRevocationSourceIT {
                         .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
                         .run(context->{assertThat(context).hasFailed();assertThat(context.getStartupFailure()).hasRootCauseMessage("Native actor authority differs from source enrollment");});
                 }
+                var otherSystem=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-other-scheduler-c001",NativeActorCompositionIT.config("a"));
+                try{
+                    var sources=new NativeActorSourceEnrollment("c001",1,pod,boot,identity,endpoint,endpoint);
+                    var scheduling=new NativeActorSchedulingEnrollment(otherSystem,Set.of("az-a","az-b","az-c"),"a".repeat(64),List.of(),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n");
+                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+                        .withBean(NativeActorBusinessEnrollment.class,()->business).withBean(NativeActorSourceEnrollment.class,()->sources).withBean(SqlTransactions.class,()->f.runtime.sql)
+                        .withBean(NativeActorSchedulingEnrollment.class,()->scheduling)
+                        .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
+                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                        .run(context->{assertThat(context).hasFailed();assertThat(context.getStartupFailure()).hasRootCauseMessage("Native actor scheduling process differs from business enrollment");});
+                }finally{otherSystem.terminate();otherSystem.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);}
             }finally{system.terminate();system.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);}
         }
     }

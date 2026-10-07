@@ -24,7 +24,10 @@ public class NativeActorCompositionConfiguration {
 
     @Bean NativeActorComposition nativeActorComposition(NativeActorBusinessEnrollment enrollment, SqlTransactions sql,
             NativeActorSecurityPolicies security, ClockSafetyMonitor clock, ClusterReadiness readiness,
-            ObjectProvider<NativeActorSourceEnrollment> sources) {
+            ObjectProvider<NativeActorSourceEnrollment> sources,ObjectProvider<NativeActorSchedulingEnrollment> scheduling) {
+        var jobs=scheduling.getIfAvailable();
+        if(jobs!=null&&jobs.system()!=enrollment.system())
+            throw new IllegalArgumentException("Native actor scheduling process differs from business enrollment");
         var source=sources.getIfAvailable();
         if(source!=null&&(!enrollment.cell().equals(source.cell())||enrollment.storageEpoch()!=source.storageEpoch()
                 ||!enrollment.podUid().equals(source.podUid())))
