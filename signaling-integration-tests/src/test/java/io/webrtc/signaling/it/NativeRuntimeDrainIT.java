@@ -21,6 +21,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 /** Genuine PostgreSQL/TLS/framework cleanup; TEST_ONLY clock/topology assertions, no production qualification. */
 class NativeRuntimeDrainIT {
@@ -54,15 +55,26 @@ class NativeRuntimeDrainIT {
             var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("server.crt"),cert("server.key")),new RpcAdmission(2,196608,2,196608));
             var health=new PrivateHealthServer(new InetSocketAddress("127.0.0.1",0),()->true,readiness::businessReady,()->"TEST_ONLY 1\n");health.start().toCompletableFuture().get(2,TimeUnit.SECONDS);
             var workers=new NativeWorkerScheduler(List.of(new NativeWorkerScheduler.Job("native_tick",NativeWorkerScheduler.Priority.SAFETY,Duration.ofMillis(100),b->{var work=runtime.sql.submitTracked(DbClass.RENEWAL,Duration.ofMillis(100),c->{if(first.getAndSet(false)){entered.countDown();release.await();}return true;});return new RpcOperation<>(work.logical(),work.physicalCompletion());})),e->{});
-            var hooks=new NativeActorRuntimeHooks(composition,server,client,workers,runtime.boundary,runtime.pools,health);
-            assertThat(hooks.closeDatabase().toCompletableFuture()).isCompletedExceptionally();assertThat(runtime.pools.closed()).isFalse();
-            PekkoShutdownLifecycle.register(system,hooks);workers.start();assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
-            var shutdown=CoordinatedShutdown.get(system).runAll(CoordinatedShutdown.unknownReason());
-            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->readiness.snapshot().draining());
-            readiness.update(new ClusterReadiness.Snapshot(true,true,true,true,true,true,6,3,false));assertThat(readiness.businessReady()).isFalse();
-            assertThat(shutdown.toCompletableFuture()).isNotDone();assertThat(runtime.pools.closed()).isFalse();assertThat(lease.checkLease()).isTrue();
-            release.countDown();shutdown.toCompletableFuture().get(25,TimeUnit.SECONDS);
-            assertThat(runtime.pools.closed()).isTrue();assertThat(lease.checkLease()).isFalse();assertThat(hooks.databaseClosed()).isTrue();
+            var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+            new ApplicationContextRunner().withUserConfiguration(SignalingApplication.class)
+                .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
+                .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                .withBean(NativeActorComposition.class,()->composition)
+                .withBean(CellRpcServer.class,()->server).withBean(CellRpcClient.class,()->client)
+                .withBean(NativeWorkerScheduler.class,()->workers)
+                .withBean(DbBoundary.class,()->runtime.boundary).withBean(DbPools.class,()->runtime.pools)
+                .withBean(PrivateHealthServer.class,()->health)
+                .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeActorRuntimeHooks.class);
+                    var hooks=context.getBean(NativeActorRuntimeHooks.class);
+                    assertThat(hooks.closeDatabase().toCompletableFuture()).isCompletedExceptionally();assertThat(runtime.pools.closed()).isFalse();
+                    assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+                    var shutdown=CoordinatedShutdown.get(system).runAll(CoordinatedShutdown.unknownReason());
+                    org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->readiness.snapshot().draining());
+                    readiness.update(new ClusterReadiness.Snapshot(true,true,true,true,true,true,6,3,false));assertThat(readiness.businessReady()).isFalse();
+                    assertThat(shutdown.toCompletableFuture()).isNotDone();assertThat(runtime.pools.closed()).isFalse();assertThat(lease.checkLease()).isTrue();
+                    release.countDown();shutdown.toCompletableFuture().get(25,TimeUnit.SECONDS);
+                    assertThat(runtime.pools.closed()).isTrue();assertThat(lease.checkLease()).isFalse();assertThat(hooks.databaseClosed()).isTrue();
+                });
         }finally{release.countDown();system.terminate();system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);runtime.close();}
     }
 }

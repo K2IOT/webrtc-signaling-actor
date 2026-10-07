@@ -2,6 +2,7 @@ package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.rpc.NativeActorComposition;
 import io.webrtc.signaling.rpc.NativeActorRpcIngress;
+import io.webrtc.signaling.rpc.CellRpcServer;
 import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
 import java.io.IOException;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -15,6 +16,7 @@ import org.springframework.beans.factory.ObjectProvider;
 @Profile("actor")
 @ConditionalOnBean({NativeActorComposition.class, NativeActorIngressEnrollment.class})
 public class NativeActorIngressConfiguration {
+    @Bean(destroyMethod="") CellRpcServer nativeActorRpcServer(NativeActorRpcIngress ingress) { return ingress.server(); }
     // NativeActorRuntimeHooks must retire this owner after ingress work and native roots settle.
     @Bean(destroyMethod="") NativeActorRpcIngress nativeActorRpcIngress(NativeActorComposition actors,
             NativeActorIngressEnrollment enrollment, ObjectProvider<ShardingBootstrap.Regions> regions) throws IOException {
