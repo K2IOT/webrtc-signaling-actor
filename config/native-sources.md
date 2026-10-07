@@ -278,10 +278,27 @@ installed composition still passes the factory's independent registration guard.
 Native owner drains retire the listener/source transports; inferred Spring
 destruction is disabled so it cannot stop safety sources before lease handoff.
 
+`NativeActorSchedulingEnrollment` supplies the same native ActorSystem, approved
+fingerprint/AZ roles, at most12 explicit MAINTENANCE jobs, event reporting
+and private health address/cached liveness/metrics. Main rejects a different
+scheduling ActorSystem before installing business backends. Main constructs
+the original source aggregate, its four fixed100ms SAFETY jobs, bounded scheduler
+and private health listener. New source objects remain unhealthy until original
+polls complete; healthy sources alone never establish native membership/regions.
+
+Once the native composition, server/client, scheduler, DB boundary/pools and
+private health owners are supplied, Main installs `NativeActorRuntimeHooks` into
+Pekko's public graph before starting workers. `NativeActorSpringLifecycle` begins
+that graph when Spring stops; framework handoff/leave precede native root release,
+and source/relay transports, physical DB work and pool closure retain their
+original cleanup receipts. Spring waits70s for the <=65s native graph within90s
+pod grace. Unknown cleanup never reports graceful native closure. All supplied
+native owners must disable inferred bean destruction so Spring cannot close pools
+or safety transports ahead of native release.
+
 These are explicit factory bindings. The configuration-only mounted YAML reader
-does not enroll these objects, create the native ActorSystem/discovery/management,
-install maintenance/source scheduling, private health or ordered runtime hooks,
-or construct gateway/control planes. Those integrations and original source
-contracts remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko fixtures verify
-the factories and both relay RPC legs; no production topology or capacity claim
-follows from those tests.
+does not enroll these objects, create the native ActorSystem/discovery/management
+or construct gateway/control planes. Those integrations and approved source,
+business-policy and maintenance contracts remain required. TEST_ONLY native
+mTLS/PostgreSQL/Pekko fixtures verify the factories, both relay RPC legs and
+ordered Spring stop; no production topology or capacity claim follows.

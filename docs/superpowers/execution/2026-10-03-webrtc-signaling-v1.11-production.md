@@ -354,11 +354,29 @@ deadline or safety condition was weakened to conceal it. It remains an unqualifi
 availability observation pending original timing/qualification evidence.
 
 Complete process formation/discovery/management, mounted source/business
-enrollment, maintenance/source scheduling, private health and ordered runtime
-hooks, gateway/control factories and two approved scoped security drill drivers
+enrollment, gateway/control factories and two approved scoped security drill drivers
 remain open. There are no injected SIGNALING variables or supplied production
 enrollments in this workspace. Actual staged load, three-AZ HA/DR, N-1 and24h
 same-candidate qualification have not been collected. Tasks22–24 stay open;
 the existing immutable candidate records still describe their original sources.
 
 Fresh final source9ab4256: `./mvnw -B clean verify` passed671tests in143fresh XML reports, zero failures/errors/skips, finished2026-10-07T04:58:38Z. Both joined Main native tests and the original relay case passed. Fresh Python69 verifier/exporter tests and static loadgen contract also passed. Existing TEST_ONLY candidate verification still returns NOT_QUALIFIED37; no current-source image or production run was created. Remaining implementation and external inputs above keep Tasks22–24 open; the ledger and native originals are retained.
+
+Task22 checkpoint, source d8c31e3 (2026-10-07T07:07:00Z): Main now constructs the
+native source aggregate, bounded safety/explicit-maintenance scheduler and private
+health, then installs ordered shutdown hooks before starting workers. Spring stop
+initiates Pekko's original graph and observes native DB closure. The real blocked
+SQL fixture proves lease/pool retention until physical work and framework handoff
+settle. A mismatched scheduling ActorSystem rejects before backend/lease install.
+Fresh clean verify passed671 tests in143 reports with zero failures/errors/skips;
+Python69 and static loadgen contract passed. The original native relay case passed;
+its earlier intermittent OUTCOME_UNKNOWN cause remains unestablished.
+
+New immutable local TEST_ONLY candidate
+`20261007-1407-d8c31e3-b5575cc39678` contains the actual native image, six negative
+startup checks and original OCI/executable integrity record. Its verifier returned
+NOT_QUALIFIED37. Earlier candidates were preserved. Managed process formation,
+mounted enrollment, gateway/control factories and two scoped security drivers
+remain software work; approved identity/calling/source/PKI/drill contracts and
+qualification infrastructure are absent. No10k/100k distributed stage, three-AZ
+HA/DR, N-1 or24h soak was collected. Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.

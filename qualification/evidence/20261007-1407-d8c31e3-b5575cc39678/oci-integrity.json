@@ -1,0 +1,13 @@
+{
+  "scope": "LOCAL_ORIGINAL_NATIVE_BYTES",
+  "testOnly": true,
+  "sourceCommit": "d8c31e38746d21ffe658930bcee4f3f56f68c0e1",
+  "manifestDigest": "sha256:b5575cc3967889054825b0f272f354ffcf1cbc7843d6694e8da7b2fd710d9a2f",
+  "configDigest": "sha256:afc25d302af60cdc91900dd4fb34f59ce91b24929cbf3dc51053be9b701c8065",
+  "layers": 7,
+  "originalLayerBytes": 404894208,
+  "originalExecutableSha256": "0ebf9c7f5410a60532dcbf451ea8a872e11cd6e6fb70ab270cc6cdb108a31b92",
+  "originalArchiveSha256": "0e3c66314c976dc13b84b8d7a4c96cfd77ee4380ddf28632ce150878aec02b66",
+  "originalArchiveBytes": 404924416,
+  "status": "NOT_QUALIFIED"
+}

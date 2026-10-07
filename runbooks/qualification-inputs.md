@@ -9,13 +9,15 @@ receipts from test fixtures.
 The Spring launcher selects and validates a plane. Actor-only Boot factories now
 construct native safety sources, bind actor policies, assemble native backends,
 register both regions after actual membership Up, and bind the internal RPC
-listener from explicit typed enrollment. Complete process formation, source and
-maintenance scheduling, private health and ordered lifecycle installation, mounted
-enrollment and gateway/control factories remain open. Its startup guard
+listener, fixed safety scheduling/private health and ordered lifecycle from
+explicit typed enrollment. Spring stop initiates the original Pekko graph; native
+root release precedes source/relay teardown and pool closure. Complete managed
+process formation, mounted enrollment and gateway/control factories remain open.
+Production maintenance jobs still require their explicit enrolled scope. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are
-locally exercised. They must be joined in the launcher using explicit enrolled
-sources and policies. Boot now reads `SIGNALING_RUNTIME_CONTRACT` as bounded
+locally exercised. They require explicit enrolled sources and policies.
+Boot now reads `SIGNALING_RUNTIME_CONTRACT` as bounded
 effective `signaling` configuration before binding; its current format is
 documented in `config/native-sources.md`. This does not install source enrollment,
 policies or native factories, and does not demonstrate serving a business listener.
@@ -109,3 +111,10 @@ TEST_ONLY build after native actor policy binding. Its659 fresh Java tests, actu
 native image smoke, original OCI bytes and executable match are recorded. Its
 verifier decision remains NOT_QUALIFIED with37 missing/test-only blockers. It does
 not replace the historical e3630d9 source record or supply production enrollment.
+
+`qualification/evidence/20261007-1407-d8c31e3-b5575cc39678` records the local
+TEST_ONLY build after Main safety scheduling and Spring native lifecycle binding.
+Fresh671 Java tests in143 reports, Python69 and six native negative startup cases
+passed. Original OCI bytes and executable were verified; the evidence verifier
+still returns NOT_QUALIFIED37. Its source/image identity is independent of both
+older records. It contains no staged load, HA/DR, N-1 or24h production run.
