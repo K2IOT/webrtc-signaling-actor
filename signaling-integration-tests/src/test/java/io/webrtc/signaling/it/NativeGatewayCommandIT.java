@@ -36,7 +36,8 @@ class NativeGatewayCommandIT {
         var kit=ActorTestKit.create();
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var callee=f.sender("gateway-command-callee");
-            var principal=new AuthPrincipal(new UserId("gateway-command-caller"),new SessionKey("TEST_ONLY",UUID.randomUUID().toString()),Instant.now().plusSeconds(600),Instant.now(),"TEST_ONLY",1);
+            var issuedAt=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+            var principal=new AuthPrincipal(new UserId("gateway-command-caller"),new SessionKey("TEST_ONLY",UUID.randomUUID().toString()),issuedAt.plusSeconds(600),issuedAt,"TEST_ONLY",1);
             var key=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",key.getPrivate(),Map.of("c001/test",key.getPublic()));var bindings=new ProofBindings(proofs,Clock.systemUTC());
             var verifier=new BoundedTokenVerifier((token,now)->{if(!token.equals("TEST_ONLY_ORIGINAL_TOKEN"))throw new IllegalArgumentException();return principal;},1,8,Duration.ofSeconds(1));
             var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->p.equals(principal));
@@ -71,7 +72,7 @@ class NativeGatewayCommandIT {
                 assertThat(gateway.cachedSecurity(principal,Instant.now())).isEqualTo(AuthorizationStatus.FRESHNESS_UNKNOWN);
                 main.refreshClock();
                 assertThat(gateway.cachedSecurity(principal,Instant.now())).isEqualTo(AuthorizationStatus.ALLOWED);
-                var route=gateway.register(principal,"TEST_ONLY_ORIGINAL_TOKEN",UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();
+                var route=main.authenticate(principal);
                 var sender=new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),route.connectionId());var request=new RequestId(UUID.randomUUID());
                 var invite=new CallCommand(SignalEnvelope.Type.INVITE,sender,request,null,CommandScope.invite(),callee.userId(),null,null,"{}","a".repeat(64));
                 policyMode.set(0);var denied=JSON.readTree(gateway.command(invite,route,"TEST_ONLY_ORIGINAL_TOKEN",Duration.ofSeconds(2)).toCompletableFuture().join());assertThat(denied.path("error").path("code").asText()).isEqualTo("FORBIDDEN");
@@ -131,12 +132,33 @@ class NativeGatewayCommandIT {
     /** Native Main factory with signed TEST_ONLY clock reports, no production source qualification. */
     static final class MainGateway implements AutoCloseable {
         GatewayBootController boot; NativeRelaySessionProofCache cache; NativeGatewayServices gateway;
+        GatewayServer wss; GatewayRelayRpcServer relay; ConnectionRegistry connections;
+        io.webrtc.signaling.app.runtime.NativeGatewayIngress ingress;
+        java.net.http.HttpClient webClient; java.net.http.WebSocket socket;
         final ClockSafetyMonitor clock; final KeyPair signing; final UUID pod=UUID.randomUUID(),processBoot=UUID.randomUUID();
         final java.util.concurrent.atomic.AtomicLong sequence=new java.util.concurrent.atomic.AtomicLong();
         final ScheduledExecutorService reports=Executors.newSingleThreadScheduledExecutor();
         MainGateway(KeyPair signing){this.signing=signing;clock=new ClockSafetyMonitor("c001",1,pod,processBoot,Map.of("TEST_ONLY",signing.getPublic()),Clock.systemUTC(),System::nanoTime);}
         void refreshClock(){try{long started=System.nanoTime();var now=Instant.now();var report=new ClockSafetyMonitor.Report("TEST_ONLY","c001",1,pod,processBoot,sequence.incrementAndGet(),now,now.plusSeconds(5),250000,1000,true);var signature=Signature.getInstance("Ed25519");signature.initSign(signing.getPrivate());signature.update(ClockSafetyMonitor.signingBytes(report));assertThat(clock.observe(report,Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign()),started)).isTrue();}catch(GeneralSecurityException failure){throw new IllegalStateException(failure);}}
-        public void close()throws Exception{reports.shutdownNow();if(boot!=null)boot.close();if(cache!=null)cache.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);}
+        SessionRepository.Route authenticate(AuthPrincipal principal)throws Exception {
+            var store=KeyStore.getInstance(KeyStore.getDefaultType());store.load(null,null);
+            try(var in=new java.io.FileInputStream(cert("ca.crt"))){store.setCertificateEntry("TEST_ONLY",java.security.cert.CertificateFactory.getInstance("X.509").generateCertificate(in));}
+            var trust=javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());trust.init(store);
+            var tls=javax.net.ssl.SSLContext.getInstance("TLSv1.3");tls.init(null,trust.getTrustManagers(),null);
+            webClient=java.net.http.HttpClient.newBuilder().sslContext(tls).connectTimeout(Duration.ofSeconds(2)).build();
+            var replies=new LinkedBlockingQueue<String>();
+            socket=webClient.newWebSocketBuilder().header("Origin","https://app.test").subprotocols("webrtc-signaling.v1").buildAsync(java.net.URI.create("wss://localhost:"+wss.port()+"/ws"),new java.net.http.WebSocket.Listener(){
+                final StringBuilder text=new StringBuilder();
+                public void onOpen(java.net.http.WebSocket ws){ws.request(1);}
+                public CompletionStage<?> onText(java.net.http.WebSocket ws,CharSequence data,boolean last){text.append(data);if(last){replies.add(text.toString());text.setLength(0);}ws.request(1);return null;}
+                public CompletionStage<?> onClose(java.net.http.WebSocket ws,int code,String reason){replies.add("TEST_ONLY_CLOSE:"+code+":"+reason);return null;}
+                public void onError(java.net.http.WebSocket ws,Throwable failure){replies.add("TEST_ONLY_TRANSPORT_FAILURE:"+failure.getClass().getSimpleName());}
+            }).get(3,TimeUnit.SECONDS);
+            socket.sendText("{\"v\":1,\"type\":\"AUTH\",\"payload\":{\"token\":\"TEST_ONLY_ORIGINAL_TOKEN\"}}",true).get(2,TimeUnit.SECONDS);
+            var reply=replies.poll(3,TimeUnit.SECONDS);assertThat(reply).isNotNull();assertThat(JSON.readTree(reply).path("type").asText()).isEqualTo("AUTH_OK");
+            var binding=connections.snapshot().getFirst();assertThat(binding.principal()).isEqualTo(principal);return binding.route();
+        }
+        public void close()throws Exception{reports.shutdownNow();if(socket!=null)socket.abort();if(webClient!=null)webClient.close();if(ingress!=null)ingress.drain().toCompletableFuture().get(12,TimeUnit.SECONDS);if(boot!=null)boot.close();if(cache!=null)cache.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);}
     }
     static MainGateway mainGateway(CellRpcClient client,BoundedTokenVerifier tokens,KeyPair signing)throws Exception {
         var fixture=new MainGateway(signing);
@@ -144,13 +166,16 @@ class NativeGatewayCommandIT {
             fixture.refreshClock();
             var enrollment=new io.webrtc.signaling.app.runtime.NativeGatewayBusinessEnrollment(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),1,tokens,(p,now)->AuthorizationStatus.ALLOWED,u->new ProofBindings.TrustedHome("c001",1,1),new RelaySessionAuthorizationProof(Map.of("c001/test",signing.getPublic())),4,2);
             var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+            var wssTls=io.netty.handler.ssl.SslContextBuilder.forServer(cert("gateway.crt"),cert("gateway.key")).sslProvider(io.netty.handler.ssl.SslProvider.JDK).protocols("TLSv1.3").build();
+            var ingress=new io.webrtc.signaling.app.runtime.NativeGatewayIngressEnrollment(new java.net.InetSocketAddress("127.0.0.1",0),wssTls,new GatewayServer.UpgradePolicy(Set.of("https://app.test"),headers->false),1,8,16,EdgeAdmission.Limits.candidate(),"test",0,RpcTlsContexts.gatewayServer("test","c001","gw-1",cert("ca.crt"),cert("gateway.crt"),cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576),new RpcAdmission(8,1048576,8,1048576));
             new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
                 .withBean(io.webrtc.signaling.app.runtime.NativeGatewayBusinessEnrollment.class,()->enrollment)
+                .withBean(io.webrtc.signaling.app.runtime.NativeGatewayIngressEnrollment.class,()->ingress)
                 .withBean(ClockSafetyMonitor.class,()->fixture.clock)
                 .withBean(CellRpcClient.class,()->client,definition->definition.setDestroyMethodName(""))
                 .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("gateway");})
                 .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
-                .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeGatewayServices.class).hasSingleBean(GatewayBootController.class).hasSingleBean(NativeRelaySessionProofCache.class);fixture.gateway=context.getBean(NativeGatewayServices.class);fixture.boot=context.getBean(GatewayBootController.class);fixture.cache=context.getBean(NativeRelaySessionProofCache.class);});
+                .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeGatewayServices.class).hasSingleBean(GatewayBootController.class).hasSingleBean(NativeRelaySessionProofCache.class).hasSingleBean(GatewayServer.class).hasSingleBean(GatewayRelayRpcServer.class).hasSingleBean(ConnectionRegistry.class);fixture.gateway=context.getBean(NativeGatewayServices.class);fixture.boot=context.getBean(GatewayBootController.class);fixture.cache=context.getBean(NativeRelaySessionProofCache.class);fixture.wss=context.getBean(GatewayServer.class);fixture.relay=context.getBean(GatewayRelayRpcServer.class);fixture.connections=context.getBean(ConnectionRegistry.class);fixture.ingress=context.getBean(io.webrtc.signaling.app.runtime.NativeGatewayIngress.class);assertThat(fixture.wss.port()).isPositive();assertThat(fixture.relay.port()).isPositive();});
             fixture.reports.scheduleAtFixedRate(fixture::refreshClock,1,1,TimeUnit.SECONDS);
             return fixture;
         }catch(Throwable failure){fixture.close();throw failure;}
