@@ -463,3 +463,22 @@ DB/source assembly, approved calling/maintenance and two scoped drill contracts
 remain open. Staged load, three-AZ HA/DR, N-1,24h soak and trusted collection remain
 absent. Historical candidates remain unchanged; Tasks22–24 remain
 IN_PROGRESS/NOT_QUALIFIED.
+
+Fresh full verification of runtime source
+`e8d25de6a102d86a946424057ff3c216c578c4ba`: clean verify BUILD SUCCESS7m37,
+finished2026-10-07T14:06:00Z (21:06:00 Asia/Bangkok). All155 XML reports postdate
+the original13:58:21.099236Z run start;705 tests, zero failures/errors/skips.
+Native joined actor/relay, complete owned Main startup, partial refresh/runner/
+original mTLS-verifier lease retention, SQL/pool cleanup and existing gateway/
+control native shutdown cases passed. Python69 tests passed40.742s; static loadgen
+contract PASS. Six fresh packaged executable negative startup cases passed on
+pinned Temurin21.0.8+9 with distinct safe identity/runtime diagnostics.
+
+The original d8c31e3/b5575cc39678 candidate still returns NOT_QUALIFIED37, including
+all12 missing trusted gates; it does not cover this runtime source. No production
+deployment/enrollment variables or provider/drill/collector contracts were supplied.
+Managed actor formation before composition, mounted provider mapping, native
+gateway security ingestion, control DB/source assembly and two scoped security
+drivers remain open implementation/integration work. Actual staged load, three-AZ
+HA/DR, N-1,24h soak and trusted collection remain absent. Tasks22–24 remain
+IN_PROGRESS/NOT_QUALIFIED; the ledger and original candidates remain preserved.
