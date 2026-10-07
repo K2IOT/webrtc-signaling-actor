@@ -19,6 +19,8 @@ public final class NativeRuntimeStartup {
         try {
             switch(plane){
                 case ACTOR -> {
+                    one(context,NativeActorSpringLifecycle.class,plane);
+                    one(context,NativeActorRuntimeHooks.class,plane);
                     var actors=one(context,NativeActorComposition.class,plane);
                     if(!actors.readiness().snapshot().regionsRegistered())throw new MissingRuntime(plane);
                     one(context,NativeActorSafetySources.class,plane);

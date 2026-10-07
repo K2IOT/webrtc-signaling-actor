@@ -18,8 +18,8 @@ DB/source process ownership and mounted enrollment still remain open.
 Gateway factories now assemble explicit business enrollment, native boot/session
 proofs, WSS and relay mTLS listeners, one bounded cached-security sweep and ordered
 Spring shutdown/private health. Native source ingestion/scheduling still require the approved gateway contracts;
-partial actor startup ownership and full mounted process/resource composition remain open.
-Gateway startup-failure cleanup now observes native allocated owners and physical drains;
+managed actor formation and full mounted process/resource composition remain open.
+Actor and gateway startup-failure cleanup now observes native allocated owners and physical drains;
 these factory tests do not establish a serving production launcher.
 Production maintenance jobs still require their explicit enrolled scope. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,

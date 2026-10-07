@@ -7,6 +7,7 @@ import java.util.Locale;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.context.event.ApplicationFailedEvent;
+import org.springframework.boot.context.event.ApplicationPreparedEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -30,7 +31,11 @@ public class SignalingApplication {
     public static SpringApplication application(){
         var application=new SpringApplication(SignalingApplication.class);
         var cleanup=new NativeStartupCleanup();
-        application.addInitializers(context->context.getBeanFactory().addBeanPostProcessor(cleanup));
+        application.addInitializers(context->{
+            context.getBeanFactory().registerSingleton(NativeStartupCleanup.OWNER_BEAN,new NativeStartupCleanup.Owner(cleanup));
+            context.getBeanFactory().addBeanPostProcessor(cleanup);
+        });
+        application.addListeners((ApplicationListener<ApplicationPreparedEvent>)event->cleanup.capture(event.getApplicationContext()));
         application.addListeners((ApplicationListener<ApplicationFailedEvent>)event->{
             cleanup.failed(event.getApplicationContext(),event.getException());
             System.err.println(SafeStartupFailure.render(event.getException()));
@@ -41,7 +46,7 @@ public class SignalingApplication {
     @Bean ApplicationRunner requireNativePlane(Plane plane,ApplicationContext context){
         return args->{
             try{NativeRuntimeStartup.requireInstalled(plane,context);}
-            catch(RuntimeException failed){NativeStartupCleanup.gateway(context,failed);throw failed;}
+            catch(RuntimeException failed){NativeStartupCleanup.cleanup(context,failed);throw failed;}
         };
     }
 

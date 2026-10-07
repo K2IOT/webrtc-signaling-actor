@@ -443,3 +443,23 @@ remain implementation/integration gaps. Actual staged load/HA/DR/N-1/24h soak an
 trusted collection remain unperformed. See `runbooks/qualification-inputs.md` for
 precise inputs. Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED. No final task-complete
 review, workspace deletion, production approval/deployment or remote push claimed.
+
+Actor startup ownership continuation: actual failed Main tests reproduced missing
+cleanup, repeated graph observation, missing lifecycle being accepted, pool closure
+without a physical SQL boundary, and lease release while a native mTLS REGISTER
+still held original verifier work. Startup now records original owners before Spring
+registry removal, reuses installed hooks or the original partial Pekko handoff graph,
+and takes server settlement directly from its ingress owner. Runner and failure
+event share one receipt/original65s observation budget. Missing DB receipts retain
+pools and report unproven cleanup. A wrapper prevents Spring from reordering the
+early observer. Actor launch requires lifecycle and hooks.
+
+Selected15 actual unit/native checks passed2026-10-07T13:56:23Z (20:56:23 Bangkok),
+including successful fully-owned Main startup whose unhealthy TEST_ONLY sources
+keep business readiness false. Full new-source verification follows. This closes
+locally exercised partial actor startup ownership; managed process creation before
+composition, mounted provider/source mapping, gateway security feed, control
+DB/source assembly, approved calling/maintenance and two scoped drill contracts
+remain open. Staged load, three-AZ HA/DR, N-1,24h soak and trusted collection remain
+absent. Historical candidates remain unchanged; Tasks22–24 remain
+IN_PROGRESS/NOT_QUALIFIED.

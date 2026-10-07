@@ -320,8 +320,7 @@ An unknown original cleanup cannot report successful native shutdown.
 
 These are explicit factory bindings. The configuration-only mounted YAML reader
 does not enroll these objects or create managed ActorSystem/discovery/management,
-gateway source ingestion or a mounted control enrollment. Those integrations, partial
-actor startup-failure cleanup and approved source/business-policy/maintenance contracts
+gateway source ingestion or a mounted control enrollment. Those integrations and approved source/business-policy/maintenance contracts
 remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko/WSS fixtures verify factory
 paths and ordered Spring stop; no production topology or capacity claim follows.
 
@@ -346,8 +345,8 @@ its singleton registry. Physical ingress/cache/verifier/client drains precede bo
 retirement, sharing the original300s partial-owner budget. A complete gateway
 lifecycle uses its original graph. Actor shutdown now also joins its original
 verifier after framework/root and transport/source cleanup, before DB pool closure.
-This does not provide managed ActorSystem/discovery/management or partial actor
-startup ownership, mounted Secret-to-enrollment producers, control DB/source
+This does not provide managed ActorSystem/discovery/management,
+mounted Secret-to-enrollment producers, control DB/source
 process ownership or an approved source/calling-policy/maintenance/drill contract.
 
 Cached clock readers never wait for source signature verification. Original signed
@@ -355,3 +354,20 @@ report validation publishes immutable atomic state; invalidation generations and
 monotonic signed sequences prevent an in-flight stale positive result from reviving
 known loss. Expiry, wall steps and conservative original-request margins remain
 enforced. This verifies consumer concurrency, not external clock quality.
+
+Actor startup failure retains both already-initialized beans and pre-refresh native
+singletons. A published composition uses the original Pekko handoff/leave graph,
+then joins native root release, original listener/worker/source/verifier receipts
+and DB closure. An already-installed runtime reuses its original hooks. The runner
+and failure event share one cleanup receipt and the original65s observation budget;
+Spring cannot reorder the early owner observer through bean discovery.
+
+Partial native ingress owns its server receipt directly, even before a server alias
+bean exists. Original RPC verification must settle before lease release. A pool with
+no published SQL boundary cannot attest cleanup: the failure is marked unproven and
+the pool remains retained. Startup requires the native lifecycle and hooks as well
+as bound listeners and sources. The actual Main fixtures cover partial refresh,
+runner rejection and a complete owned but unhealthy TEST_ONLY source graph; a
+successful process launch does not imply business readiness or production
+qualification. Managed process creation before native composition, mounted trust/
+provider enrollment and external qualification remain required.
