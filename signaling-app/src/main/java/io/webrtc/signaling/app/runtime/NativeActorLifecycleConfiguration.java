@@ -10,6 +10,8 @@ import java.util.function.Supplier;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.support.DefaultLifecycleProcessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Profile;
 
@@ -19,6 +21,13 @@ import org.springframework.context.annotation.Profile;
 @ConditionalOnBean({NativeActorComposition.class,CellRpcServer.class,CellRpcClient.class,
     NativeWorkerScheduler.class,DbBoundary.class,DbPools.class,PrivateHealthServer.class})
 public class NativeActorLifecycleConfiguration {
+    @Bean(name="lifecycleProcessor") @ConditionalOnMissingBean(name="lifecycleProcessor")
+    static DefaultLifecycleProcessor nativeLifecycleProcessor(){
+        var lifecycle=new DefaultLifecycleProcessor();lifecycle.setTimeoutPerShutdownPhase(70_000);return lifecycle;
+    }
+    @Bean NativeActorSpringLifecycle nativeActorSpringLifecycle(NativeActorComposition actors,NativeActorRuntimeHooks hooks){
+        return new NativeActorSpringLifecycle(actors.system(),hooks);
+    }
     @Bean(destroyMethod="") NativeActorRuntimeHooks nativeActorRuntimeHooks(NativeActorComposition actors,
             CellRpcServer server,CellRpcClient client,NativeWorkerScheduler workers,DbBoundary database,
             DbPools pools,PrivateHealthServer health,ObjectProvider<NativeActorSafetySources> sources,

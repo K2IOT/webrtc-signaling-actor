@@ -60,21 +60,24 @@ class NativeRuntimeDrainIT {
                 .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
                 .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
                 .withBean(NativeActorComposition.class,()->composition)
-                .withBean(CellRpcServer.class,()->server).withBean(CellRpcClient.class,()->client)
-                .withBean(NativeWorkerScheduler.class,()->workers)
-                .withBean(DbBoundary.class,()->runtime.boundary).withBean(DbPools.class,()->runtime.pools)
-                .withBean(PrivateHealthServer.class,()->health)
+                .withBean(CellRpcServer.class,()->server,NativeRuntimeDrainIT::nativeOwned).withBean(CellRpcClient.class,()->client,NativeRuntimeDrainIT::nativeOwned)
+                .withBean(NativeWorkerScheduler.class,()->workers,NativeRuntimeDrainIT::nativeOwned)
+                .withBean(DbBoundary.class,()->runtime.boundary,NativeRuntimeDrainIT::nativeOwned).withBean(DbPools.class,()->runtime.pools,NativeRuntimeDrainIT::nativeOwned)
+                .withBean(PrivateHealthServer.class,()->health,NativeRuntimeDrainIT::nativeOwned)
                 .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeActorRuntimeHooks.class);
                     var hooks=context.getBean(NativeActorRuntimeHooks.class);
                     assertThat(hooks.closeDatabase().toCompletableFuture()).isCompletedExceptionally();assertThat(runtime.pools.closed()).isFalse();
                     assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
-                    var shutdown=CoordinatedShutdown.get(system).runAll(CoordinatedShutdown.unknownReason());
-                    org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->readiness.snapshot().draining());
+                    var shutdown=CompletableFuture.runAsync(context::stop);
+                    try{
+                    org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(()->assertThat(readiness.snapshot().draining()).isTrue());
                     readiness.update(new ClusterReadiness.Snapshot(true,true,true,true,true,true,6,3,false));assertThat(readiness.businessReady()).isFalse();
                     assertThat(shutdown.toCompletableFuture()).isNotDone();assertThat(runtime.pools.closed()).isFalse();assertThat(lease.checkLease()).isTrue();
                     release.countDown();shutdown.toCompletableFuture().get(25,TimeUnit.SECONDS);
                     assertThat(runtime.pools.closed()).isTrue();assertThat(lease.checkLease()).isFalse();assertThat(hooks.databaseClosed()).isTrue();
+                    }finally{release.countDown();}
                 });
         }finally{release.countDown();system.terminate();system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);runtime.close();}
     }
+    private static void nativeOwned(org.springframework.beans.factory.config.BeanDefinition definition){((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName("");}
 }
