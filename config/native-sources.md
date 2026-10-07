@@ -349,3 +349,9 @@ verifier after framework/root and transport/source cleanup, before DB pool closu
 This does not provide managed ActorSystem/discovery/management or partial actor
 startup ownership, mounted Secret-to-enrollment producers, control DB/source
 process ownership or an approved source/calling-policy/maintenance/drill contract.
+
+Cached clock readers never wait for source signature verification. Original signed
+report validation publishes immutable atomic state; invalidation generations and
+monotonic signed sequences prevent an in-flight stale positive result from reviving
+known loss. Expiry, wall steps and conservative original-request margins remain
+enforced. This verifies consumer concurrency, not external clock quality.

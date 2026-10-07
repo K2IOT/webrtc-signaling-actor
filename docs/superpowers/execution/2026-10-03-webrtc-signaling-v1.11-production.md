@@ -413,3 +413,12 @@ creation, control DB/source ownership, approved calling/maintenance and two scop
 security drivers remain software/integration gaps requiring explicit contracts.
 Staged load, three-AZ HA/DR, N-1 and24h soak remain uncollected. Tasks22–24 remain
 IN_PROGRESS/NOT_QUALIFIED; historical candidate/source records are unchanged.
+
+Fresh whole source aea4be0 passed696 tests in152 fresh reports, zero failures/errors/
+skips, clean verify6m56 finished2026-10-07T10:42:30Z. Python69 and static loadgen
+contract passed. Subsequent inline review reproduced one more native clock defect:
+signature verification held a monitor needed by cached gateway/probe safety reads.
+Atomic snapshots now keep readers/invalidation independent of crypto and reject
+pre-loss or superseded in-flight reports. All process/storage/signature/original
+TTL and uncertainty/rate checks remain enforced. Selected16 native/unit tests
+passed2026-10-07T10:50:52Z; full verification of this later change follows.
