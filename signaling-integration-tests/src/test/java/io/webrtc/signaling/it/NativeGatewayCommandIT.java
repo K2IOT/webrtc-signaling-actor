@@ -62,11 +62,15 @@ class NativeGatewayCommandIT {
             try(verifier;
                 var server=new CellRpcServer("c001","test",0,RpcTlsContexts.server("test","c001",cert("ca.crt"),cert("server.crt"),cert("server.key")),new RpcAdmission(16,1024*1024,16,1024*1024),backend,event->{throw new AssertionError();}).sessions(sessionHandler).start();
                 var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",server.port(),"localhost")),RpcTlsContexts.clients("test",cert("ca.crt"),cert("gateway.crt"),cert("gateway.key")),new RpcAdmission(16,1024*1024,16,1024*1024));
-                var boot=new GatewayBootController(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),GatewayBootController.network(client),System::nanoTime)){
-                boot.start();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(boot::current);
-                var relayCache=new NativeRelaySessionProofCache(4,2,Clock.systemUTC(),System::nanoTime,boot::current,new RelaySessionAuthorizationProof(Map.of("c001/test",key.getPublic())));
-                var gatewayCommands=new NativeGatewayCommands(boot.identity(),u->new ProofBindings.TrustedHome("c001",1,1),NativeGatewayCommands.network(client),Clock.systemUTC()).relayProofCache(relayCache);
-                var gateway=new NativeGatewayServices(boot,verifier,(p,now)->AuthorizationStatus.ALLOWED,u->new NativeGatewayServices.Home("c001",1),client,gatewayCommands);
+                var main=mainGateway(client,verifier,key)){
+                var boot=main.boot;
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(boot::current);
+                var relayCache=main.cache;
+                var gateway=main.gateway;
+                main.clock.invalidate();
+                assertThat(gateway.cachedSecurity(principal,Instant.now())).isEqualTo(AuthorizationStatus.FRESHNESS_UNKNOWN);
+                main.refreshClock();
+                assertThat(gateway.cachedSecurity(principal,Instant.now())).isEqualTo(AuthorizationStatus.ALLOWED);
                 var route=gateway.register(principal,"TEST_ONLY_ORIGINAL_TOKEN",UUID.randomUUID(),Duration.ofSeconds(2)).toCompletableFuture().join();
                 var sender=new AuthenticatedSession(route.user(),route.key(),route.incarnation(),route.connectionGeneration(),route.connectionId());var request=new RequestId(UUID.randomUUID());
                 var invite=new CallCommand(SignalEnvelope.Type.INVITE,sender,request,null,CommandScope.invite(),callee.userId(),null,null,"{}","a".repeat(64));
@@ -123,5 +127,32 @@ class NativeGatewayCommandIT {
                 try(var c=f.connection();var q=c.createStatement();var r=q.executeQuery("SELECT count(*) FROM call_state")){r.next();assertThat(r.getInt(1)).isEqualTo(1);}
             }
         }finally{kit.shutdownTestKit();}
+    }
+    /** Native Main factory with signed TEST_ONLY clock reports, no production source qualification. */
+    static final class MainGateway implements AutoCloseable {
+        GatewayBootController boot; NativeRelaySessionProofCache cache; NativeGatewayServices gateway;
+        final ClockSafetyMonitor clock; final KeyPair signing; final UUID pod=UUID.randomUUID(),processBoot=UUID.randomUUID();
+        final java.util.concurrent.atomic.AtomicLong sequence=new java.util.concurrent.atomic.AtomicLong();
+        final ScheduledExecutorService reports=Executors.newSingleThreadScheduledExecutor();
+        MainGateway(KeyPair signing){this.signing=signing;clock=new ClockSafetyMonitor("c001",1,pod,processBoot,Map.of("TEST_ONLY",signing.getPublic()),Clock.systemUTC(),System::nanoTime);}
+        void refreshClock(){try{long started=System.nanoTime();var now=Instant.now();var report=new ClockSafetyMonitor.Report("TEST_ONLY","c001",1,pod,processBoot,sequence.incrementAndGet(),now,now.plusSeconds(5),250000,1000,true);var signature=Signature.getInstance("Ed25519");signature.initSign(signing.getPrivate());signature.update(ClockSafetyMonitor.signingBytes(report));assertThat(clock.observe(report,Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign()),started)).isTrue();}catch(GeneralSecurityException failure){throw new IllegalStateException(failure);}}
+        public void close()throws Exception{reports.shutdownNow();if(boot!=null)boot.close();if(cache!=null)cache.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);}
+    }
+    static MainGateway mainGateway(CellRpcClient client,BoundedTokenVerifier tokens,KeyPair signing)throws Exception {
+        var fixture=new MainGateway(signing);
+        try{
+            fixture.refreshClock();
+            var enrollment=new io.webrtc.signaling.app.runtime.NativeGatewayBusinessEnrollment(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),1,tokens,(p,now)->AuthorizationStatus.ALLOWED,u->new ProofBindings.TrustedHome("c001",1,1),new RelaySessionAuthorizationProof(Map.of("c001/test",signing.getPublic())),4,2);
+            var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
+            new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+                .withBean(io.webrtc.signaling.app.runtime.NativeGatewayBusinessEnrollment.class,()->enrollment)
+                .withBean(ClockSafetyMonitor.class,()->fixture.clock)
+                .withBean(CellRpcClient.class,()->client,definition->definition.setDestroyMethodName(""))
+                .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("gateway");})
+                .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeGatewayServices.class).hasSingleBean(GatewayBootController.class).hasSingleBean(NativeRelaySessionProofCache.class);fixture.gateway=context.getBean(NativeGatewayServices.class);fixture.boot=context.getBean(GatewayBootController.class);fixture.cache=context.getBean(NativeRelaySessionProofCache.class);});
+            fixture.reports.scheduleAtFixedRate(fixture::refreshClock,1,1,TimeUnit.SECONDS);
+            return fixture;
+        }catch(Throwable failure){fixture.close();throw failure;}
     }
 }

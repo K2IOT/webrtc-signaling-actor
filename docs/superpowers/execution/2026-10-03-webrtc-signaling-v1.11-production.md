@@ -380,3 +380,7 @@ mounted enrollment, gateway/control factories and two scoped security drivers
 remain software work; approved identity/calling/source/PKI/drill contracts and
 qualification infrastructure are absent. No10k/100k distributed stage, three-AZ
 HA/DR, N-1 or24h soak was collected. Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.
+
+Native client deadline continuation: four actual mTLS regression cases failed before the fix and passed after it. Original EXECUTE/RELAY/SESSION/DELIVER budgets now include admission and lazy TLS/channel construction; an expired original budget cannot dispatch a fresh stream. Selected client TLS/physical/drain checks passed 20 tests. This establishes a deadline bug, not the cause of the historical intermittent relay OUTCOME_UNKNOWN.
+
+Gateway Main business continuation: native Spring auto-configuration now assembles boot ownership, explicit routing epoch, verified directory homes, bounded tracked relay proof cache and NativeGatewayServices. NativeGatewayCommandIT failed on missing Main services first, then both PostgreSQL/mTLS control paths passed. Invalidating the signed TEST_ONLY clock makes cached security FRESHNESS_UNKNOWN. Gateway listener/lifecycle, mounted enrollment, production security sources and external qualification remain open; Tasks22–24 stay IN_PROGRESS/NOT_QUALIFIED.
