@@ -21,7 +21,7 @@ final class NativeStartupCleanup implements BeanPostProcessor {
     private long actorStarted;
     @Override public synchronized Object postProcessAfterInitialization(Object bean,String name){
         if(bean instanceof NativeGatewayIngress||bean instanceof NativeGatewaySpringLifecycle
-                ||bean instanceof NativeActorComposition||bean instanceof NativeActorRuntimeHooks||bean instanceof NativeActorSpringLifecycle
+                ||bean instanceof NativeActorProcess||bean instanceof NativeActorComposition||bean instanceof NativeActorRuntimeHooks||bean instanceof NativeActorSpringLifecycle
                 ||bean instanceof NativeActorRpcIngress||bean instanceof NativeWorkerScheduler||bean instanceof PrivateHealthServer
                 ||bean instanceof NativeActorSafetySources||bean instanceof NativeClockSource||bean instanceof NativeRevocationSource||bean instanceof NativeCellHealthSource
                 ||bean instanceof CellRpcServer||bean instanceof DbBoundary||bean instanceof DbPools

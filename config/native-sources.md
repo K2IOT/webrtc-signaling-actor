@@ -319,8 +319,8 @@ and private health. The gateway coordinator has a300s budget; Spring waits310s.
 An unknown original cleanup cannot report successful native shutdown.
 
 These are explicit factory bindings. The configuration-only mounted YAML reader
-does not enroll these objects or create managed ActorSystem/discovery/management,
-gateway source ingestion or a mounted control enrollment. Those integrations and approved source/business-policy/maintenance contracts
+does not enroll these objects, gateway source ingestion or a mounted control enrollment.
+Managed actor creation is available only with the explicit process enrollment below. Those integrations and approved source/business-policy/maintenance contracts
 remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko/WSS fixtures verify factory
 paths and ordered Spring stop; no production topology or capacity claim follows.
 
@@ -345,8 +345,7 @@ its singleton registry. Physical ingress/cache/verifier/client drains precede bo
 retirement, sharing the original300s partial-owner budget. A complete gateway
 lifecycle uses its original graph. Actor shutdown now also joins its original
 verifier after framework/root and transport/source cleanup, before DB pool closure.
-This does not provide managed ActorSystem/discovery/management,
-mounted Secret-to-enrollment producers, control DB/source
+This does not provide mounted Secret-to-enrollment producers or control DB/source
 process ownership or an approved source/calling-policy/maintenance/drill contract.
 
 Cached clock readers never wait for source signature verification. Original signed
@@ -369,5 +368,40 @@ the pool remains retained. Startup requires the native lifecycle and hooks as we
 as bound listeners and sources. The actual Main fixtures cover partial refresh,
 runner rejection and a complete owned but unhealthy TEST_ONLY source graph; a
 successful process launch does not imply business readiness or production
-qualification. Managed process creation before native composition, mounted trust/
-provider enrollment and external qualification remain required.
+qualification. Mounted trust/provider enrollment and external qualification remain required.
+
+`NativeActorProcessEnrollment` supplies the exact process name, resolved native
+Config and explicit server/client management SSLContexts. The actor profile
+constructs one `NativeActorProcess` before management binding, retains it in the
+early startup observer, and exposes `nativeActorSystem` only after original
+management/bootstrap completion and local membership Up. Formation uses the
+native Kubernetes API namespace/selector/named-port discovery; no static seed
+or direct join path is added to Main. Normal joining never creates an isolated
+cluster. The original 30s budget covers binding, bootstrap and membership.
+
+Management engines require TLS1.3 and peer client certificates; outgoing management
+probes require HTTPS hostname verification. The pinned Pekko1.1.3 Artery engine
+actually reads `pekko.remote.artery.ssl.config-ssl-engine`. That branch now carries
+keystore/truststore inputs, TLS1.3, AES GCM TLS1.3 suites and mutual authentication.
+Validation rejects a different engine provider, weaker protocol or disabled mTLS.
+It also pins the actual Kubernetes discovery implementation/delegation, management
+named port, six contact points and enabled join compatibility checks.
+Deployment enrollment must provide real cell peer PKI and routable member addresses;
+TEST_ONLY node PKI is never a production fallback.
+
+Managed startup failure settles original admitted work before running the original
+Pekko graph, even before a business composition is published. A conditional native
+root drain retires installed lease dependencies before system termination. Pool
+closure retains the original root/process/SQL receipts. ActorSystem bean destruction
+is disabled; the managed owner shares original binding, stop and termination receipts.
+A drained owner rejects later startup calls. Business enrollment must use the same
+managed ActorSystem, and the factory rejects a different process before installing
+backends.
+
+The native fixtures use real TLS remoting/management, a separate Main JVM, HTTPS
+Kubernetes discovery and six not-ready pod records against an existing TEST_ONLY
+cluster. They cover binding rejection, local Up ordering, held root release,
+discovery loss and client identity rejection. The fixture's existing peers join
+manually only to establish its test cluster; the Main child joins exclusively
+through Kubernetes discovery. This verifies the explicit owner factory, not a
+mounted production enrollment, full serving topology or capacity/HA qualification.

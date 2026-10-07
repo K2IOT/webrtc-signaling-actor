@@ -53,6 +53,9 @@ public final class PostgresShardLeaseProvider {
             var tasks=engines.values().stream().map(engine->engine.drain().toCompletableFuture()).toArray(CompletableFuture[]::new);
             drained=CompletableFuture.allOf(tasks).minimalCompletionStage();return drained;
         }
+        synchronized CompletionStage<Void> drainIfInstalled(){
+            return repository==null?CompletableFuture.completedFuture(null):drain();
+        }
         synchronized void requireInstalled(){if(repository==null)throw new IllegalStateException("Lease dependencies not installed");}
         synchronized Optional<io.webrtc.signaling.storage.GroupOwnerRepository.Grant> currentGrant(int group){var engine=engines.get(group);return engine==null?Optional.empty():engine.currentGrant();}
     }
@@ -60,6 +63,8 @@ public final class PostgresShardLeaseProvider {
     static PostgresShardLease.Engine resolve(LeaseSettings settings,ExtendedActorSystem system){return ID.get(system).resolve(settings);}
     public static void shedNewAcquisition(ActorSystem system){ID.get(system).shedNewAcquisition();}
     public static CompletionStage<Void> drain(ActorSystem system){return ID.get(system).drain();}
+    /** Early process shutdown also retires dependencies installed by an unpublished composition. */
+    public static CompletionStage<Void> drainIfInstalled(ActorSystem system){return ID.get(system).drainIfInstalled();}
     public static void bindPlacement(ActorSystem system,int group,ActorRef shardParent){ID.get(system).bindPlacement(group,shardParent);}
     public static void requireInstalled(ActorSystem system){ID.get(system).requireInstalled();}
     public static String ownerNode(ActorSystem system){var state=ID.get(system);synchronized(state){state.requireInstalled();return state.namespace.ownerNode();}}

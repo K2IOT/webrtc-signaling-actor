@@ -35,7 +35,8 @@ public final class NativeActorStartupDrain implements ShutdownCoordinator.Hooks 
         var partial=new NativeActorStartupDrain(owners,actors);
         if(actors==null){
             partial.readinessOff();partial.shedIngress();partial.released=true;
-            return partial.settleAdmitted().thenCompose(v->partial.closeDatabase());
+            return partial.settleAdmitted().thenCompose(v->partial.drainType(NativeActorProcess.class,NativeActorProcess::drain))
+                .thenCompose(v->partial.closeDatabase());
         }
         PekkoShutdownLifecycle.register(actors.system(),partial);
         return CoordinatedShutdown.get(actors.system()).runAll(CoordinatedShutdown.unknownReason()).thenApply(done->{

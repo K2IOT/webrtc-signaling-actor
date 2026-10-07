@@ -3,6 +3,8 @@ import static org.assertj.core.api.Assertions.*;
 import com.typesafe.config.*;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 class ShardingConfigurationTest {
     static Config config(){return ConfigFactory.parseString("""
         signaling.cell-id="c001"
@@ -30,6 +32,26 @@ class ShardingConfigurationTest {
         ShardingBootstrap.validateProduction(c);
         assertThatThrownBy(()->ShardingBootstrap.validateProduction(ConfigFactory.parseString("pekko.remote.artery.canonical.hostname=\"0.0.0.0\"").withFallback(c))).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(()->ShardingBootstrap.validateProduction(ConfigFactory.parseString("pekko.discovery.kubernetes-api.pod-label-selector=\"app=webrtc-signaling\"").withFallback(c))).isInstanceOf(IllegalArgumentException.class);
+    }
+    @ParameterizedTest @ValueSource(strings={
+        "pekko.remote.artery.ssl.config-ssl-engine.require-mutual-authentication=off",
+        "pekko.remote.artery.ssl.config-ssl-engine.protocol=TLSv1.2",
+        "pekko.remote.artery.ssl.ssl-engine-provider=invalid.Provider",
+        "pekko.discovery.kubernetes-api.class=org.apache.pekko.discovery.config.ConfigServiceDiscovery",
+        "pekko.management.cluster.bootstrap.contact-point-discovery.discovery-method=config",
+        "pekko.management.cluster.bootstrap.contact-point-discovery.port-name=grpc",
+        "pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr=1",
+        "pekko.cluster.configuration-compatibility-check.enforce-on-join=off"
+    })
+    void productionFormationCannotWeakenPinnedTransportOrDiscovery(String override){
+        assertThatThrownBy(()->ShardingBootstrap.validateProduction(ConfigFactory.parseString(override).withFallback(config())))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+    @Test void thePinnedNativeRemotingEngineReadsTheTls13Contract(){
+        var tls=config().getConfig("pekko.remote.artery.ssl.config-ssl-engine");
+        assertThat(tls.getString("protocol")).isEqualTo("TLSv1.3");
+        assertThat(tls.getBoolean("require-mutual-authentication")).isTrue();
+        assertThat(tls.getStringList("enabled-algorithms")).containsExactly("TLS_AES_128_GCM_SHA256","TLS_AES_256_GCM_SHA384");
     }
     @Test void canonicalHashVectorsAreSeparateFromDirectoryBuckets(){
         var users=new UserShardExtractor<UserMessage>();assertThat(users.shardId("alice")).isEqualTo("175");assertThat(users.shardId("bob")).isEqualTo("730");assertThat(users.shardId("é")).isEqualTo(users.shardId("e\u0301"));

@@ -39,17 +39,29 @@ public final class ShardingBootstrap {
         String selector="app=webrtc-signaling,plane=actor,cell="+cell;
         if(!cell.matches("[a-z][a-z0-9-]{0,23}")||!config.getString("signaling.cluster-fingerprint").matches("[a-f0-9]{64}")||host.isBlank()||Set.of("0.0.0.0","::","localhost").contains(host)||!namespace.matches("[a-z0-9][a-z0-9-]{0,62}")||!selector.equals(config.getString("pekko.discovery.kubernetes-api.pod-label-selector"))||!config.getString("pekko.management.cluster.bootstrap.contact-point-discovery.service-name").equals("signaling-"+cell))throw new IllegalArgumentException("Invalid cell-scoped discovery/member identity");
         if(config.getBoolean("pekko.actor.allow-java-serialization")||!config.getString("pekko.remote.artery.transport").equals("tls-tcp")||config.getInt("pekko.cluster.sharding.number-of-shards")!=1024||config.getInt("signaling.ownership-hash-version")!=1||config.getInt("signaling.user-hash-version")!=1||config.getBoolean("pekko.cluster.sharding.remember-entities")||!config.getString("pekko.cluster.sharding.state-store-mode").equals("ddata"))throw new IllegalArgumentException("Incompatible serializer/sharding contract");
+        var tls=config.getConfig("pekko.remote.artery.ssl.config-ssl-engine");
+        if(!tls.getBoolean("require-mutual-authentication")||!tls.getString("protocol").equals("TLSv1.3")
+                ||!config.getString("pekko.remote.artery.ssl.ssl-engine-provider").equals("org.apache.pekko.remote.artery.tcp.ConfigSSLEngineProvider"))
+            throw new IllegalArgumentException("Remoting requires mutual TLS 1.3");
         if(!config.getString("pekko.discovery.method").equals("kubernetes-api")||!config.getStringList("pekko.cluster.seed-nodes").isEmpty()||config.getInt("pekko.cluster.role.signaling-actor.min-nr-of-members")!=4||config.getBoolean("pekko.cluster.allow-weakly-up-members"))throw new IllegalArgumentException("Invalid formation/readiness policy");
+        var discovery=config.getConfig("pekko.management.cluster.bootstrap.contact-point-discovery");
+        if(!config.getString("pekko.discovery.kubernetes-api.class").equals("org.apache.pekko.discovery.kubernetes.KubernetesApiServiceDiscovery")
+                ||!discovery.getString("discovery-method").equals("pekko.discovery")
+                ||!discovery.getString("port-name").equals("management")||discovery.getInt("required-contact-point-nr")!=6
+                ||!config.getBoolean("pekko.cluster.configuration-compatibility-check.enforce-on-join"))
+            throw new IllegalArgumentException("Native Kubernetes discovery and compatibility enforcement are required");
         if(config.getBoolean("pekko.management.cluster.bootstrap.new-cluster-enabled")&&(!config.hasPath("signaling.controlled-initial-formation")||!config.getBoolean("signaling.controlled-initial-formation")))throw new IllegalArgumentException("Unapproved automatic cluster formation");
         userSettings(config);callSettings(config);
     }
     /** Kubernetes discovery is the only production formation path; contexts are required PKI inputs. */
     public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> startManagement(ActorSystem<?> system,HttpsConnectionContext serverTls,HttpsConnectionContext clientTls){
+        return bindManagement(system,serverTls,clientTls)
+            .thenApply(uri->{org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap.get(system).start();return uri;});
+    }
+    /** Preserve the original binding receipt independently of subsequent bootstrap failure. */
+    public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> bindManagement(ActorSystem<?> system,HttpsConnectionContext serverTls,HttpsConnectionContext clientTls){
         validateProduction(system.settings().config());Objects.requireNonNull(serverTls);Objects.requireNonNull(clientTls);
         org.apache.pekko.http.javadsl.Http.get(system).setDefaultClientHttpsContext(clientTls);
-        var started=PekkoManagement.get(system).start(settings->settings.withHttpsConnectionContext(serverTls).withReadOnly(true));
-        started.thenRun(()->org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap.get(system).start());
-        system.scheduler().scheduleOnce(Duration.ofSeconds(30),()->{if(!org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().status().equals(MemberStatus.up()))system.terminate();},system.executionContext());
-        return started;
+        return PekkoManagement.get(system).start(settings->settings.withHttpsConnectionContext(serverTls).withReadOnly(true));
     }
 }
