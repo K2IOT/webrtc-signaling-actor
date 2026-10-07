@@ -12,7 +12,12 @@ register both regions after actual membership Up, and bind the internal RPC
 listener, fixed safety scheduling/private health and ordered lifecycle from
 explicit typed enrollment. Spring stop initiates the original Pekko graph; native
 root release precedes source/relay teardown and pool closure. Complete managed
-process formation, mounted enrollment and gateway/control factories remain open.
+process formation, mounted enrollment and control factories remain open.
+Gateway factories now assemble explicit business enrollment, native boot/session
+proofs, WSS and relay mTLS listeners, one bounded cached-security sweep and ordered
+Spring shutdown/private health. Native source ingestion/scheduling and complete
+startup-failure/resource ownership still require the approved gateway contracts;
+these factory tests do not establish a serving production launcher.
 Production maintenance jobs still require their explicit enrolled scope. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
 safety source adapters, RPC ingress and physical shutdown components exist and are

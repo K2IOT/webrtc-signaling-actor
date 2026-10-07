@@ -296,9 +296,30 @@ pod grace. Unknown cleanup never reports graceful native closure. All supplied
 native owners must disable inferred bean destruction so Spring cannot close pools
 or safety transports ahead of native release.
 
+`NativeGatewayBusinessEnrollment` supplies an exact gateway/boot/home-cell identity,
+an independent routing epoch, bounded token verification, scoped cached security,
+verified directory homes and pinned R1 verification keys/cache bounds. Main builds
+the native boot client, original tracked proof cache, command adapter and services;
+invalid clock attestation makes cached security FRESHNESS_UNKNOWN.
+
+`NativeGatewayIngressEnrollment` supplies WSS TLS, exact origins/native upgrade
+policy, socket/handshake/event-loop bounds, internal gateway mTLS, two explicit
+admission owners and cached-safety sweep settings. Main binds both native listeners
+against the same connection registry and boot. One process sweep (25–250ms,
+candidate100ms) reads cached state independently of heartbeat/client traffic.
+Queued rejection rechecks the current binding and native status; healthy sockets
+produce no sweep event-loop tasks. This is not an external revocation source and
+does not prove the authoritative commit-to-socket SLO under production load.
+
+`NativeGatewayLifecycleEnrollment` supplies private probe inputs. Main stops new
+socket admission, sends jittered RECONNECT advice in batches<=128/100ms and joins
+original write, CPU, cache and client transport completion before retiring boot
+and private health. The gateway coordinator has a300s budget; Spring waits310s.
+An unknown original cleanup cannot report successful native shutdown.
+
 These are explicit factory bindings. The configuration-only mounted YAML reader
-does not enroll these objects, create the native ActorSystem/discovery/management
-or construct gateway/control planes. Those integrations and approved source,
-business-policy and maintenance contracts remain required. TEST_ONLY native
-mTLS/PostgreSQL/Pekko fixtures verify the factories, both relay RPC legs and
-ordered Spring stop; no production topology or capacity claim follows.
+does not enroll these objects or create managed ActorSystem/discovery/management,
+gateway source ingestion or the control launcher. Those integrations, complete
+startup-failure cleanup and approved source/business-policy/maintenance contracts
+remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko/WSS fixtures verify factory
+paths and ordered Spring stop; no production topology or capacity claim follows.
