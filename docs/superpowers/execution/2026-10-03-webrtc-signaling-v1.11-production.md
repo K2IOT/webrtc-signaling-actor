@@ -482,3 +482,52 @@ gateway security ingestion, control DB/source assembly and two scoped security
 drivers remain open implementation/integration work. Actual staged load, three-AZ
 HA/DR, N-1,24h soak and trusted collection remain absent. Tasks22–24 remain
 IN_PROGRESS/NOT_QUALIFIED; the ledger and original candidates remain preserved.
+
+
+Managed actor continuation, 2026-10-07 22:22 Asia/Bangkok
+(original verification timestamp 2026-10-07T15:22:04Z): runtime source `f6b43d5`
+adds explicit `NativeActorProcessEnrollment`, one Main-owned ActorSystem and
+management/Kubernetes discovery, and the original30s binding/bootstrap/local-Up
+gate before business creation. Business enrollment must refer to that same
+process. Startup failure observes the owner before composition publication;
+original admitted work, conditional installed-root release, management stop and
+actual system termination precede partial pool closure. Repeated startup after
+owner drain rejects rather than reusing an old Up/termination result.
+
+Trace found that Pekko1.1.3 reads `ssl.config-ssl-engine`, while the previous actor
+resource used `ssl.config`. The real engine branch now supplies TLS1.3, AES GCM
+suites and mutual authentication. Guards pin the actual engine/native discovery
+implementation, delegated bootstrap discovery, management named port, six contact
+points and enabled join compatibility. No seed/direct-join fallback, healthy
+source, lease/deadline extension or permissive authorization is supplied.
+
+Actual native tests cover a separate Main JVM joining through HTTPS Kubernetes
+API discovery of six not-ready pods and management/remoting mTLS, original bind
+failure even after membership Up, real Main failure before composition with a
+held original root-release receipt, process mismatch, retired-owner startup,
+client-certificate rejection and failed join shutdown at the original30s budget.
+The existing cluster is a TEST_ONLY fixture; its seed messages do not run in Main.
+Intermediate fixture timeout/phase diagnostics remain in the inline ledger. The
+final selected20 and full25 relevant config/startup tests pass without changing
+production phase budgets.
+
+Fresh full `./mvnw -B -Dmaven.repo.local=/workspace/.onboarding/m2 clean verify`
+finished2026-10-07T15:22:04Z in8m09 with BUILD SUCCESS: **719 tests/156 XML reports,
+zero failures/errors/skips**. Every XML report is newer than original run start
+2026-10-07T15:13:53.729557Z. Python verifier/exporter69 PASS26.312s and the static
+loadgen contract passed. Six freshly packaged actor/gateway/control JVM startup
+checks use pinned Temurin21.0.8+9: blank identity rejects CONFIGURATION_REJECTED;
+explicit TEST_ONLY identity without enrollment rejects NATIVE_RUNTIME_NOT_INSTALLED;
+all exit1, without identity text leakage. These are executable negative startup
+checks, not a current-source OCI/deployment/capacity proof.
+
+The historical immutable d8c31e3/b5575cc39678 candidate still returns
+NOT_QUALIFIED37, including all12 missing trusted gates; it does not cover this
+new runtime source. Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED. Still required:
+mounted PKI/provider/source enrollment and full serving composition; gateway
+source ingestion/scheduling; control DB/source ownership; approved calling-policy
+and maintenance scope; scoped revoked-jti/retired-key drill contracts/inventories;
+actual same-candidate staged load, P0/P2/N−1,24h soak,3-AZ HA/DR and trusted outside
+collection. The completed explicit actor owner factory is no longer listed as
+missing code; production formation qualification remains open. No task-complete
+ledger, final whole-branch completion review or workspace deletion is claimed.
