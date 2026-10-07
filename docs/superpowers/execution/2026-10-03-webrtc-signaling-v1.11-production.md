@@ -422,3 +422,24 @@ Atomic snapshots now keep readers/invalidation independent of crypto and reject
 pre-loss or superseded in-flight reports. All process/storage/signature/original
 TTL and uncertainty/rate checks remain enforced. Selected16 native/unit tests
 passed2026-10-07T10:50:52Z; full verification of this later change follows.
+
+Final verification of runtime source
+`0115724d3589de4cba799927910062a2dab1e8e1`: clean verify BUILD SUCCESS6m47,
+finished2026-10-07T11:02:42Z (18:02:42 Asia/Bangkok). All153 XML reports postdate
+the original run start;699 tests, zero failures/errors/skips. The genuine joined
+actor/relay, original actor/gateway verifier/SQL/lease cleanup, WSS/AUTH, native
+control HTTPS/RSA/PostgreSQL and cached clock concurrency cases passed.
+Python69 tests and static loadgen contract passed. Six actual executable negative
+startup cases for actor/gateway/control preserve distinct safe identity/native
+runtime diagnostics; they do not prove a current-source image or production launch.
+
+Existing immutable d8c31e3/b5575cc39678 candidate verification remains
+NOT_QUALIFIED37 with all12 missing trusted gates; its image does not cover this
+source. No production deployment/enrollment variables or approved provider/drill/
+collector inputs have been supplied. Managed actor/discovery/management and partial
+actor startup ownership, mounted source/provider mapping, gateway security source
+ingestion, control DB/source process ownership and two scoped security drivers
+remain implementation/integration gaps. Actual staged load/HA/DR/N-1/24h soak and
+trusted collection remain unperformed. See `runbooks/qualification-inputs.md` for
+precise inputs. Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED. No final task-complete
+review, workspace deletion, production approval/deployment or remote push claimed.
