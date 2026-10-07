@@ -12,11 +12,14 @@ register both regions after actual membership Up, and bind the internal RPC
 listener, fixed safety scheduling/private health and ordered lifecycle from
 explicit typed enrollment. Spring stop initiates the original Pekko graph; native
 root release precedes source/relay teardown and pool closure. Complete managed
-process formation, mounted enrollment and control factories remain open.
+process formation and mounted enrollment remain open. Native control factories now
+bind explicit HTTPS/bootstrap/private probes from typed inputs; complete control
+DB/source process ownership and mounted enrollment still remain open.
 Gateway factories now assemble explicit business enrollment, native boot/session
 proofs, WSS and relay mTLS listeners, one bounded cached-security sweep and ordered
-Spring shutdown/private health. Native source ingestion/scheduling and complete
-startup-failure/resource ownership still require the approved gateway contracts;
+Spring shutdown/private health. Native source ingestion/scheduling still require the approved gateway contracts;
+partial actor startup ownership and full mounted process/resource composition remain open.
+Gateway startup-failure cleanup now observes native allocated owners and physical drains;
 these factory tests do not establish a serving production launcher.
 Production maintenance jobs still require their explicit enrolled scope. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,
@@ -123,3 +126,9 @@ Fresh671 Java tests in143 reports, Python69 and six native negative startup case
 passed. Original OCI bytes and executable were verified; the evidence verifier
 still returns NOT_QUALIFIED37. Its source/image identity is independent of both
 older records. It contains no staged load, HA/DR, N-1 or24h production run.
+
+The latest control/gateway inputs require a cached global source-freshness fact in
+addition to scoped identity status and a valid clock. An approved producer must
+maintain those facts with the declared authoritative high-water/commit SLO. Local
+TEST_ONLY suppliers demonstrate rejection when freshness is lost; they do not
+supply that producer or prove commit-to-socket propagation under production load.

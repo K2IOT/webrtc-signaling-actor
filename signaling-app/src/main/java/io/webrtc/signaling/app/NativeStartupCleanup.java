@@ -3,6 +3,7 @@ package io.webrtc.signaling.app;
 import io.webrtc.signaling.app.runtime.*;
 import io.webrtc.signaling.gateway.*;
 import io.webrtc.signaling.rpc.CellRpcClient;
+import io.webrtc.signaling.auth.BoundedTokenVerifier;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.concurrent.*;
@@ -15,7 +16,7 @@ final class NativeStartupCleanup implements BeanPostProcessor {
     private final List<Object> created=new ArrayList<>();
     @Override public synchronized Object postProcessAfterInitialization(Object bean,String name){
         if(bean instanceof NativeGatewayIngress||bean instanceof NativeGatewaySpringLifecycle
-                ||bean instanceof NativeRelaySessionProofCache||bean instanceof CellRpcClient||bean instanceof GatewayBootController)
+                ||bean instanceof NativeRelaySessionProofCache||bean instanceof CellRpcClient||bean instanceof GatewayBootController||bean instanceof BoundedTokenVerifier)
             if(created.stream().noneMatch(owner->owner==bean))created.add(bean);
         return bean;
     }
@@ -35,6 +36,7 @@ final class NativeStartupCleanup implements BeanPostProcessor {
             else{
                 for(var owner:owners)if(owner instanceof NativeGatewayIngress ingress)await(ingress.drain(),started);
                 for(var owner:owners)if(owner instanceof NativeRelaySessionProofCache cache)await(cache.drain(),started);
+                for(var owner:owners)if(owner instanceof BoundedTokenVerifier tokens)await(tokens.drain(),started);
                 for(var owner:owners)if(owner instanceof CellRpcClient client)await(client.drain(),started);
                 for(var owner:owners)if(owner instanceof GatewayBootController boot)boot.close();
             }

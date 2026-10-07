@@ -9,11 +9,12 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.boot.web.context.WebServerApplicationContext;
 
 /** Refuse a successful process launch from a configuration-only Spring context. */
-final class NativeRuntimeStartup {
+public final class NativeRuntimeStartup {
     private NativeRuntimeStartup(){}
     static final class MissingRuntime extends IllegalStateException {
         MissingRuntime(SignalingApplication.Plane plane){super("Native runtime not installed: "+plane.name());}
     }
+    public static IllegalStateException missing(SignalingApplication.Plane plane){return new MissingRuntime(plane);}
     static void requireInstalled(SignalingApplication.Plane plane,ApplicationContext context){
         try {
             switch(plane){
@@ -33,7 +34,7 @@ final class NativeRuntimeStartup {
                 case CONTROL -> {
                     one(context,DirectoryService.class,plane);
                     one(context,BoundedTokenVerifier.class,plane);
-                    one(context,RevocationState.class,plane);
+                    one(context,NativeControlBusinessEnrollment.class,plane);
                     one(context,BootstrapController.class,plane);
                     if(!(context instanceof WebServerApplicationContext web)||web.getWebServer()==null)throw new MissingRuntime(plane);
                     bound(web.getWebServer().getPort(),plane);

@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class BoundedTokenVerifier implements AutoCloseable {
     private final TokenVerifier verifier;private final ThreadPoolExecutor executor;private final Semaphore admission;
     private final AtomicInteger pending=new AtomicInteger();private final Duration maxQueueAge;
+    private CompletableFuture<Void> drained;
     public BoundedTokenVerifier(TokenVerifier verifier,int workers,int queueCapacity,Duration maxQueueAge){
         if(workers<=0||queueCapacity<=0||maxQueueAge==null||maxQueueAge.isNegative()||maxQueueAge.isZero())throw new IllegalArgumentException("bounded verification configuration");
         this.verifier=verifier;this.maxQueueAge=maxQueueAge;admission=new Semaphore(workers+queueCapacity);
@@ -18,5 +19,20 @@ public final class BoundedTokenVerifier implements AutoCloseable {
         return result.minimalCompletionStage();
     }
     public int pending(){return pending.get();}
-    public void close(){executor.shutdown();}
+    public synchronized CompletionStage<Void> drain(){
+        if(drained==null){
+            drained=new CompletableFuture<>();executor.shutdown();
+            Thread.startVirtualThread(()->{
+                try{if(!executor.awaitTermination(2,TimeUnit.SECONDS))throw new TimeoutException("Native token verification cleanup unproven");drained.complete(null);}
+                catch(InterruptedException interrupted){Thread.currentThread().interrupt();drained.completeExceptionally(interrupted);}
+                catch(Exception unknown){drained.completeExceptionally(unknown);}
+            });
+        }
+        return drained.minimalCompletionStage();
+    }
+    public void close(){
+        try{drain().toCompletableFuture().get(3,TimeUnit.SECONDS);}
+        catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException("Native token verification cleanup interrupted");}
+        catch(Exception unknown){throw new IllegalStateException("Native token verification cleanup unproven");}
+    }
 }

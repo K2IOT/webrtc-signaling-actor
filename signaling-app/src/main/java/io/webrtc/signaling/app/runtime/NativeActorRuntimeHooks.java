@@ -43,7 +43,7 @@ public final class NativeActorRuntimeHooks implements ShutdownCoordinator.Hooks 
     @Override public synchronized CompletionStage<Void> closeDatabase(){
         if(closure!=null)return closure;
         if(!rootReleased)return CompletableFuture.failedFuture(new IllegalStateException("Native root cleanup unproven"));
-        closure=all(server.drain(),client.drain()).thenComposeAsync(v->drainSources(),finish)
+        closure=all(server.drain(),client.drain()).thenComposeAsync(v->drainSources(),finish).thenCompose(v->actors.drainVerification())
             .thenCompose(v->database.drain()).thenRunAsync(pools::close,finish).thenCompose(v->health.stop())
             .thenRun(()->{synchronized(this){closed=true;}finish.shutdown();}).toCompletableFuture().minimalCompletionStage();
         return closure;

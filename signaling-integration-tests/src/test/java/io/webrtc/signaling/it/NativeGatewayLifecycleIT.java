@@ -22,13 +22,14 @@ import org.springframework.context.SmartLifecycle;
 class NativeGatewayLifecycleIT {
     @Test void springStopRetainsOriginalNativeFlightAndPrivateHealthUntilPhysicalCleanup()throws Exception {
         var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var factories=new AtomicInteger();
+        var cryptoEntered=new CountDownLatch(1);var cryptoRelease=new CountDownLatch(1);
         var tasks=Executors.newVirtualThreadPerTaskExecutor();
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
             var principal=new AuthPrincipal(new UserId("native-drain-caller"),new SessionKey("TEST_ONLY",UUID.randomUUID().toString()),now.plusSeconds(600),now,"TEST_ONLY",1);
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
             var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
-            try(var tokens=new BoundedTokenVerifier((t,n)->principal,1,8,Duration.ofSeconds(1))){
+            try(var tokens=new BoundedTokenVerifier((t,n)->{if(t.equals("TEST_ONLY_HELD_VERIFY")){cryptoEntered.countDown();try{cryptoRelease.await();}catch(InterruptedException e){Thread.currentThread().interrupt();throw new AuthException();}}return principal;},1,8,Duration.ofSeconds(1))){
                 var operations=new NativeSessionOperations(new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->p.equals(principal)),tokens,Clock.systemUTC(),proofs.sessionProofs(),proofs.relaySessionProofs(),()->true,CallAuthorizationPolicy.denyAll());
                 var sessions=new NativeSessionHandler("c001",1,(peer,gateway)->gateway.gatewayId().equals("gw-1"),operations::execute);
                 var tls=RpcTlsContexts.clients("test",NativeGatewayCommandIT.cert("ca.crt"),NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key"));
@@ -40,6 +41,9 @@ class NativeGatewayLifecycleIT {
                     var wire=InternalCommand.newBuilder().setDestinationCell("c001").setOperationId(UUID.randomUUID().toString()).setCallId("c001.e1."+UUID.randomUUID()).setRemainingBudgetMs(1000).build();
                     var original=tasks.submit(()->client.callTracked(CellRpcServer.Operation.RELAY,wire,Duration.ofSeconds(1)));
                     assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+                    // Consume the original construction budget independently of shutdown ordering.
+                    var expired=new CompletableFuture<Void>();CompletableFuture.delayedExecutor(1100,TimeUnit.MILLISECONDS).execute(()->expired.complete(null));
+                    var originalCrypto=tokens.verify("TEST_ONLY_HELD_VERIFY",now);assertThat(cryptoEntered.await(1,TimeUnit.SECONDS)).isTrue();
                     var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
                     new ApplicationContextRunner().withUserConfiguration(SignalingApplication.class)
                         .withInitializer(c->{defaults.forEach(v->c.getEnvironment().getPropertySources().addLast(v));c.getEnvironment().setActiveProfiles("gateway");})
@@ -52,6 +56,8 @@ class NativeGatewayLifecycleIT {
                         .withBean(NativeRelaySessionProofCache.class,()->nativeMain.cache,NativeGatewayLifecycleIT::owned)
                         .withBean(NativeGatewayServices.class,()->nativeMain.gateway)
                         .withBean(ClockSafetyMonitor.class,()->nativeMain.clock)
+                        .withBean(BoundedTokenVerifier.class,()->tokens,NativeGatewayLifecycleIT::owned)
+                        .withBean(NativeGatewaySafety.class,()->nativeMain.safety)
                         .withBean(CellRpcClient.class,()->client,NativeGatewayLifecycleIT::owned)
                         .run(context->{
                             assertThat(context).hasNotFailed().hasSingleBean(PrivateHealthServer.class);
@@ -63,15 +69,18 @@ class NativeGatewayLifecycleIT {
                                 org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(()->!nativeMain.wss.getClass().getMethod("accepting").invoke(nativeMain.wss).equals(Boolean.TRUE));
                                 assertThat(stopped).isNotDone();assertThat(nativeMain.boot.current()).isTrue();
                                 assertThat(original).isNotDone();assertThat(health.port()).isPositive();
-                                release.countDown();
+                                expired.get(2,TimeUnit.SECONDS);release.countDown();
                                 var flight=original.get(3,TimeUnit.SECONDS);assertThat(flight.logical().toCompletableFuture().get(3,TimeUnit.SECONDS).getErrorCode()).isEqualTo("OUTCOME_UNKNOWN");
                                 flight.physicalCompletion().toCompletableFuture().get(3,TimeUnit.SECONDS);
+                                assertThatThrownBy(()->stopped.get(150,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                                assertThat(nativeMain.boot.current()).isTrue();assertThat(originalCrypto.toCompletableFuture()).isNotDone();
+                                cryptoRelease.countDown();originalCrypto.toCompletableFuture().get(1,TimeUnit.SECONDS);
                                 stopped.get(15,TimeUnit.SECONDS);assertThat(nativeLifecycles.getFirst().isRunning()).isFalse();assertThat(nativeMain.boot.current()).isFalse();
-                            }finally{release.countDown();}
+                            }finally{release.countDown();cryptoRelease.countDown();}
                         });
                 }
             }
-        }finally{release.countDown();tasks.close();}
+        }finally{release.countDown();cryptoRelease.countDown();tasks.close();}
     }
     static void owned(org.springframework.beans.factory.config.BeanDefinition definition){((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName("");}
 }

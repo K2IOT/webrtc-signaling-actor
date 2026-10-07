@@ -102,6 +102,8 @@ public final class NativeActorComposition {
     public void shedNewAcquisition(){PostgresShardLeaseProvider.shedNewAcquisition(Adapter.toClassic(system));}
     /** Invoke after framework handoff/leave, while the native database remains available. */
     public CompletionStage<Void> drainRoots(){return PostgresShardLeaseProvider.drain(Adapter.toClassic(system));}
+    /** Original admitted cryptographic work must retire before the native DB pools. */
+    public CompletionStage<Void> drainVerification(){return inputs.tokenVerifier().drain();}
     public ActorSystem<?> system(){return system;}
     public ClusterReadiness readiness(){return readiness;}
     public ShardedActorIngress ingress(){return ingress;}

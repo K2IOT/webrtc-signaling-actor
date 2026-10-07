@@ -8,3 +8,5 @@ io.webrtc.signaling.app.runtime.NativeGatewayBusinessConfiguration
 io.webrtc.signaling.app.runtime.NativeGatewayIngressConfiguration
 io.webrtc.signaling.app.runtime.NativeGatewayLifecycleConfiguration
 io.webrtc.signaling.app.runtime.NativeCellRpcConfiguration
+io.webrtc.signaling.app.runtime.NativeControlBusinessConfiguration
+io.webrtc.signaling.app.runtime.NativeControlIngressConfiguration

@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.BeanPostProcessor;
-import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.io.FileSystemResource;
@@ -34,7 +33,7 @@ class NativeGatewayStartupFailureIT {
             var tokens=new BoundedTokenVerifier((t,n)->{throw new IllegalArgumentException();},1,8,Duration.ofSeconds(1));
             var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",1,"localhost")),RpcTlsContexts.clients("test",NativeGatewayCommandIT.cert("ca.crt"),NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576))){
             var clock=new ClockSafetyMonitor("c001",1,UUID.randomUUID(),UUID.randomUUID(),Map.of("TEST_ONLY",keys.getPublic()),Clock.systemUTC(),System::nanoTime);
-            var business=new NativeGatewayBusinessEnrollment(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),1,tokens,(p,n)->AuthorizationStatus.FRESHNESS_UNKNOWN,u->new ProofBindings.TrustedHome("c001",1,1),new RelaySessionAuthorizationProof(Map.of("c001/test",keys.getPublic())),4,2);
+            var business=new NativeGatewayBusinessEnrollment(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),1,tokens,(p,n)->AuthorizationStatus.FRESHNESS_UNKNOWN,()->false,u->new ProofBindings.TrustedHome("c001",1,1),new RelaySessionAuthorizationProof(Map.of("c001/test",keys.getPublic())),4,2);
             var wssTls=io.netty.handler.ssl.SslContextBuilder.forServer(NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")).sslProvider(io.netty.handler.ssl.SslProvider.JDK).protocols("TLSv1.3").build();
             var inputs=new NativeGatewayIngressEnrollment(new InetSocketAddress("127.0.0.1",0),wssTls,new GatewayServer.UpgradePolicy(Set.of("https://app.test"),h->false),1,8,16,EdgeAdmission.Limits.candidate(),"test",0,RpcTlsContexts.gatewayServer("test","c001","gw-1",NativeGatewayCommandIT.cert("ca.crt"),NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576),new RpcAdmission(8,1048576,8,1048576),GatewaySecuritySweep.Settings.candidate());
             var application=SignalingApplication.application();

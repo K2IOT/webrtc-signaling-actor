@@ -298,6 +298,7 @@ or safety transports ahead of native release.
 
 `NativeGatewayBusinessEnrollment` supplies an exact gateway/boot/home-cell identity,
 an independent routing epoch, bounded token verification, scoped cached security,
+a mandatory cached global security-freshness predicate,
 verified directory homes and pinned R1 verification keys/cache bounds. Main builds
 the native boot client, original tracked proof cache, command adapter and services;
 invalid clock attestation makes cached security FRESHNESS_UNKNOWN.
@@ -313,13 +314,38 @@ does not prove the authoritative commit-to-socket SLO under production load.
 
 `NativeGatewayLifecycleEnrollment` supplies private probe inputs. Main stops new
 socket admission, sends jittered RECONNECT advice in batches<=128/100ms and joins
-original write, CPU, cache and client transport completion before retiring boot
+original write, CPU, cache, verifier and client transport completion before retiring boot
 and private health. The gateway coordinator has a300s budget; Spring waits310s.
 An unknown original cleanup cannot report successful native shutdown.
 
 These are explicit factory bindings. The configuration-only mounted YAML reader
 does not enroll these objects or create managed ActorSystem/discovery/management,
-gateway source ingestion or the control launcher. Those integrations, complete
-startup-failure cleanup and approved source/business-policy/maintenance contracts
+gateway source ingestion or a mounted control enrollment. Those integrations, partial
+actor startup-failure cleanup and approved source/business-policy/maintenance contracts
 remain required. TEST_ONLY native mTLS/PostgreSQL/Pekko/WSS fixtures verify factory
 paths and ordered Spring stop; no production topology or capacity claim follows.
+
+Native control factories consume `NativeControlBusinessEnrollment`: native
+PostgreSQL directory repository, the exact bounded verifier, scoped cached security
+(including signing-key status), cached global source freshness, clock attestation
+and directory refresh <=30s. No healthy security predicate is supplied by Main.
+`NativeControlIngressEnrollment` requires server TLS, resolved HTTPS binding and
+private health/cached liveness/metrics inputs. The control profile runs WebFlux on
+owned Netty loops (one acceptor/two workers); absent enrollment rejects before a
+plaintext listener and preserves native configuration/startup diagnostics.
+
+Bootstrap rechecks the original principal after asynchronous directory resolution.
+Expired/revoked/freshness-unknown identity or lost clock/source trust cannot receive
+a successful response. `directoryEpoch` is a decimal JSON string, preserving all
+positive PostgreSQL bigint versions in browser clients. Native readiness falls
+before Boot's graceful HTTPS drain. The exact verifier and private metrics executor
+retire original admitted CPU work; unknown cleanup does not prove a successful stop.
+
+Gateway startup failure observes already-created owners before Spring removes
+its singleton registry. Physical ingress/cache/verifier/client drains precede boot
+retirement, sharing the original300s partial-owner budget. A complete gateway
+lifecycle uses its original graph. Actor shutdown now also joins its original
+verifier after framework/root and transport/source cleanup, before DB pool closure.
+This does not provide managed ActorSystem/discovery/management or partial actor
+startup ownership, mounted Secret-to-enrollment producers, control DB/source
+process ownership or an approved source/calling-policy/maintenance/drill contract.

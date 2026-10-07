@@ -393,4 +393,23 @@ A typed one-process cached-security sweep (25–250ms, candidate100ms) closes lo
 
 Fresh full verification of runtime source `ec700c1f6291017054524c70f3ded331ac836eac`: `./mvnw -B -Dmaven.repo.local=/workspace/.onboarding/m2 clean verify` finished2026-10-07T09:28:56Z in6m58 with BUILD SUCCESS. All147 XML reports were created after this run started; total683 tests, zero failures/errors/skips. The joined four-member native actor/relay test and all new Main gateway/client/safety/lifecycle cases passed. Pinned verifier-venv Python69 tests passed23.141s; loadgen static contract PASS. Fresh verification of the existing immutable `20261007-1407-d8c31e3-b5575cc39678` candidate still fails closed: NOT_QUALIFIED37, including all12 missing trusted gates. That historical image does not cover the newer runtime source; no new image/capacity/release claim is made. Tasks22–24 stay IN_PROGRESS/NOT_QUALIFIED; final completion review/workspace deletion remain pending the complete contract.
 
-Startup/physical cleanup continuation: real SpringApplication tests reproduced accepting WSS after missing lifecycle and after private-health bind failure. Main installs an early native-owner observer and retires ingress/cache/client physical work before boot on startup failure, including owners removed from Spring singleton registry during failed refresh. One original300s budget bounds partial-owner cleanup. Private health now waits for the original metrics executor before reporting stopped; a held actual HTTP scrape failed before the fix. Selected16 unit/native cases passed2026-10-07T09:49:40Z. Gateway startup-failure cleanup is locally covered; partial actor startup, control launcher and mounted production source enrollment remain open. Full new-source verification follows; Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.
+Startup/physical cleanup continuation: real SpringApplication tests reproduced accepting WSS after missing lifecycle and after private-health bind failure. Main installs an early native-owner observer and retires ingress/cache/client physical work before boot on startup failure, including owners removed from Spring singleton registry during failed refresh. One original300s budget bounds partial-owner cleanup. Private health now waits for the original metrics executor before reporting stopped; a held actual HTTP scrape failed before the fix. Selected15 unit/native cases passed2026-10-07T09:49:40Z. Gateway startup-failure cleanup is locally covered; partial actor startup, control launcher and mounted production source enrollment remain open. Full new-source verification follows; Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.
+
+Native control and verifier continuation: Main's explicit control enrollment now
+binds actual HTTPS/WebFlux bootstrap on bounded owned loops, native directory
+read/cache and private probes. Scope/global security freshness and trusted clock
+are mandatory inputs. Startup without enrollment rejects before plaintext serving
+and preserves configuration/startup diagnostics. Native RSA/TLS/PostgreSQL tests
+keep directory epoch independent from cell storage epoch.
+
+Demonstrated defects now fixed include delayed directory success after revocation,
+expiry or source loss; control readiness staying200 after stop; bounded verifier
+closure preceding its original worker; actor/gateway native stop retiring owners
+before that verifier; and valid clock incorrectly masking global source staleness.
+Bootstrap's64-bit directory epoch is a decimal JSON string, including versions
+above2^53. Selected15 final cases passed2026-10-07T10:30:47Z. Full newer-source
+verification follows. Partial actor startup, managed/mounted process and source
+creation, control DB/source ownership, approved calling/maintenance and two scoped
+security drivers remain software/integration gaps requiring explicit contracts.
+Staged load, three-AZ HA/DR, N-1 and24h soak remain uncollected. Tasks22–24 remain
+IN_PROGRESS/NOT_QUALIFIED; historical candidate/source records are unchanged.
