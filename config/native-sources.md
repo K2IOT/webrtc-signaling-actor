@@ -231,3 +231,18 @@ reservation, winner and ownership guards retain their authority. Constructor
 clock/source enrollment is explicit; constant suppliers in PostgreSQL correctness
 tests remain TEST_ONLY. Complete Main composition and real qualification are
 still required.
+
+`NativeActorPolicyConfiguration` is registered as Boot auto-configuration, after
+user enrollment definitions. Main installs one native policy bean only on the
+actor profile when both actual `RevocationReconciler` and `ClockSafetyMonitor`
+beans exist. The bean uses that monitor's live `valid` predicate, not a captured
+healthy value. Sources declared in a later enrollment configuration are visible;
+policy installation does not depend on component-scan order. Gateway/control
+profiles receive no actor policy. No missing source/clock is manufactured.
+
+The native source integration test obtains this bean from Main, binds it to all
+three `NativeActorComposition.Inputs` policy callbacks and verifies a guarded
+primary freshness read after four real Pekko members, registered regions and
+signed mTLS clock/revocation polls are live. Input homes, enrollment and denied
+calling policy remain explicit TEST_ONLY fixtures. This bean binding does not yet
+assemble all plane factories, listeners or runtime Secret enrollment.

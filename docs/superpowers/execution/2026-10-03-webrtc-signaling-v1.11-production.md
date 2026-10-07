@@ -288,3 +288,21 @@ unchanged implementation. Main/source/policy bindings, revokedJti/retiredSigning
 and genuine staged qualification remain open. This source has no new qualified
 candidate image; the historical e3630d9 TEST_ONLY OCI bundle retains its own source
 and NOT_QUALIFIED decision. Tasks22–24 are not marked complete.
+
+### Main native actor policy binding
+
+Native session, route and home-freshness callbacks now have one durable-source
+adapter, including primary/cell/storage identity, original revocation catch-up
+freshness, token expiry, signing-key and scoped subject checks, with live clock
+trust checked around SQL. Eight new real PostgreSQL cases cover denial and positive
+receipts. Home freshness remains separate from scoped identity authorization.
+
+Main installs the policy through actor-only Boot auto-configuration from explicit
+reconciler and monitor beans. Actual Main contexts verify actor installation and
+absence on gateway/control; the native four-member/mTLS/PostgreSQL fixture binds
+that same bean to all actor callbacks. A demonstrated component-scan ordering bug
+is fixed: later source enrollment definitions are processed before auto-configuration.
+Selected21 cases passed (native policy8, native claims2, startup3, revocation7 and
+joined source1). Full source verification follows. Complete plane factories,
+runtime Secret enrollment/source/policy contracts, revoke/key scheduling and real
+qualification remain open; Tasks22–24 IN PROGRESS/NOT_QUALIFIED.
