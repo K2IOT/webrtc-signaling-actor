@@ -27,6 +27,7 @@ import org.springframework.core.io.FileSystemResource;
 
 /** Actual failed Main, native SQL/lease/listener; single-node topology is TEST_ONLY. */
 class NativeActorStartupFailureIT {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary;
     @ParameterizedTest @ValueSource(booleans={true,false})
     void partialActorLaunchRetainsLeaseAndPoolsUntilOriginalSqlSettles(boolean refreshFailure)throws Exception {
         var runtime=new DbTestRuntime();var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
@@ -34,6 +35,7 @@ class NativeActorStartupFailureIT {
         try(var c=PgFixture.connection();var q=c.createStatement()){
             q.execute("INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023) n ON CONFLICT DO NOTHING");
         }
+        var remotingPki=new NativeActorProcessIT();remotingPki.temporary=temporary;
         var config=PekkoShutdownLifecycle.config(ConfigFactory.parseString("""
             pekko.actor.provider=cluster
             pekko.remote.artery.canonical.hostname="127.0.0.1"
@@ -43,7 +45,7 @@ class NativeActorStartupFailureIT {
             pekko.cluster.role.signaling-actor.min-nr-of-members=1
             pekko.coordinated-shutdown.run-by-jvm-shutdown-hook=off
             pekko.loglevel=WARNING
-            """).withFallback(ShardingBootstrap.baseConfig()));
+            """).withFallback(remotingPki.enrollment(0).config()));
         var system=ActorSystem.<Void>create(Behaviors.empty(),"startup-failure-c001",config);
         var tokens=new BoundedTokenVerifier((token,now)->{throw new AuthException();},1,8,Duration.ofSeconds(1));
         CellRpcServer server=null;PrivateHealthServer health=null;
