@@ -14,6 +14,14 @@ class PostgresShardLeaseContractIT {
     @AfterAll static void close(){timer.shutdownNow();runtime.close();}
     static LeaseSettings settings(int group,long timeoutMs){return LeaseSettings.apply(ConfigFactory.parseString("heartbeat-interval=5s\nheartbeat-timeout=15s\nlease-operation-timeout="+timeoutMs+"ms"),"lease-contract-shard-SignalingCallV1-"+group,"127.0.0.1:2552");}
     static PostgresShardLease lease(int group,GroupOwnership ownership,AtomicLong nanos){return new PostgresShardLease(settings(group,2000),new PostgresShardLease.Namespace("lease-contract","c001",1,"127.0.0.1:2552","member#clusterUID#podUID"),ownership,timer,()->true,nanos==null?System::nanoTime:nanos::get);}
+    // TEST_ONLY: these duplicate RELEASE cases require acquisition's original physical tail to settle first.
+    // A logical COMMIT alone can still leave ACQUIRE pending and correctly enter reconciliation instead.
+    static DbOperation<Optional<GroupOwnerRepository.Grant>> physicallySettledAcquire(int group,String node,UUID incarnation,UUID operation) {
+        var actual=repository.acquireTracked(group,node,incarnation,operation);
+        assertThat(actual.logical().toCompletableFuture().join()).isPresent();
+        actual.physicalCompletion().toCompletableFuture().join();
+        return actual;
+    }
     @Test void acquireCommitPrecedesGateAndDuplicateAcquireRetainsEpoch() {
         var lease=lease(100,repository,null);assertThat(lease.checkLease()).isFalse();assertThat(lease.acquire().toCompletableFuture().join()).isTrue();var first=lease.currentGrant().orElseThrow();
         assertThat(lease.acquire().toCompletableFuture().join()).isTrue();assertThat(lease.currentGrant().orElseThrow().token()).isEqualTo(first.token());
@@ -105,7 +113,7 @@ class PostgresShardLeaseContractIT {
     @Test void drainWaitsForPositiveNativeReleasePhysicalCleanupAndPermanentlyStopsAcquisition(){
         var cleanup=new CompletableFuture<DbOperation.PhysicalCompletion>();
         GroupOwnership delayed=new GroupOwnership(){
-            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return repository.acquireTracked(group,node,incarnation,operation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return physicallySettledAcquire(group,node,incarnation,operation);}
             public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
             public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){var actual=repository.releaseTracked(token);assertThat(actual.logical().toCompletableFuture().join()).isTrue();actual.physicalCompletion().toCompletableFuture().join();return new DbOperation<>(CompletableFuture.completedFuture(true),cleanup);}
             public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){return repository.reconcile(group,node,incarnation);}
@@ -125,7 +133,7 @@ class PostgresShardLeaseContractIT {
     @Test void duplicateFrameworkReleaseRetainsPendingReplyAndOriginalPhysicalReceipt()throws Exception{
         var reply=new CompletableFuture<Boolean>();var physical=new CompletableFuture<DbOperation.PhysicalCompletion>();var releases=new AtomicInteger();
         GroupOwnership delayed=new GroupOwnership(){
-            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return repository.acquireTracked(group,node,incarnation,operation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return physicallySettledAcquire(group,node,incarnation,operation);}
             public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
             public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){
                 releases.incrementAndGet();var actual=repository.releaseTracked(token);
