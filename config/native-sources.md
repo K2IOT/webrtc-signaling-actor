@@ -262,7 +262,17 @@ must retain their half-window margin; no identity policy is invented.
 Boot processes native source definitions before actor policy definitions.
 `NativeActorBusinessEnrollment` supplies the genuine native ActorSystem, cell/
 storage/routing/pod identity, proof signer, directory hints, epoch adoption, bounded
-token verifier and explicit calling policy. Main constructs native lease/backends
+token verifier. The selected §49.2 business rule permits authenticated users to
+call other authenticated users. Main owns its authoritative implementation and
+version `open-authenticated-v1` through `NativeCallingPolicyConfiguration`.
+With actual `NativeActorSourceEnrollment`, its decision age is at most the
+smaller of the enrolled hard safety bound and five seconds, further capped by
+the caller token expiry. The nine-argument business enrollment uses that bean;
+an explicitly supplied policy callback or policy bean remains authoritative.
+Missing identity/source enrollment does not create an open policy. Original JWT
+verification, exact current session/boot, scoped durable revocation, source
+freshness, trusted clock and callee route checks still precede commitment.
+Main constructs native lease/backends
 with all three source-backed policy callbacks and live monitor validity. It
 rejects any cell/storage-epoch/pod mismatch with a supplied source enrollment
 before installing native lease/backends. Independently enrolled legacy source

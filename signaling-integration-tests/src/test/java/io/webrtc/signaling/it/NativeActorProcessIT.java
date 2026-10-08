@@ -39,6 +39,23 @@ import org.springframework.core.io.FileSystemResource;
 /** Actual Main, TLS remoting and management; identities and loopback are TEST_ONLY. */
 class NativeActorProcessIT {
     @TempDir Path temporary;
+    @Test void frameworkShutdownBeforeStartupPermanentlyFencesManagedProcessStart()throws Exception {
+        var process=new NativeActorProcess(enrollment(0));
+        var entered=new CountDownLatch(1);var original=new CompletableFuture<org.apache.pekko.Done>();
+        var shutdown=org.apache.pekko.actor.CoordinatedShutdown.get(process.system());
+        shutdown.addTask("before-service-unbind","TEST_ONLY_HOLD_ORIGINAL_SHUTDOWN",()->{entered.countDown();return original;});
+        try {
+            shutdown.runAll(org.apache.pekko.actor.CoordinatedShutdown.unknownReason());
+            assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+            assertThat(process.start().toCompletableFuture()).as("foreign framework shutdown must fence startup before new listeners")
+                .isCompletedExceptionally();
+            assertThatThrownBy(()->process.start().toCompletableFuture().join()).hasRootCauseMessage("Native actor process draining");
+        } finally {
+            original.complete(org.apache.pekko.Done.getInstance());
+            process.drain().toCompletableFuture().get(65,TimeUnit.SECONDS);
+        }
+        assertThat(process.system().getWhenTerminated().toCompletableFuture()).isCompleted();
+    }
     @Test void managementBindFailureRetiresTheCreatedProcessBeforeBusinessComposition()throws Exception {
         try(var occupied=new ServerSocket(0,1,InetAddress.getLoopbackAddress())){
             var enrollment=enrollment(occupied.getLocalPort());

@@ -34,7 +34,8 @@ public final class NativeActorProcess {
     public ActorSystem<?> system(){return system;}
     /** The 30s budget starts once, covers original binding/bootstrap and local membership. */
     public synchronized CompletionStage<Void> start(){
-        if(drained!=null)return CompletableFuture.failedFuture(new IllegalStateException("Native actor process draining"));
+        if(drained!=null||CoordinatedShutdown.get(system).getShutdownReason().isPresent())
+            return CompletableFuture.failedFuture(new IllegalStateException("Native actor process draining"));
         if(started!=null)return up.minimalCompletionStage();
         startupAt=System.nanoTime();
         var server=ConnectionContext.httpsServer(()->{

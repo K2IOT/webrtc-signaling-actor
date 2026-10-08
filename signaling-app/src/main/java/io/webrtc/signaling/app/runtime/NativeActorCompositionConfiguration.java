@@ -3,6 +3,7 @@ package io.webrtc.signaling.app.runtime;
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
 import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
 import io.webrtc.signaling.auth.ClockSafetyMonitor;
+import io.webrtc.signaling.auth.CallAuthorizationPolicy;
 import io.webrtc.signaling.rpc.NativeActorComposition;
 import io.webrtc.signaling.storage.NativeActorSecurityPolicies;
 import io.webrtc.signaling.storage.SqlTransactions;
@@ -25,7 +26,7 @@ public class NativeActorCompositionConfiguration {
     @Bean NativeActorComposition nativeActorComposition(NativeActorBusinessEnrollment enrollment, SqlTransactions sql,
             NativeActorSecurityPolicies security, ClockSafetyMonitor clock, ClusterReadiness readiness,
             ObjectProvider<NativeActorSourceEnrollment> sources,ObjectProvider<NativeActorSchedulingEnrollment> scheduling,
-            ObjectProvider<NativeActorProcess> processes) {
+            ObjectProvider<NativeActorProcess> processes,ObjectProvider<CallAuthorizationPolicy> callingPolicies) {
         var process=processes.getIfAvailable();
         if(process!=null){
             if(process.system()!=enrollment.system())
@@ -41,9 +42,10 @@ public class NativeActorCompositionConfiguration {
             throw new IllegalArgumentException("Native actor authority differs from source enrollment");
         if(!enrollment.cell().equals(enrollment.system().settings().config().getString("signaling.cell-id")))
             throw new IllegalArgumentException("Native actor cell differs from enrolled process");
+        var callingPolicy=enrollment.callingPolicy()!=null?enrollment.callingPolicy():callingPolicies.getObject();
         var inputs=new NativeActorComposition.Inputs(sql,enrollment.cell(),enrollment.storageEpoch(),enrollment.routingEpoch(),
             enrollment.podUid(),enrollment.proofs(),enrollment.homes(),security,security,enrollment.epochAdoption(),
-            enrollment.tokens(),enrollment.callingPolicy(),Clock.systemUTC(),clock::valid,security);
+            enrollment.tokens(),callingPolicy,Clock.systemUTC(),clock::valid,security);
         return new NativeActorComposition(enrollment.system(),inputs,readiness);
     }
 

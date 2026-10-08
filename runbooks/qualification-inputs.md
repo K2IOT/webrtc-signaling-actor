@@ -60,11 +60,21 @@ separate physical cleanup; cleanup does not extend the published workload durati
 The two unsupported
 YAML labels cannot count as successful security drills.
 
+## Selected calling policy
+
+The operator selected open authenticated-user calling on2026-10-08. Main owns
+`open-authenticated-v1`; its authoritative source is the versioned implementation.
+Decisions permit a verified, unexpired caller to call another authenticated user,
+with expiry bounded by the token and `min(enrolled hard safety bound,5s)`.
+Native session, boot, callee-route, clock and revocation checks still apply.
+This resolves the business-rule selection; identity and source trust enrollment
+remain required.
+
 ## Required external inputs
 
 | Input | Required content |
 | --- | --- |
-| Identity and calling policy | Trusted issuer/audience, RSA public keys and refresh source, maximum JWT lifetime, preserved-jti refresh, revocation propagation/hard bounds, explicit calling policy and policy version/freshness |
+| Identity | Trusted issuer/audience, RSA public keys and refresh source, maximum JWT lifetime, preserved-jti refresh and revocation propagation/hard bounds |
 | Authenticated native sources | Approved clock and ordered revocation HTTPS endpoints, trusted TLS and Ed25519 source identities, cell/storage epoch, pod/process identity, authoritative revocation high-water/cursor and subject/key retirement semantics |
 | Internal PKI and directory | Remoting/management and RPC TLS enrollment, named actor/gateway/control workloads, internal proof signing/verification keys, native directory and current cell storage/routing epochs, approved peer capability window |
 | Infrastructure and candidate | Three-AZ cluster, PostgreSQL/CNPG fencing and synchronous durability, enrolled hardware/config fingerprints, full source commit and exact actor/gateway/control OCI digests |

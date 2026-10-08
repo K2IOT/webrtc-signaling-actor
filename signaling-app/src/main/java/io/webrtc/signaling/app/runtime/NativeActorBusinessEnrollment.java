@@ -14,4 +14,11 @@ import org.apache.pekko.actor.typed.ActorSystem;
 public record NativeActorBusinessEnrollment(ActorSystem<?> system, String cell, long storageEpoch, long routingEpoch,
         UUID podUid, HomeAuthorizationProof proofs, Function<UserId,ProofBindings.TrustedHome> homes,
         HomeParticipationService.EpochAdoptionVerifier epochAdoption, BoundedTokenVerifier tokens,
-        CallAuthorizationPolicy callingPolicy) {}
+        CallAuthorizationPolicy callingPolicy) {
+    /** Use Main's selected, enrolled policy; an explicit callback remains an authoritative override. */
+    public NativeActorBusinessEnrollment(ActorSystem<?> system,String cell,long storageEpoch,long routingEpoch,
+            UUID podUid,HomeAuthorizationProof proofs,Function<UserId,ProofBindings.TrustedHome> homes,
+            HomeParticipationService.EpochAdoptionVerifier epochAdoption,BoundedTokenVerifier tokens) {
+        this(system,cell,storageEpoch,routingEpoch,podUid,proofs,homes,epochAdoption,tokens,null);
+    }
+}

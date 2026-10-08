@@ -1,6 +1,7 @@
 io.webrtc.signaling.app.runtime.NativeActorProcessConfiguration
 io.webrtc.signaling.app.runtime.NativeActorSourceConfiguration
 io.webrtc.signaling.app.runtime.NativeActorPolicyConfiguration
+io.webrtc.signaling.app.runtime.NativeCallingPolicyConfiguration
 io.webrtc.signaling.app.runtime.NativeActorCompositionConfiguration
 io.webrtc.signaling.app.runtime.NativeActorIngressConfiguration
 io.webrtc.signaling.app.runtime.NativeActorSchedulingConfiguration
