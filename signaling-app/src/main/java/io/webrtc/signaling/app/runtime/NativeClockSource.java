@@ -27,6 +27,8 @@ public final class NativeClockSource implements AutoCloseable {
     public NativeClockSource(URI endpoint,SSLContext tls,ClockSafetyMonitor monitor,UUID podUid,UUID processBoot){
         http=new NativeSourceHttp(endpoint,tls,podUid,processBoot);this.monitor=Objects.requireNonNull(monitor);
     }
+    /** Cached authorization and polling must use the exact same attestation owner. */
+    public boolean monitors(ClockSafetyMonitor expected){return monitor==expected;}
     /** Called only off event loops. Its one socket is synchronously closed before physical retirement. */
     public boolean poll(Duration budget){return pollTracked(budget).logical().toCompletableFuture().join();}
     /** Each invocation exposes its own original receipt, even if a completion callback admits another poll. */

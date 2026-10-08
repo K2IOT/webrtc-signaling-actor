@@ -23,15 +23,17 @@ public class NativeControlIngressConfiguration {
         resources.setLoopResourcesSupplier(()->LoopResources.create("control-http",1,2,true));return resources;
     }
     @Bean NettyReactiveWebServerFactory nativeControlHttps(ObjectProvider<NativeControlIngressEnrollment> enrollment,
-            ObjectProvider<NativeControlBusinessEnrollment> business,SignalingProperties properties,ReactorResourceFactory resources){
+            ObjectProvider<NativeControlBusinessEnrollment> business,ObjectProvider<NativeControlProcess> process,SignalingProperties properties,ReactorResourceFactory resources){
         var inputs=enrollment.getIfAvailable();
         if(inputs==null||business.getIfAvailable()==null)throw NativeRuntimeStartup.missing(SignalingApplication.Plane.CONTROL);
+        if(process.getIfAvailable()==null)throw NativeRuntimeStartup.missing(SignalingApplication.Plane.CONTROL);
         var factory=new NettyReactiveWebServerFactory(inputs.address().getPort());factory.setAddress(inputs.address().getAddress());factory.setResourceFactory(resources);
         factory.addServerCustomizers(server->server.secure(ssl->ssl.sslContext(inputs.tls())).httpRequestDecoder(decoder->decoder.maxInitialLineLength(2048).maxHeaderSize(12288)));
         return factory;
     }
-    @Bean(destroyMethod="close") PrivateHealthServer nativeControlHealth(NativeControlIngressEnrollment inputs,NativeControlReadiness readiness)throws Exception {
+    @Bean(destroyMethod="") PrivateHealthServer nativeControlHealth(NativeControlIngressEnrollment inputs,NativeControlReadiness readiness,NativeControlProcess process)throws Exception {
         var health=new PrivateHealthServer(inputs.healthAddress(),inputs.live(),readiness::ready,inputs.metrics());
+        process.installHealth(health);
         try{health.start().toCompletableFuture().get(2,TimeUnit.SECONDS);return health;}
         catch(Exception failed){health.stop().toCompletableFuture().get(5,TimeUnit.SECONDS);throw failed;}
     }

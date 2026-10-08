@@ -345,8 +345,45 @@ its singleton registry. Physical ingress/cache/verifier/client drains precede bo
 retirement, sharing the original300s partial-owner budget. A complete gateway
 lifecycle uses its original graph. Actor shutdown now also joins its original
 verifier after framework/root and transport/source cleanup, before DB pool closure.
-This does not provide mounted Secret-to-enrollment producers or control DB/source
-process ownership or an approved source/calling-policy/maintenance/drill contract.
+These factories do not provide mounted Secret-to-enrollment producers or an
+approved scoped-security/calling-policy/maintenance/drill contract.
+
+`NativeControlDatabaseEnrollment` explicitly supplies separate regional-directory
+and local-cell PostgreSQL endpoints/credentials, per-class admission quotas and
+fixed safety/control pool maxima for each database. It also supplies the local
+cell/storage epoch and a cached regional-writer gate; no writer permission is
+inferred from availability. `NativeControlDatabaseResources` is published before
+its two SQL aliases and directory repository. Pool leaves are owned by that
+resource, with no independent Spring destruction. Schema migration, PostgreSQL
+TLS/HA configuration and aggregate fleet connection qualification remain operator
+inputs; creating pools does not certify them.
+
+`NativeControlSourceEnrollment` supplies the approved clock HTTPS endpoint,
+explicit TLS and Ed25519 trust, cell/storage epoch, pod/process binding and worker
+observations. Main creates the exact attestation monitor, source and fixed100ms
+SAFETY polling job. An unavailable source keeps readiness false; it supplies no
+security permission or global revocation freshness. Database/source authority
+must match when both managed enrollments are present.
+
+`NativeControlProcess` requires both directory SQL owners to be enrolled and the
+exact business verifier/clock monitor to match their managed owners. It starts
+enrolled workers, drops readiness before Boot's HTTPS drain, and retires original
+worker/source/crypto/SQL receipts before private probe/metrics retirement and pool
+closure. Independent regional/local boundaries and pools are deduplicated by
+identity. A drained owner rejects restart. Installed shutdown and startup-failure
+observers share the original stage and Spring's existing30s resource phase budget;
+unknown physical completion retains pools. Custom externally supplied pool/source
+beans must also disable independent destroy methods so these receipts own closure.
+
+Partial startup tracks resources before Spring removes singletons, including
+managed DB resources before SQL aliases exist and a verifier supplied inside the
+business enrollment before its alias exists. Published native SQL bindings prove
+their own boundary/pool associations; unbound pool objects remain open with
+unproven cleanup. Native TEST_ONLY tests cover actual Main with unavailable clock
+polling, separate authority pools, original post-COMMIT tails through logical
+expiry, worker physical tails, pre-lifecycle failure, early DB publication and
+rejected verifier/clock/SQL ownership. Approved scoped security feed ingestion,
+mounted production enrollment and full deployment qualification remain open.
 
 Cached clock readers never wait for source signature verification. Original signed
 report validation publishes immutable atomic state; invalidation generations and

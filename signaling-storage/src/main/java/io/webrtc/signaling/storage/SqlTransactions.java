@@ -9,6 +9,9 @@ public final class SqlTransactions {
     @FunctionalInterface public interface Work<T> {T apply(Connection connection) throws Exception;}
     private final DbBoundary boundary;private final DbPools pools;
     public SqlTransactions(DbBoundary boundary,DbPools pools){this.boundary=boundary;this.pools=pools;}
+    /** Original process owners; lifecycle code must join the boundary before retiring the pools. */
+    public DbBoundary boundary(){return boundary;}
+    public DbPools pools(){return pools;}
     public <T> CompletionStage<T> submit(DbClass clazz,Duration budget,Work<T> work) {
         return submitTracked(clazz,budget,work).logical();
     }

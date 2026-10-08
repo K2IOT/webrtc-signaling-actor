@@ -34,6 +34,8 @@ public final class NativeRuntimeStartup {
                     bound(one(context,GatewayRelayRpcServer.class,plane).port(),plane);
                 }
                 case CONTROL -> {
+                    one(context,NativeControlProcess.class,plane);
+                    one(context,NativeControlReadiness.class,plane);
                     one(context,DirectoryService.class,plane);
                     one(context,BoundedTokenVerifier.class,plane);
                     one(context,NativeControlBusinessEnrollment.class,plane);

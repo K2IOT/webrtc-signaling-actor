@@ -20,6 +20,8 @@ public final class PostgresDirectoryRepository implements DirectoryRepository {
     }
     private static void bucket(int bucket){if(bucket<0||bucket>=16384)throw new IllegalArgumentException("Invalid directory bucket");}
     private void writer(){if(!admittedRegionalWriter.getAsBoolean())throw new AuthoritySql.FencedException();}
+    /** Both independent authorities must be enrolled in the process's physical drain. */
+    public List<SqlTransactions> transactionOwners(){return regional==local?List.of(regional):List.of(regional,local);}
     @Override public CompletionStage<Optional<HomeRoute>> read(int bucket){
         bucket(bucket);
         return regional.submit(DbClass.RECOVERY,BUDGET,c->{writer();

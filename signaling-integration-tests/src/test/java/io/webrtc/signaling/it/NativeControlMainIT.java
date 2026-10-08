@@ -39,7 +39,7 @@ class NativeControlMainIT {
                 var inputs=new NativeControlIngressEnrollment(new InetSocketAddress("127.0.0.1",0),tls,new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY 1\n");
                 var defaults=new YamlPropertySourceLoader().load("TEST_ONLY_defaults",new FileSystemResource("../config/production-defaults.yaml"));
                 var application=SignalingApplication.application();application.setWebApplicationType(WebApplicationType.REACTIVE);application.setRegisterShutdownHook(false);
-                application.addInitializers(context->{defaults.forEach(s->context.getEnvironment().getPropertySources().addLast(s));context.getBeanFactory().registerSingleton("TEST_ONLY_business",business);context.getBeanFactory().registerSingleton("TEST_ONLY_ingress",inputs);});
+                application.addInitializers(context->{defaults.forEach(s->context.getEnvironment().getPropertySources().addLast(s));context.getBeanFactory().registerSingleton("TEST_ONLY_business",business);context.getBeanFactory().registerSingleton("TEST_ONLY_ingress",inputs);context.getBeanFactory().registerSingleton("TEST_ONLY_sql",database.runtime.sql);context.getBeanFactory().registerSingleton("TEST_ONLY_boundary",database.runtime.boundary);context.getBeanFactory().registerSingleton("TEST_ONLY_pools",database.runtime.pools);});
                 try(var context=application.run("--spring.profiles.active=control","--spring.main.web-application-type=reactive","--signaling.identity.issuer=https://issuer.test","--signaling.identity.audience=control-test")){
                     assertThat(context.getBeansOfType(BootstrapController.class)).hasSize(1);
                     int port=((WebServerApplicationContext)context).getWebServer().getPort();
@@ -61,9 +61,27 @@ class NativeControlMainIT {
                         assertThat(client.send(PrivateHealthServerTestRequest.of(healthPort,"/ready"),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(503);
                         clockFixture.refreshClock();
                         assertThat(client.send(PrivateHealthServerTestRequest.of(healthPort,"/ready"),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
-                        context.stop();
-                        assertThat(client.send(PrivateHealthServerTestRequest.of(healthPort,"/ready"),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(503);
+                        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+                        // TEST_ONLY physical tail after the original native SQL COMMIT; no DB timeout is relaxed.
+                        var original=database.runtime.boundary.submitTracked(DbClass.RECOVERY,Duration.ofMillis(100),()->{
+                            database.runtime.sql.submit(DbClass.RECOVERY,Duration.ofSeconds(2),c->{
+                                try(var q=c.createStatement()){q.execute("INSERT INTO directory_bucket VALUES(176,'c001',9,'wss://cell.test/ws',clock_timestamp())");}return true;
+                            }).toCompletableFuture().join();
+                            entered.countDown();release.await();return true;
+                        });
+                        assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+                        var stopping=CompletableFuture.runAsync(context::stop);
+                        try{
+                            assertThatThrownBy(()->original.logical().toCompletableFuture().get(1,TimeUnit.SECONDS)).hasCauseInstanceOf(DbOutcomeUnknownException.class);
+                            assertThatThrownBy(()->stopping.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                            assertThat(original.physicalCompletion().toCompletableFuture().isDone()).isFalse();
+                            assertThat(database.runtime.pools.closed()).isFalse();
+                            assertThat(client.send(PrivateHealthServerTestRequest.of(healthPort,"/ready"),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(503);
+                        }finally{release.countDown();}
+                        stopping.get(5,TimeUnit.SECONDS);original.physicalCompletion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+                        try(var c=database.connection();var q=c.createStatement();var result=q.executeQuery("SELECT directory_epoch FROM directory_bucket WHERE bucket_id=176")){assertThat(result.next()).isTrue();assertThat(result.getLong(1)).isEqualTo(9);}
                         context.close();assertThatThrownBy(()->new Socket("127.0.0.1",port)).isInstanceOf(java.io.IOException.class);assertThatThrownBy(()->new Socket("127.0.0.1",healthPort)).isInstanceOf(java.io.IOException.class);
+                        assertThat(database.runtime.pools.closed()).as("Main must retire its enrolled original database pools").isTrue();
                     }
                 }
             }

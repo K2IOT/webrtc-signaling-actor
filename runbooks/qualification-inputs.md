@@ -15,13 +15,15 @@ root release precedes source/relay teardown and pool closure. Explicit `NativeAc
 management/Kubernetes discovery owner before business composition, gates the
 original local Up/binding receipt and retains early root/process/SQL cleanup.
 Mounted enrollment and production formation qualification remain open. Native control factories now
-bind explicit HTTPS/bootstrap/private probes from typed inputs; complete control
-DB/source process ownership and mounted enrollment still remain open.
+bind explicit HTTPS/bootstrap/private probes from typed inputs. Explicit managed
+control regional/local DB factories and attested clock polling now join original
+SQL/source/worker/crypto/probe receipts before pool closure, including partial
+startup. Approved scoped security ingestion and mounted enrollment remain open.
 Gateway factories now assemble explicit business enrollment, native boot/session
 proofs, WSS and relay mTLS listeners, one bounded cached-security sweep and ordered
 Spring shutdown/private health. Native source ingestion/scheduling still require the approved gateway contracts;
 production formation qualification and full mounted process/resource composition remain open.
-Actor and gateway startup-failure cleanup now observes native allocated owners and physical drains;
+Actor, gateway and control startup-failure cleanup now observes native allocated owners and physical drains;
 these factory tests do not establish a serving production launcher.
 Production maintenance jobs still require their explicit enrolled scope. Its startup guard
 rejects a configuration-only context instead of reporting successful startup. Native actor composition,

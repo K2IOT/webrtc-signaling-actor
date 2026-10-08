@@ -19,9 +19,13 @@ final class NativeStartupCleanup implements BeanPostProcessor {
     private final List<Object> created=new ArrayList<>();
     private CompletionStage<Void> actorDrain;
     private long actorStarted;
+    private CompletionStage<Void> controlDrain;
+    private long controlStarted;
     @Override public synchronized Object postProcessAfterInitialization(Object bean,String name){
         if(bean instanceof NativeGatewayIngress||bean instanceof NativeGatewaySpringLifecycle
                 ||bean instanceof NativeActorProcess||bean instanceof NativeActorComposition||bean instanceof NativeActorRuntimeHooks||bean instanceof NativeActorSpringLifecycle
+                ||bean instanceof NativeControlProcess||bean instanceof NativeControlReadiness||bean instanceof NativeControlDatabaseResources
+                ||bean instanceof NativeControlBusinessEnrollment||bean instanceof SqlTransactions
                 ||bean instanceof NativeActorRpcIngress||bean instanceof NativeWorkerScheduler||bean instanceof PrivateHealthServer
                 ||bean instanceof NativeActorSafetySources||bean instanceof NativeClockSource||bean instanceof NativeRevocationSource||bean instanceof NativeCellHealthSource
                 ||bean instanceof CellRpcServer||bean instanceof DbBoundary||bean instanceof DbPools
@@ -53,6 +57,20 @@ final class NativeStartupCleanup implements BeanPostProcessor {
                 actorDrain.toCompletableFuture().get(remaining,TimeUnit.NANOSECONDS);
             }
             catch(InterruptedException interrupted){Thread.currentThread().interrupt();failed.addSuppressed(new IllegalStateException("Native startup cleanup interrupted"));}
+            catch(Exception unknown){failed.addSuppressed(new IllegalStateException("Native startup cleanup unproven"));}
+            return;
+        }
+        if(profiles.contains("control")){
+            try{
+                for(var owner:owners)if(owner instanceof NativeControlReadiness readiness)readiness.stop();
+                var process=owners.stream().filter(NativeControlProcess.class::isInstance).map(NativeControlProcess.class::cast).findFirst();
+                if(process.isPresent())process.get().awaitDrain();
+                else{
+                    if(controlDrain==null){controlStarted=System.nanoTime();controlDrain=NativeControlProcess.drainUninstalled(owners);}
+                    controlDrain.toCompletableFuture().get(
+                        Math.max(0,TimeUnit.SECONDS.toNanos(30)-(System.nanoTime()-controlStarted)),TimeUnit.NANOSECONDS);
+                }
+            }catch(InterruptedException interrupted){Thread.currentThread().interrupt();failed.addSuppressed(new IllegalStateException("Native startup cleanup interrupted"));}
             catch(Exception unknown){failed.addSuppressed(new IllegalStateException("Native startup cleanup unproven"));}
             return;
         }
