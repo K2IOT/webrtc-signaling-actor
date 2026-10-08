@@ -319,7 +319,8 @@ class NativeActorProcessIT {
             var beans=new org.springframework.beans.factory.support.StaticListableBeanFactory();beans.addBean("managed",process);
             var business=new NativeActorBusinessEnrollment(other,"c001",1,1,UUID.randomUUID(),null,null,null,null,null);
             assertThatThrownBy(()->org.springframework.test.util.ReflectionTestUtils.invokeMethod(new NativeActorCompositionConfiguration(),"nativeActorComposition",business,null,null,null,new io.webrtc.signaling.actors.cluster.ClusterReadiness(),
-                beans.getBeanProvider(NativeActorSourceEnrollment.class),beans.getBeanProvider(NativeActorSchedulingEnrollment.class),beans.getBeanProvider(NativeActorProcess.class)))
+                beans.getBeanProvider(NativeActorSourceEnrollment.class),beans.getBeanProvider(NativeActorSchedulingEnrollment.class),beans.getBeanProvider(NativeActorProcess.class),
+                beans.getBeanProvider(io.webrtc.signaling.auth.CallAuthorizationPolicy.class)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("Native actor business process differs from managed enrollment");
         } finally {process.drain().toCompletableFuture().get(65,TimeUnit.SECONDS);other.terminate();other.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);}
     }
