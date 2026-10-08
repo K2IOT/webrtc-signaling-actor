@@ -99,7 +99,8 @@ observed windows, in addition to the other native checks.
 Only an enrolled external collector root can attest the bundle. Run
 `qualification/scenarios/verify-evidence.sh` with that explicit trust file; missing
 or failed gates retain NOT_QUALIFIED. No production qualification run has been
-collected in this workspace.
+collected in this workspace. On2026-10-08 the operator explicitly confirmed that
+the production environment and input bundle are not yet available.
 
 ## Local image and OCI integrity checks
 
@@ -146,3 +147,15 @@ addition to scoped identity status and a valid clock. An approved producer must
 maintain those facts with the declared authoritative high-water/commit SLO. Local
 TEST_ONLY suppliers demonstrate rejection when freshness is lost; they do not
 supply that producer or prove commit-to-socket propagation under production load.
+
+Current local source `345f772` passed a fresh full clean reactor with738 tests in
+160 XML reports and zero failures/errors/skips, finished2026-10-08T10:41:15Z.
+`signaling-candidate:345f772` passed the native image/JRE/JVM-export and six
+negative startup checks. Its original OCI manifest is
+`sha256:0505ab400a6ec30f80e7c70d747c956817a150bccc8cccbf671ccc8d151010bf`;
+all descriptors and executable bytes match the source gate. Original local bytes
+are retained outside git; earlier candidate bundles are unchanged. This image is
+NOT_QUALIFIED and uses the unqualified milestone dependency alternative described
+in `runbooks/pekko-shutdown-alternative.md`. No production environment/input bundle
+is available, as explicitly confirmed by the operator; staged scale, same-candidate
+security/chaos/HA/DR and24h qualification have not run.

@@ -531,3 +531,135 @@ actual same-candidate staged load, P0/P2/N−1,24h soak,3-AZ HA/DR and trusted o
 collection. The completed explicit actor owner factory is no longer listed as
 missing code; production formation qualification remains open. No task-complete
 ledger, final whole-branch completion review or workspace deletion is claimed.
+
+Control ownership continuation, 2026-10-08 Asia/Bangkok: runtime `eb067e4`
+creates regional and local SQL authorities from explicit database enrollment,
+with separate fixed pool pairs, original admission boundaries and an explicit
+regional-writer gate. The resource owner is published before SQL aliases, so a
+business factory failure can retire the original resources before destroying
+the registry. Directory transactions and bounded token verification must refer
+to those exact enrolled owners before HTTPS starts.
+
+The control process now owns readiness, admitted source workers, the attested
+clock source, original verifier/SQL drains, private probes/metrics and pools.
+Readiness drops before Boot's HTTPS shutdown; original physical work and metrics
+termination precede pool closure. Refresh/runner failure observers retain one
+receipt and the original 30s control cleanup budget. Unbound pool references
+cannot prove SQL ownership and are retained rather than reported as cleaned up.
+The managed clock factory requires explicit HTTPS/TLS/Ed25519 trust and exact
+business-monitor identity; it supplies no healthy security-freshness default.
+
+Selected 18 unit/native tests passed in
+`task-22-control-final-native-green.log`, including actual HTTPS/RSA/PostgreSQL
+bootstrap, independent regional/local authorities, held physical SQL/source
+tails, clock mismatch and failures before SQL/business aliases are published.
+The endpoint identities, unreachable clock endpoint and held tails are TEST_ONLY.
+Database TLS/HA, fleet-wide connection sizing, migrations and source/security
+producer contracts still require operator enrollment and measured qualification.
+
+Two subsequent full clean reactor runs failed in the existing native actor
+formation test: a management bind failure after TEST_ONLY membership Up reached
+all CoordinatedShutdown phases but did not retire the ActorSystem within its
+original 65s wait. The first ended 2026-10-08T04:41:05Z (11:41:05 Bangkok).
+Control cases passed; loadgen was skipped. The second actor-tree snapshot shows
+the user guardian stopped while remoting/TLS and the system guardian remain.
+Selected actor cases, five consecutive failed bindings, and the17 relevant
+Surefire/Failsafe cases passed, but those reruns did not establish a fix. The
+following continuation traces and corrects the reproducible ordering; no full
+reactor success was established at the control-only checkpoint.
+
+Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED. Completed control database/clock
+factory and process ownership are no longer listed as missing local code.
+Mounted PKI/provider/source enrollment, approved scoped security ingestion,
+maintenance contracts, two scoped security drill drivers and actual
+same-candidate staged load/P0/P2/N−1/24h/3-AZ HA/DR/trusted collection remain open.
+Calling business-rule selection was resolved by the operator below.
+The historical immutable candidate is unchanged and does not cover `eb067e4`.
+
+Native remoting continuation,2026-10-08 Asia/Bangkok: `4e7b629` reproduces the
+original inbound-control completion preceding transport abort in a native
+six-node TLS cluster. Original inbound cleanup completed while five original
+outbound control streams and getWhenTerminated remained pending beyond65s.
+Pinned upstream1.1.3 tracing shows SystemMessageDelivery completion followed by
+TLS IgnoreComplete; stable upstream sources through1.7.1 retain the ordering.
+The candidate uses the supported Artery shutdown-streams-timeout in core
+Pekko2.0.0-M4, a coherent core BOM and compatible Management/HTTP2.0.0-M1.
+One-second flush/stream waits fit the original5s termination phase and65s graph.
+The original ActorSystem termination receipt still proves actual retirement.
+Agrona's required JVM export is explicit in tests, native Main and the image.
+The configuration19 and original native actor process5 tests passed with the
+forced ordering; no application receipt was replaced by a timeout.
+
+This dependency alternative is a major-version milestone and remains
+PINNED_CANDIDATE_UNQUALIFIED. Mixed1.1.3/M4 operation is unqualified; the migration
+requires review and a measured drained/fenced cluster replacement or stable
+upstream backport. See `runbooks/pekko-shutdown-alternative.md`. Native tests and
+image smoke cannot approve that production migration.
+
+The M4 framework can repeat lease.release from Shard.postStop. Release now keeps
+the original pending RELEASE result, deadline and physical tail. The full
+verification attempts also found incomplete TEST_ONLY PKI in drain/partial-startup
+fixtures, corrected without relaxing TLS. A later lease-fixture race read only
+logical acquire COMMIT, accidentally entering ACQUIRE reconciliation before its
+physical callback. `b8ed220` settles both original acquire stages only in the two
+direct-RELEASE fixtures; all13 lease tests pass with held release cleanup.
+
+The operator selected open authenticated-user calling for §49.2. `f312b81`
+installs Main's versioned `open-authenticated-v1` from explicit source enrollment;
+decision age is min(enrolled hard safety bound,5s), capped by token expiry.
+Business enrollment can use this bean; explicit policy owners retain authority.
+Native original JWT, current session/boot, scoped revocation, source freshness,
+trusted clock and callee-route gates still apply. Main policy3 tests pass;
+actual RSA/PostgreSQL/signed-source integration confirms rejection of forged or
+expired tokens, self-call, clock loss, stale source, replaced session and scoped
+revocation. Framework-direct shutdown now fences managed start using Pekko's
+public shutdown reason before cached startup/Up can be reused. Its native test
+passes with the original termination receipt. The selected final5-test gate
+finished2026-10-08T10:22:21Z(17:22:21Bangkok), BUILD SUCCESS.
+
+The operator explicitly confirmed no production environment/input bundle exists.
+Production enrollment, trusted collection and staged3-AZ/load/HA/DR/24h gates
+remain blocked by these missing inputs. Fresh full source verification and native
+image checks are in progress; Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.
+
+The first full selected-policy source run at `f312b81` failed only in the
+managed-system mismatch fixture: its reflective factory call omitted the new
+policy provider argument, so the expected guard could not execute. The other
+native process, policy, source and control cases passed; loadgen was skipped.
+`345f772` updates that test call. The exact native guard test passed before the
+fresh full clean reactor rerun. No failed full command is counted as a pass.
+
+Fresh full `./mvnw -B -Dmaven.repo.local=/workspace/.onboarding/m2 clean verify`
+on `345f77290be2bee47c297b7ad2f85bfd342e14fe` finished2026-10-08T10:41:15Z
+(17:41:15Bangkok) in9m03 with BUILD SUCCESS: **738 tests/160 XML reports,
+zero failures/errors/skips**. All report timestamps follow the original
+10:32:11.547126Z run start. This gate includes every native actor process case,
+forced control-stream ordering and the policy/source/physical-owner tests.
+The retained executable SHA256 is
+`3d70673dc79d0e131783b7069c748b867d66c8a603442ebd25609953a01b1e29`.
+Local image validation follows; no staged deployment/qualification is inferred.
+
+Current-source native image `signaling-candidate:345f772` passed the actual Docker
+contract: linux/amd64, nonroot/read-only/no-network execution, pinned
+Temurin21.0.8+9, required Agrona JVM export and all six actor/gateway/control
+negative startup checks. Original Docker bytes were exported to a fresh OCI
+layout; manifest/config/layer hashes and sizes, source revision and the10001-owned
+executable were verified. The image executable matches the full source gate.
+OCI manifest is
+`sha256:0505ab400a6ec30f80e7c70d747c956817a150bccc8cccbf671ccc8d151010bf`;
+config is
+`sha256:a59dd45d91cd710b7551771b93a3032f1d4439d975c2b83f77a6ba25fc4a9db8`.
+The original archive, layout, logs and verification JSON remain in the ignored
+inline workspace. No image or branch was published; historical evidence remains
+immutable. These negative startup/integrity checks do not prove production
+serving composition or capacity.
+
+Local code/source/image verification is complete for this continuation.
+**Tasks22–24 remain IN_PROGRESS/NOT_QUALIFIED.** The operator confirmed that the
+production environment and input bundle do not exist yet. Mounted approved
+provider/scoped sources/PKI and maintenance/security-drill contracts still require
+enrollment. Same-candidate10k→100k→200k/cell→multi-cell→P0/P2/N−1,24h soak,
+3-AZ HA/DR and outside trusted collection have not run. The M4 dependency
+alternative also requires migration review and measured drained/fenced cluster
+replacement or stable backport before release. No task-complete ledger line,
+final whole-branch completion review or workspace deletion is claimed.
