@@ -127,7 +127,7 @@ class NativeActorProcessIT {
             // Only the existing-cluster fixture joins manually. The child Main has no manual/seed path.
             systems.forEach(system->Cluster.get(system).manager().tell(new JoinSeedNodes(List.of(seed))));
             org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(20)).until(()->systems.stream().allMatch(system->Cluster.get(system).selfMember().status().equals(MemberStatus.up())));
-            try(var occupied=new ServerSocket(0,1,InetAddress.getLoopbackAddress())){
+            for(int failedAttempt=0;failedAttempt<5;failedAttempt++)try(var occupied=new ServerSocket(0,1,InetAddress.getLoopbackAddress())){
                 var failedEnrollment=new NativeActorProcessEnrollment(enrollment.systemName(),enrollment(occupied.getLocalPort()).config(),enrollment.managementServerTls(),enrollment.managementClientTls());
                 var failedProcess=new NativeActorProcess(failedEnrollment);
                 try {
@@ -138,11 +138,38 @@ class NativeActorProcessIT {
                     assertThat(error).as("Up alone must not hide original management binding failure").hasRootCauseInstanceOf(BindException.class);
                 } finally {
                     var shutdown=org.apache.pekko.actor.CoordinatedShutdown.get(failedProcess.system());
+                    if(failedAttempt==0)shutdown.addTask("before-actor-system-terminate","TEST_ONLY_CONTROL_COMPLETES_BEFORE_ABORT",()->
+                        CompletableFuture.supplyAsync(()->{
+                            // Force the pinned native observer ordering that can race global abort.
+                            // No transport/future is replaced; actual TLS must still retire physically.
+                            var classic=(org.apache.pekko.actor.ExtendedActorSystem)Adapter.toClassic(failedProcess.system());
+                            var transport=((org.apache.pekko.remote.RemoteActorRefProvider)classic.provider()).transport();
+                            var subject=org.springframework.test.util.ReflectionTestUtils.getField(transport,"controlSubject");
+                            var observers=(scala.collection.immutable.Vector<?>)org.springframework.test.util.ReflectionTestUtils.getField(subject,"observers");
+                            var originals=new ArrayList<Object>();var iterator=observers.iterator();
+                            while(iterator.hasNext()){var observer=iterator.next();if(observer.getClass().getName().contains("SystemMessageDelivery"))originals.add(observer);}
+                            assertThat(originals).as("actual native peer control streams").isNotEmpty();
+                            originals.forEach(observer->org.springframework.test.util.ReflectionTestUtils.invokeMethod(observer,"controlSubjectCompleted",new scala.util.Success<>(org.apache.pekko.Done.getInstance())));
+                            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1)).until(()->{
+                                var remaining=(scala.collection.immutable.Vector<?>)org.springframework.test.util.ReflectionTestUtils.getField(subject,"observers");
+                                var current=remaining.iterator();while(current.hasNext())if(originals.contains(current.next()))return false;return true;
+                            });
+                            return org.apache.pekko.Done.getInstance();
+                        }));
                     for(String phase:List.of("service-unbind","cluster-leave","cluster-exiting","cluster-shutdown","before-actor-system-terminate","actor-system-terminate"))
                         shutdown.addTask(phase,"TEST_ONLY_TRACE",()->{System.out.println("TEST_ONLY_FAILED_BIND_PHASE "+phase);return CompletableFuture.completedFuture(org.apache.pekko.Done.getInstance());});
                     var drain=failedProcess.drain().toCompletableFuture();
                     try{drain.get(12,TimeUnit.SECONDS);}catch(TimeoutException pending){
                         var diagnostic=Path.of("target/native-process-fixtures/TEST_ONLY_parent_threads.log");Files.createDirectories(diagnostic.getParent());
+                        var classic=(org.apache.pekko.actor.ExtendedActorSystem)org.apache.pekko.actor.typed.javadsl.Adapter.toClassic(failedProcess.system());
+                        Files.writeString(diagnostic.resolveSibling("TEST_ONLY_parent_actors.log"),"terminating="+classic.isTerminating()+"\n"+classic.printTree());
+                        var transport=(org.apache.pekko.remote.artery.ArteryTransport)((org.apache.pekko.remote.RemoteActorRefProvider)classic.provider()).transport();
+                        var states=new StringBuilder("arteryShutdown="+transport.isShutdown()+"\n");
+                        streamStates(states,"inbound",transport);
+                        var registry=(org.apache.pekko.remote.artery.AssociationRegistry)org.springframework.test.util.ReflectionTestUtils.getField(transport,"associationRegistry");
+                        var associations=registry.allAssociations().iterator();
+                        while(associations.hasNext()){var association=associations.next();streamStates(states,"outbound "+association.remoteAddress(),association);}
+                        Files.writeString(diagnostic.resolveSibling("TEST_ONLY_parent_streams.log"),states);
                         new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","jcmd").toString(),Long.toString(ProcessHandle.current().pid()),"Thread.print")
                             .redirectErrorStream(true).redirectOutput(diagnostic.toFile()).start().waitFor(5,TimeUnit.SECONDS);
                         System.out.println("TEST_ONLY_FAILED_BIND_TERMINATED "+failedProcess.system().getWhenTerminated().toCompletableFuture().isDone());
@@ -173,7 +200,7 @@ class NativeActorProcessIT {
                 .withValue("pekko.discovery.kubernetes-api.api-service-port-env-name",ConfigValueFactory.fromAnyRef("TEST_ONLY_K8S_PORT"));
             var configPath=temporary.resolve("TEST_ONLY_child.conf");Files.writeString(configPath,config.root().render(ConfigRenderOptions.concise()));
             var output=temporary.resolve("TEST_ONLY_child.log");
-            var builder=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"-Xmx256m","-cp",System.getProperty("java.class.path"),ActualManagedMain.class.getName(),configPath.toString());
+            var builder=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED","-Xmx256m","-cp",System.getProperty("java.class.path"),ActualManagedMain.class.getName(),configPath.toString());
             builder.environment().put("TEST_ONLY_K8S_HOST","localhost");builder.environment().put("TEST_ONLY_K8S_PORT",Integer.toString(api.getAddress().getPort()));
             child=builder.redirectErrorStream(true).redirectOutput(output.toFile()).start();
             var diagnostics=Path.of("target/native-process-fixtures");Files.createDirectories(diagnostics);
@@ -201,6 +228,14 @@ class NativeActorProcessIT {
             api.stop(0);
             for(var system:systems)system.terminate();
             for(var system:systems)system.getWhenTerminated().toCompletableFuture().get(25,TimeUnit.SECONDS);
+        }
+    }
+    static void streamStates(StringBuilder target,String label,Object owner){
+        var original=(java.util.concurrent.atomic.AtomicReference<?>)org.springframework.test.util.ReflectionTestUtils.getField(owner,"streamMatValues");
+        var values=((scala.collection.Map<?,?>)original.get()).iterator();
+        while(values.hasNext()){
+            var entry=values.next();var completed=(scala.concurrent.Future<?>)org.springframework.test.util.ReflectionTestUtils.invokeMethod(entry._2(),"completed");
+            target.append(label).append(' ').append(entry._1()).append(" completed=").append(completed.isCompleted()).append(" result=").append(completed.value()).append('\n');
         }
     }
     static int freePort()throws Exception {try(var socket=new ServerSocket(0,1,InetAddress.getLoopbackAddress())){return socket.getLocalPort();}}

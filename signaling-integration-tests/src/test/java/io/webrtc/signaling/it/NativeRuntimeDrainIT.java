@@ -25,11 +25,13 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 /** Genuine PostgreSQL/TLS/framework cleanup; TEST_ONLY clock/topology assertions, no production qualification. */
 class NativeRuntimeDrainIT {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary;
     static File cert(String name){return new File(Objects.requireNonNull(NativeRuntimeDrainIT.class.getResource("/test-only-pki/session/"+name)).getFile());}
     @Test void frameworkDrainRetainsNativeDatabaseAndRootUntilUnknownWorkPhysicallySettles()throws Exception {
         var runtime=new DbTestRuntime();var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var first=new AtomicBoolean(true);
         var cryptoEntered=new CountDownLatch(1);var cryptoRelease=new CountDownLatch(1);
         try(var c=PgFixture.connection();var q=c.createStatement()){q.execute("INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023) n ON CONFLICT DO NOTHING");}
+        var remotingPki=new NativeActorProcessIT();remotingPki.temporary=temporary;
         var config=PekkoShutdownLifecycle.config(ConfigFactory.parseString("""
             pekko.actor.provider=cluster
             pekko.remote.artery.canonical.hostname="127.0.0.1"
@@ -39,7 +41,7 @@ class NativeRuntimeDrainIT {
             pekko.cluster.role.signaling-actor.min-nr-of-members=1 # TEST_ONLY single-node lifecycle fixture
             pekko.coordinated-shutdown.run-by-jvm-shutdown-hook=off
             pekko.loglevel=WARNING
-            """).withFallback(ShardingBootstrap.baseConfig()));
+            """).withFallback(remotingPki.enrollment(0).config()));
         var system=ActorSystem.<Void>create(Behaviors.empty(),"runtime-drain-c001",config);
         try(var verifier=new BoundedTokenVerifier((token,now)->{if(token.equals("TEST_ONLY_HELD_VERIFY")){cryptoEntered.countDown();try{cryptoRelease.await();}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}}throw new AuthException();},1,8,Duration.ofSeconds(1))){
             var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));

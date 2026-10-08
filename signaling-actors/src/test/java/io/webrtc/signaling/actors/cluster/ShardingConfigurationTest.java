@@ -53,6 +53,21 @@ class ShardingConfigurationTest {
         assertThat(tls.getBoolean("require-mutual-authentication")).isTrue();
         assertThat(tls.getStringList("enabled-algorithms")).containsExactly("TLS_AES_128_GCM_SHA256","TLS_AES_256_GCM_SHA384");
     }
+    @Test void nativeStreamRetirementFitsTheOriginalTerminationPhase(){
+        var advanced=config().getConfig("pekko.remote.artery.advanced");
+        assertThat(advanced.getDuration("shutdown-flush-timeout")).isEqualTo(Duration.ofSeconds(1));
+        assertThat(advanced.getDuration("shutdown-streams-timeout")).isEqualTo(Duration.ofSeconds(1));
+    }
+    @ParameterizedTest @ValueSource(strings={
+        "pekko.remote.artery.advanced.shutdown-flush-timeout=0s",
+        "pekko.remote.artery.advanced.shutdown-flush-timeout=2s",
+        "pekko.remote.artery.advanced.shutdown-streams-timeout=0s",
+        "pekko.remote.artery.advanced.shutdown-streams-timeout=2s"
+    })
+    void nativeRetirementCannotConsumeOrDisableTheOriginalFiveSecondPhase(String override){
+        assertThatThrownBy(()->ShardingBootstrap.validateProduction(ConfigFactory.parseString(override).withFallback(config())))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
     @Test void canonicalHashVectorsAreSeparateFromDirectoryBuckets(){
         var users=new UserShardExtractor<UserMessage>();assertThat(users.shardId("alice")).isEqualTo("175");assertThat(users.shardId("bob")).isEqualTo("730");assertThat(users.shardId("é")).isEqualTo(users.shardId("e\u0301"));
         var calls=new CallShardExtractor<CallMessage>();assertThat(calls.shardId("c001.e1.00000000-0000-0000-0000-000000000001")).isEqualTo("685");assertThat(calls.shardId("c001.e1.ffffffff-ffff-ffff-ffff-ffffffffffff")).isEqualTo("567");

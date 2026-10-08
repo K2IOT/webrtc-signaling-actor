@@ -51,6 +51,11 @@ public final class ShardingBootstrap {
                 ||!config.getBoolean("pekko.cluster.configuration-compatibility-check.enforce-on-join"))
             throw new IllegalArgumentException("Native Kubernetes discovery and compatibility enforcement are required");
         if(config.getBoolean("pekko.management.cluster.bootstrap.new-cluster-enabled")&&(!config.hasPath("signaling.controlled-initial-formation")||!config.getBoolean("signaling.controlled-initial-formation")))throw new IllegalArgumentException("Unapproved automatic cluster formation");
+        for(String setting:List.of("shutdown-flush-timeout","shutdown-streams-timeout")){
+            var timeout=config.getDuration("pekko.remote.artery.advanced."+setting);
+            if(timeout.isZero()||timeout.isNegative()||timeout.compareTo(java.time.Duration.ofSeconds(1))>0)
+                throw new IllegalArgumentException("Native remoting retirement must preserve the original termination phase");
+        }
         userSettings(config);callSettings(config);
     }
     /** Kubernetes discovery is the only production formation path; contexts are required PKI inputs. */

@@ -119,7 +119,8 @@ public final class PostgresShardLease extends Lease {
         private void completeDrain(){if(draining&&held.get()==null&&retired==null&&pending==null)drained.complete(null);}
         synchronized CompletionStage<Boolean> release(){
             Held current=held.getAndSet(null);if(current!=null)retired=current;else current=retired;cancel(pulse);cancel(expiry);
-            if(pending!=null){var p=pending;if(p.releaseResult!=null)return p.releaseResult.minimalCompletionStage();p.releaseResult=new CompletableFuture<>();p.unknown=true;cancel(p.deadline);p.result.completeExceptionally(new DbOutcomeUnknownException());releaseDeadline(p);if(p.physicalDone)cleanup(p);return p.releaseResult.minimalCompletionStage();}
+            // Native PostStop and placement loss share an existing RELEASE, including its original deadline and physical tail.
+            if(pending!=null){var p=pending;if(p.kind==Kind.RELEASE)return p.result.minimalCompletionStage();if(p.releaseResult!=null)return p.releaseResult.minimalCompletionStage();p.releaseResult=new CompletableFuture<>();p.unknown=true;cancel(p.deadline);p.result.completeExceptionally(new DbOutcomeUnknownException());releaseDeadline(p);if(p.physicalDone)cleanup(p);return p.releaseResult.minimalCompletionStage();}
             if(current==null){completeDrain();return done(true);}var p=new Pending(Kind.RELEASE,current.tenure(),UUID.randomUUID(),nanos.getAsLong());pending=p;
             try{var attempt=repository.releaseTracked(current.grant().token());track(p,attempt);attempt.logical().whenComplete((value,error)->released(p,value,error));}
             catch(RuntimeException error){p.physicalDone=true;unknown(p,error,false);}return p.result.minimalCompletionStage();

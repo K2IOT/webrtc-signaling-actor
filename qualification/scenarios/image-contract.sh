@@ -22,6 +22,7 @@ config=image['Config'];labels=config.get('Labels') or {}
 assert config['User']=='10001:10001','Image must run as the declared unprivileged identity'
 assert config['WorkingDir']=='/opt/signaling','Unexpected launcher working directory'
 assert config['Entrypoint']==['java','-jar','/opt/signaling/app.jar'],'Unexpected executable launcher'
+assert 'JDK_JAVA_OPTIONS=--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED' in config.get('Env',[]),'Missing required native Agrona JVM export'
 assert re.fullmatch('[a-f0-9]{40}',labels.get('org.opencontainers.image.revision','')),'Missing immutable source commit'
 assert re.fullmatch('sha256:[a-f0-9]{64}',labels.get('org.opencontainers.image.base.digest','')),'Missing pinned native base digest'
 assert not any(name.startswith(('SIGNALING_IDENTITY_ISSUER=','SIGNALING_IDENTITY_AUDIENCE=','SIGNALING_RUNTIME_CONTRACT=')) for name in config.get('Env',[])),'Image must not embed an environment enrollment'

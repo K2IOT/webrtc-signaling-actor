@@ -112,9 +112,39 @@ class PostgresShardLeaseContractIT {
             public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){return repository.reconcileTracked(group,node,incarnation);}
         };
         var lease=lease(111,delayed,null);assertThat(lease.acquire().toCompletableFuture().join()).isTrue();
-        var drain=lease.drain().toCompletableFuture();assertThat(lease.checkLease()).isFalse();assertThat(drain).isNotDone();assertThat(lease.drain().toCompletableFuture()).isNotDone();
-        assertThatThrownBy(()->lease.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
-        cleanup.complete(DbOperation.PhysicalCompletion.FINISHED);drain.join();assertThat(lease.drain().toCompletableFuture()).isCompleted();
+        try {
+            var drain=lease.drain().toCompletableFuture();assertThat(lease.checkLease()).isFalse();assertThat(drain).isNotDone();assertThat(lease.drain().toCompletableFuture()).isNotDone();
+            // Framework PostStop and placement loss can repeat the same native release.
+            assertThat(lease.release().toCompletableFuture()).as("repeat release preserves original committed reply and physical tail").isCompletedWithValue(true);
+            assertThat(drain).isNotDone();
+            assertThatThrownBy(()->lease.acquire().toCompletableFuture().join()).hasCauseInstanceOf(AuthoritySql.FencedException.class);
+            cleanup.complete(DbOperation.PhysicalCompletion.FINISHED);drain.join();assertThat(lease.drain().toCompletableFuture()).isCompleted();
+        } finally {cleanup.complete(DbOperation.PhysicalCompletion.FINISHED);}
+    }
+
+    @Test void duplicateFrameworkReleaseRetainsPendingReplyAndOriginalPhysicalReceipt()throws Exception{
+        var reply=new CompletableFuture<Boolean>();var physical=new CompletableFuture<DbOperation.PhysicalCompletion>();var releases=new AtomicInteger();
+        GroupOwnership delayed=new GroupOwnership(){
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(int group,String node,UUID incarnation,UUID operation){return repository.acquireTracked(group,node,incarnation,operation);}
+            public DbOperation<GroupOwnerRepository.Grant> pulseTracked(GroupOwnerRepository.Grant grant,long sequence,UUID operation){return repository.pulseTracked(grant,sequence,operation);}
+            public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token){
+                releases.incrementAndGet();var actual=repository.releaseTracked(token);
+                assertThat(actual.logical().toCompletableFuture().join()).isTrue();actual.physicalCompletion().toCompletableFuture().join();
+                return new DbOperation<>(reply,physical);
+            }
+            public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(int group,String node,UUID incarnation){return repository.reconcile(group,node,incarnation);}
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(int group,String node,UUID incarnation){return repository.reconcileTracked(group,node,incarnation);}
+        };
+        var lease=lease(114,delayed,null);assertThat(lease.acquire().toCompletableFuture().join()).isTrue();
+        try {
+            var original=lease.release().toCompletableFuture();var repeated=lease.release().toCompletableFuture();
+            assertThat(original).as("duplicate framework callback must preserve original pending reply").isNotDone();assertThat(repeated).isNotDone();
+            var drain=lease.drain().toCompletableFuture();assertThat(drain).isNotDone();assertThat(releases).hasValue(1);
+            reply.complete(true);assertThat(original.get(1,TimeUnit.SECONDS)).isTrue();assertThat(repeated.get(1,TimeUnit.SECONDS)).isTrue();
+            assertThat(drain).as("logical COMMIT acknowledgment cannot release original physical credit").isNotDone();
+            physical.complete(DbOperation.PhysicalCompletion.FINISHED);drain.get(2,TimeUnit.SECONDS);
+            assertThat(releases).hasValue(1);assertThat(lease.checkLease()).isFalse();
+        } finally {reply.complete(true);physical.complete(DbOperation.PhysicalCompletion.FINISHED);}
     }
 
     @Test void reconciliationReadRetainsPhysicalCreditBeforeMatchedReleaseAndDrain()throws Exception{
