@@ -1,18 +1,19 @@
 package io.webrtc.signaling.storage;
 
 import static org.assertj.core.api.Assertions.*;
-import io.webrtc.signaling.app.runtime.*;
-import io.webrtc.signaling.auth.RevocationState;
-import io.webrtc.signaling.auth.ClockSafetyMonitor;
-import io.webrtc.signaling.actors.cluster.ClusterReadiness;
-import io.webrtc.signaling.storage.worker.*;
+
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.ssl.*;
-import io.netty.buffer.Unpooled;
+import io.webrtc.signaling.actors.cluster.ClusterReadiness;
+import io.webrtc.signaling.app.runtime.*;
+import io.webrtc.signaling.auth.ClockSafetyMonitor;
+import io.webrtc.signaling.auth.RevocationState;
+import io.webrtc.signaling.storage.worker.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
@@ -24,234 +25,960 @@ import org.junit.jupiter.api.Test;
 
 /** Actual mTLS source and PostgreSQL, with explicit TEST_ONLY source identity and PKI. */
 class NativeRevocationSourceIT {
-    @Test void mainRejectsSourceAndActorAuthorityMismatchBeforeRegionStartup()throws Exception {
-        try(var f=new LocalInviteAtomicIT.Fixture();var tokens=new io.webrtc.signaling.auth.BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
-            var system=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-mismatched-source-c001",NativeActorCompositionIT.config("a"));
-            try{
-                UUID pod=UUID.randomUUID(),boot=UUID.randomUUID();var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
-                var proofs=new io.webrtc.signaling.rpc.HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
-                var business=new NativeActorBusinessEnrollment(system,"c001",1,1,pod,proofs,user->new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001",1,1),(connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
-                var identity=new io.webrtc.signaling.auth.IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofMillis(500),Duration.ofSeconds(1),true,"TEST_ONLY_SOURCE");
-                var endpoint=new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:1/v1/source"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic()));
-                var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
-                var mismatches=List.of(new NativeActorSourceEnrollment("c002",1,pod,boot,identity,endpoint,endpoint),
-                    new NativeActorSourceEnrollment("c001",2,pod,boot,identity,endpoint,endpoint),
-                    new NativeActorSourceEnrollment("c001",1,UUID.randomUUID(),boot,identity,endpoint,endpoint));
-                for(var sources:mismatches){
-                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
-                        .withBean(NativeActorBusinessEnrollment.class,()->business).withBean(NativeActorSourceEnrollment.class,()->sources).withBean(SqlTransactions.class,()->f.runtime.sql)
-                        .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
-                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
-                        .run(context->{assertThat(context).hasFailed();assertThat(context.getStartupFailure()).hasRootCauseMessage("Native actor authority differs from source enrollment");});
-                }
-                var otherSystem=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-other-scheduler-c001",NativeActorCompositionIT.config("a"));
-                try{
-                    var sources=new NativeActorSourceEnrollment("c001",1,pod,boot,identity,endpoint,endpoint);
-                    var scheduling=new NativeActorSchedulingEnrollment(otherSystem,Set.of("az-a","az-b","az-c"),"a".repeat(64),List.of(),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n");
-                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
-                        .withBean(NativeActorBusinessEnrollment.class,()->business).withBean(NativeActorSourceEnrollment.class,()->sources).withBean(SqlTransactions.class,()->f.runtime.sql)
-                        .withBean(NativeActorSchedulingEnrollment.class,()->scheduling)
-                        .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
-                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
-                        .run(context->{assertThat(context).hasFailed();assertThat(context.getStartupFailure()).hasRootCauseMessage("Native actor scheduling process differs from business enrollment");});
-                }finally{otherSystem.terminate();otherSystem.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);}
-            }finally{system.terminate();system.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);}
+  @Test
+  void mainRejectsSourceAndActorAuthorityMismatchBeforeRegionStartup() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture();
+        var tokens =
+            new io.webrtc.signaling.auth.BoundedTokenVerifier(
+                (token, now) -> {
+                  throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");
+                },
+                1,
+                8,
+                Duration.ofSeconds(1))) {
+      var system =
+          org.apache.pekko.actor.typed.ActorSystem.<Void>create(
+              org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),
+              "native-mismatched-source-c001",
+              NativeActorCompositionIT.config("a"));
+      try {
+        UUID pod = UUID.randomUUID(), boot = UUID.randomUUID();
+        var keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        var proofs =
+            new io.webrtc.signaling.rpc.HomeAuthorizationProof(
+                "c001", "test", keys.getPrivate(), Map.of("c001/test", keys.getPublic()));
+        var business =
+            new NativeActorBusinessEnrollment(
+                system,
+                "c001",
+                1,
+                1,
+                pod,
+                proofs,
+                user -> new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001", 1, 1),
+                (connection, from, to) -> false,
+                tokens,
+                io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
+        var identity =
+            new io.webrtc.signaling.auth.IdentitySecurityContract(
+                "TEST_ONLY_ISSUER",
+                "TEST_ONLY_AUDIENCE",
+                Duration.ofMinutes(10),
+                Duration.ofSeconds(30),
+                Duration.ofMillis(500),
+                Duration.ofSeconds(1),
+                true,
+                "TEST_ONLY_SOURCE");
+        var endpoint =
+            new NativeActorSourceEnrollment.Endpoint(
+                URI.create("https://localhost:1/v1/source"),
+                NativeClockSourceIT.clientTls(true),
+                Map.of("TEST_ONLY_SOURCE", keys.getPublic()));
+        var defaults =
+            new org.springframework.boot.env.YamlPropertySourceLoader()
+                .load(
+                    "TEST_ONLY_defaults",
+                    new org.springframework.core.io.FileSystemResource(
+                        "../config/production-defaults.yaml"));
+        var mismatches =
+            List.of(
+                new NativeActorSourceEnrollment("c002", 1, pod, boot, identity, endpoint, endpoint),
+                new NativeActorSourceEnrollment("c001", 2, pod, boot, identity, endpoint, endpoint),
+                new NativeActorSourceEnrollment(
+                    "c001", 1, UUID.randomUUID(), boot, identity, endpoint, endpoint));
+        for (var sources : mismatches) {
+          new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+              .withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+              .withBean(NativeActorBusinessEnrollment.class, () -> business)
+              .withBean(NativeActorSourceEnrollment.class, () -> sources)
+              .withBean(SqlTransactions.class, () -> f.runtime.sql)
+              .withInitializer(
+                  context -> {
+                    defaults.forEach(
+                        value -> context.getEnvironment().getPropertySources().addLast(value));
+                    context.getEnvironment().setActiveProfiles("actor");
+                  })
+              .withPropertyValues(
+                  "signaling.identity.issuer=TEST_ONLY_ISSUER",
+                  "signaling.identity.audience=TEST_ONLY_AUDIENCE")
+              .run(
+                  context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                        .hasRootCauseMessage(
+                            "Native actor authority differs from source enrollment");
+                  });
         }
+        var otherSystem =
+            org.apache.pekko.actor.typed.ActorSystem.<Void>create(
+                org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),
+                "native-other-scheduler-c001",
+                NativeActorCompositionIT.config("a"));
+        try {
+          var sources =
+              new NativeActorSourceEnrollment("c001", 1, pod, boot, identity, endpoint, endpoint);
+          var scheduling =
+              new NativeActorSchedulingEnrollment(
+                  otherSystem,
+                  Set.of("az-a", "az-b", "az-c"),
+                  "a".repeat(64),
+                  List.of(),
+                  event -> {},
+                  new InetSocketAddress("127.0.0.1", 0),
+                  () -> true,
+                  () -> "TEST_ONLY\n");
+          new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+              .withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+              .withBean(NativeActorBusinessEnrollment.class, () -> business)
+              .withBean(NativeActorSourceEnrollment.class, () -> sources)
+              .withBean(SqlTransactions.class, () -> f.runtime.sql)
+              .withBean(NativeActorSchedulingEnrollment.class, () -> scheduling)
+              .withInitializer(
+                  context -> {
+                    defaults.forEach(
+                        value -> context.getEnvironment().getPropertySources().addLast(value));
+                    context.getEnvironment().setActiveProfiles("actor");
+                  })
+              .withPropertyValues(
+                  "signaling.identity.issuer=TEST_ONLY_ISSUER",
+                  "signaling.identity.audience=TEST_ONLY_AUDIENCE")
+              .run(
+                  context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                        .hasRootCauseMessage(
+                            "Native actor scheduling process differs from business enrollment");
+                  });
+        } finally {
+          otherSystem.terminate();
+          otherSystem.getWhenTerminated().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        }
+      } finally {
+        system.terminate();
+        system.getWhenTerminated().toCompletableFuture().get(15, TimeUnit.SECONDS);
+      }
     }
-    @Test void originalSignedSourcePagesCommitRevocationAndKeepPartialCatchUpUnhealthy()throws Exception {
-        try(var f=new LocalInviteAtomicIT.Fixture()){
-            var route=SessionAuthReadIT.route(f,f.sender("native-source-revoked"));var principal=SessionAuthReadIT.principal(route);
-            var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
-            var verifier=new RevocationSourceVerifier("c001",route.key().issuer(),Map.of("TEST_ONLY_SOURCE",keys.getPublic()));
-            var reconciler=new RevocationReconciler(f.runtime.sql,"c001",1,Duration.ofSeconds(1),verifier);
-            var mode=new AtomicInteger();var clockSequence=new AtomicLong();var offsets=new ConcurrentLinkedQueue<Long>();var heldResponse=new AtomicReference<>(new CompletableFuture<Runnable>());UUID pod=UUID.randomUUID(),boot=UUID.randomUUID();
-            var tls=SslContextBuilder.forServer(NativeClockSourceIT.cert("server.crt"),NativeClockSourceIT.cert("server.key")).trustManager(NativeClockSourceIT.cert("ca.crt")).clientAuth(ClientAuth.REQUIRE).sslProvider(SslProvider.JDK).protocols("TLSv1.3").build();
-            var boss=new NioEventLoopGroup(1);var children=new NioEventLoopGroup(1);Channel server=null;
-            try{
-                server=new ServerBootstrap().group(boss,children).channel(NioServerSocketChannel.class).childHandler(new ChannelInitializer<Channel>(){protected void initChannel(Channel channel){channel.pipeline().addLast(tls.newHandler(channel.alloc()),new HttpServerCodec(),new HttpObjectAggregator(8192),new SimpleChannelInboundHandler<FullHttpRequest>(){protected void channelRead0(ChannelHandlerContext ctx,FullHttpRequest request)throws Exception {
-                    if(request.uri().equals("/v1/clock-bound")){
-                        Instant now=Instant.now();var report=new ClockSafetyMonitor.Report("TEST_ONLY_SOURCE","c001",1,pod,boot,clockSequence.incrementAndGet(),now,now.plusSeconds(5),250000,1000,true);
-                        var signature=Signature.getInstance("Ed25519");signature.initSign(keys.getPrivate());signature.update(ClockSafetyMonitor.signingBytes(report));
-                        var payload=NativeClockSourceIT.JSON.createObjectNode();payload.set("report",NativeClockSourceIT.JSON.valueToTree(report));payload.put("signature",Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign()));
-                        var response=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK,Unpooled.copiedBuffer(payload.toString(),StandardCharsets.UTF_8));response.headers().set(HttpHeaderNames.CONTENT_TYPE,"application/json").setInt(HttpHeaderNames.CONTENT_LENGTH,response.content().readableBytes());ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);return;
+  }
+
+  @Test
+  void originalSignedSourcePagesCommitRevocationAndKeepPartialCatchUpUnhealthy() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var route = SessionAuthReadIT.route(f, f.sender("native-source-revoked"));
+      var principal = SessionAuthReadIT.principal(route);
+      var keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+      var verifier =
+          new RevocationSourceVerifier(
+              "c001", route.key().issuer(), Map.of("TEST_ONLY_SOURCE", keys.getPublic()));
+      var reconciler =
+          new RevocationReconciler(f.runtime.sql, "c001", 1, Duration.ofSeconds(1), verifier);
+      var mode = new AtomicInteger();
+      var clockSequence = new AtomicLong();
+      var offsets = new ConcurrentLinkedQueue<Long>();
+      var heldResponse = new AtomicReference<>(new CompletableFuture<Runnable>());
+      UUID pod = UUID.randomUUID(), boot = UUID.randomUUID();
+      var tls =
+          SslContextBuilder.forServer(
+                  NativeClockSourceIT.cert("server.crt"), NativeClockSourceIT.cert("server.key"))
+              .trustManager(NativeClockSourceIT.cert("ca.crt"))
+              .clientAuth(ClientAuth.REQUIRE)
+              .sslProvider(SslProvider.JDK)
+              .protocols("TLSv1.3")
+              .build();
+      var boss = new NioEventLoopGroup(1);
+      var children = new NioEventLoopGroup(1);
+      Channel server = null;
+      try {
+        server =
+            new ServerBootstrap()
+                .group(boss, children)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(
+                    new ChannelInitializer<Channel>() {
+                      protected void initChannel(Channel channel) {
+                        channel
+                            .pipeline()
+                            .addLast(
+                                tls.newHandler(channel.alloc()),
+                                new HttpServerCodec(),
+                                new HttpObjectAggregator(8192),
+                                new SimpleChannelInboundHandler<FullHttpRequest>() {
+                                  protected void channelRead0(
+                                      ChannelHandlerContext ctx, FullHttpRequest request)
+                                      throws Exception {
+                                    if (request.uri().equals("/v1/clock-bound")) {
+                                      Instant now = Instant.now();
+                                      var report =
+                                          new ClockSafetyMonitor.Report(
+                                              "TEST_ONLY_SOURCE",
+                                              "c001",
+                                              1,
+                                              pod,
+                                              boot,
+                                              clockSequence.incrementAndGet(),
+                                              now,
+                                              now.plusSeconds(5),
+                                              250000,
+                                              1000,
+                                              true);
+                                      var signature = Signature.getInstance("Ed25519");
+                                      signature.initSign(keys.getPrivate());
+                                      signature.update(ClockSafetyMonitor.signingBytes(report));
+                                      var payload = NativeClockSourceIT.JSON.createObjectNode();
+                                      payload.set(
+                                          "report", NativeClockSourceIT.JSON.valueToTree(report));
+                                      payload.put(
+                                          "signature",
+                                          Base64.getUrlEncoder()
+                                              .withoutPadding()
+                                              .encodeToString(signature.sign()));
+                                      var response =
+                                          new DefaultFullHttpResponse(
+                                              HttpVersion.HTTP_1_1,
+                                              HttpResponseStatus.OK,
+                                              Unpooled.copiedBuffer(
+                                                  payload.toString(), StandardCharsets.UTF_8));
+                                      response
+                                          .headers()
+                                          .set(HttpHeaderNames.CONTENT_TYPE, "application/json")
+                                          .setInt(
+                                              HttpHeaderNames.CONTENT_LENGTH,
+                                              response.content().readableBytes());
+                                      ctx.writeAndFlush(response)
+                                          .addListener(ChannelFutureListener.CLOSE);
+                                      return;
+                                    }
+                                    assertThat(request.uri()).isEqualTo("/v1/revocations");
+                                    assertThat(request.method()).isEqualTo(HttpMethod.GET);
+                                    assertThat(request.headers().get("X-Signaling-Pod-Uid"))
+                                        .isEqualTo(pod.toString());
+                                    assertThat(request.headers().get("X-Signaling-Process-Boot"))
+                                        .isEqualTo(boot.toString());
+                                    long from =
+                                        Long.parseLong(
+                                            request.headers().get("X-Signaling-Source-Offset"));
+                                    offsets.add(from);
+                                    Instant now = Instant.now();
+                                    long high =
+                                        mode.get() == 2
+                                            ? 1
+                                            : mode.get() == 3
+                                                ? 2
+                                                : mode.get() == 4 ? from + 1 : from;
+                                    var events =
+                                        mode.get() == 2
+                                            ? List.of(
+                                                new RevocationState.Event(
+                                                    route.key().issuer(),
+                                                    route.user(),
+                                                    route.key().jti(),
+                                                    principal.securityEpoch(),
+                                                    1,
+                                                    now))
+                                            : List.<RevocationState.Event>of();
+                                    var page =
+                                        new RevocationReconciler.Batch(
+                                            mode.get() == 4 ? from + 1 : from,
+                                            high,
+                                            events,
+                                            now,
+                                            "",
+                                            List.of(),
+                                            mode.get() == 2 ? 2 : high);
+                                    var signature = Signature.getInstance("Ed25519");
+                                    signature.initSign(keys.getPrivate());
+                                    signature.update(
+                                        RevocationSourceVerifier.signingBytes(
+                                            "c001", route.key().issuer(), page));
+                                    String proof =
+                                        "TEST_ONLY_SOURCE."
+                                            + (mode.get() == 1
+                                                ? "a".repeat(86)
+                                                : Base64.getUrlEncoder()
+                                                    .withoutPadding()
+                                                    .encodeToString(signature.sign()));
+                                    page =
+                                        new RevocationReconciler.Batch(
+                                            page.fromOffset(),
+                                            high,
+                                            events,
+                                            now,
+                                            proof,
+                                            List.of(),
+                                            page.currentSourceHighWater());
+                                    String body = NativeClockSourceIT.JSON.writeValueAsString(page);
+                                    if (mode.get() == 5)
+                                      body =
+                                          body.substring(0, body.length() - 1)
+                                              + ",\"highWater\":0}";
+                                    if (mode.get() == 6)
+                                      body =
+                                          body.substring(0, body.length() - 1)
+                                              + ",\"healthy\":true}";
+                                    if (mode.get() == 9) body += "{}";
+                                    if (mode.get() == 7) {
+                                      var value = NativeClockSourceIT.JSON.readTree(body);
+                                      ((com.fasterxml.jackson.databind.node.ObjectNode) value)
+                                          .remove("fromOffset");
+                                      body = value.toString();
+                                    }
+                                    var response =
+                                        new DefaultFullHttpResponse(
+                                            HttpVersion.HTTP_1_1,
+                                            HttpResponseStatus.OK,
+                                            Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
+                                    response
+                                        .headers()
+                                        .set(HttpHeaderNames.CONTENT_TYPE, "application/json")
+                                        .setInt(
+                                            HttpHeaderNames.CONTENT_LENGTH,
+                                            response.content().readableBytes());
+                                    Runnable send =
+                                        () ->
+                                            ctx.writeAndFlush(response)
+                                                .addListener(ChannelFutureListener.CLOSE);
+                                    if (mode.get() == 8) heldResponse.get().complete(send);
+                                    else send.run();
+                                  }
+                                });
+                      }
+                    })
+                .bind("127.0.0.1", 0)
+                .sync()
+                .channel();
+        int port = ((InetSocketAddress) server.localAddress()).getPort();
+        try (var source =
+            new NativeRevocationSource(
+                URI.create("https://localhost:" + port + "/v1/revocations"),
+                NativeClockSourceIT.clientTls(true),
+                verifier,
+                reconciler,
+                pod,
+                boot)) {
+          assertThat(source.usable()).isFalse();
+          settled(source.poll(Duration.ofSeconds(2)));
+          assertThat(source.usable()).isTrue();
+          try (var c = f.connection()) {
+            assertThat(reconciler.allowed(c, principal)).isTrue();
+          }
+          java.util.concurrent.locks.LockSupport.parkNanos(Duration.ofMillis(1100).toNanos());
+          assertThat(source.usable()).isFalse();
+          mode.set(1);
+          var invalid = source.poll(Duration.ofSeconds(2));
+          assertThat(invalid.logical().toCompletableFuture()).isCompletedExceptionally();
+          invalid.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+          assertThat(source.usable()).isFalse();
+          for (int malformed : new int[] {4, 5, 6, 7, 9}) {
+            mode.set(malformed);
+            var rejected = source.poll(Duration.ofSeconds(2));
+            assertThat(rejected.logical().toCompletableFuture()).isCompletedExceptionally();
+            rejected.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertThat(source.usable()).isFalse();
+          }
+          assertThat(CoordinatorGrantIT.done(reconciler.progress()).offset()).isZero();
+          mode.set(2);
+          settled(source.poll(Duration.ofSeconds(2)));
+          assertThat(source.usable()).isFalse();
+          assertThat(f.sessions.lookupLiveRoutes(route.user(), 1).toCompletableFuture().join())
+              .isEmpty();
+          assertThat(CoordinatorGrantIT.done(reconciler.progress()).checkedAt())
+              .isEqualTo(Instant.EPOCH);
+          mode.set(3);
+          settled(source.poll(Duration.ofSeconds(2)));
+          assertThat(source.usable()).isTrue();
+          assertThat(CoordinatorGrantIT.done(reconciler.progress()).offset()).isEqualTo(2);
+          try (var c = f.connection()) {
+            assertThat(reconciler.allowed(c, principal)).isFalse();
+          }
+          mode.set(0);
+          var eventsSeen = new CountDownLatch(1);
+          try (var scheduler =
+              new NativeWorkerScheduler(
+                  List.of(source.job(Duration.ofMillis(100))),
+                  event -> {
+                    if (event.status() == NativeWorkerScheduler.Status.COMPLETED)
+                      eventsSeen.countDown();
+                  })) {
+            scheduler.start();
+            assertThat(eventsSeen.await(3, TimeUnit.SECONDS)).isTrue();
+            scheduler.drain().toCompletableFuture().get(3, TimeUnit.SECONDS);
+          }
+          source.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+          assertThat(source.usable()).isFalse();
+          assertThat(source.poll(Duration.ofSeconds(2)).logical().toCompletableFuture())
+              .isCompletedExceptionally();
+        }
+        assertThat(offsets).containsSubsequence(0L, 0L, 0L, 1L, 2L);
+        try (var wrong =
+            new NativeRevocationSource(
+                URI.create("https://127.0.0.1:" + port + "/v1/revocations"),
+                NativeClockSourceIT.clientTls(true),
+                verifier,
+                reconciler,
+                pod,
+                boot)) {
+          var operation = wrong.poll(Duration.ofSeconds(2));
+          assertThat(operation.logical().toCompletableFuture()).isCompletedExceptionally();
+          operation.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+          assertThat(wrong.usable()).isFalse();
+        }
+        mode.set(8);
+        try (var waiting =
+                new NativeRevocationSource(
+                    URI.create("https://localhost:" + port + "/v1/revocations"),
+                    NativeClockSourceIT.clientTls(true),
+                    verifier,
+                    reconciler,
+                    pod,
+                    boot);
+            var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+          var poll = tasks.submit(() -> waiting.poll(Duration.ofSeconds(2)));
+          var release = heldResponse.get().get(1, TimeUnit.SECONDS);
+          var draining = waiting.drain().toCompletableFuture();
+          assertThat(draining).isNotDone();
+          assertThat(poll).isNotDone();
+          assertThat(waiting.usable()).isFalse();
+          release.run();
+          settled(poll.get(2, TimeUnit.SECONDS));
+          draining.get(2, TimeUnit.SECONDS);
+          assertThat(waiting.usable()).isFalse();
+        }
+        heldResponse.set(new CompletableFuture<>());
+        mode.set(8);
+        try (var reentrant =
+                new NativeRevocationSource(
+                    URI.create("https://localhost:" + port + "/v1/revocations"),
+                    new SecondFactoryUnknownContext(NativeClockSourceIT.clientTls(true)),
+                    verifier,
+                    reconciler,
+                    pod,
+                    boot);
+            var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+          var running = tasks.submit(() -> reentrant.poll(Duration.ofSeconds(2)));
+          var release = heldResponse.get().get(1, TimeUnit.SECONDS);
+          var globalDrain = new AtomicReference<CompletionStage<Void>>();
+          var callbackDone = new CompletableFuture<Void>();
+          reentrant
+              .settleAdmitted()
+              .whenComplete(
+                  (v, e) -> {
+                    try {
+                      var unknown = reentrant.poll(Duration.ofSeconds(1));
+                      assertThat(unknown.logical().toCompletableFuture())
+                          .isCompletedExceptionally();
+                      assertThat(unknown.physicalCompletion().toCompletableFuture()).isNotDone();
+                      globalDrain.set(reentrant.drain());
+                      callbackDone.complete(null);
+                    } catch (Throwable failure) {
+                      callbackDone.completeExceptionally(failure);
                     }
-                    assertThat(request.uri()).isEqualTo("/v1/revocations");assertThat(request.method()).isEqualTo(HttpMethod.GET);
-                    assertThat(request.headers().get("X-Signaling-Pod-Uid")).isEqualTo(pod.toString());assertThat(request.headers().get("X-Signaling-Process-Boot")).isEqualTo(boot.toString());
-                    long from=Long.parseLong(request.headers().get("X-Signaling-Source-Offset"));offsets.add(from);Instant now=Instant.now();
-                    long high=mode.get()==2?1:mode.get()==3?2:mode.get()==4?from+1:from;
-                    var events=mode.get()==2?List.of(new RevocationState.Event(route.key().issuer(),route.user(),route.key().jti(),principal.securityEpoch(),1,now)):List.<RevocationState.Event>of();
-                    var page=new RevocationReconciler.Batch(mode.get()==4?from+1:from,high,events,now,"",List.of(),mode.get()==2?2:high);
-                    var signature=Signature.getInstance("Ed25519");signature.initSign(keys.getPrivate());signature.update(RevocationSourceVerifier.signingBytes("c001",route.key().issuer(),page));
-                    String proof="TEST_ONLY_SOURCE."+(mode.get()==1?"a".repeat(86):Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign()));
-                    page=new RevocationReconciler.Batch(page.fromOffset(),high,events,now,proof,List.of(),page.currentSourceHighWater());
-                    String body=NativeClockSourceIT.JSON.writeValueAsString(page);
-                    if(mode.get()==5)body=body.substring(0,body.length()-1)+",\"highWater\":0}";
-                    if(mode.get()==6)body=body.substring(0,body.length()-1)+",\"healthy\":true}";
-                    if(mode.get()==9)body+="{}";
-                    if(mode.get()==7){var value=NativeClockSourceIT.JSON.readTree(body);((com.fasterxml.jackson.databind.node.ObjectNode)value).remove("fromOffset");body=value.toString();}
-                    var response=new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK,Unpooled.copiedBuffer(body,StandardCharsets.UTF_8));response.headers().set(HttpHeaderNames.CONTENT_TYPE,"application/json").setInt(HttpHeaderNames.CONTENT_LENGTH,response.content().readableBytes());
-                    Runnable send=()->ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-                    if(mode.get()==8)heldResponse.get().complete(send);else send.run();
-                }});}}).bind("127.0.0.1",0).sync().channel();int port=((InetSocketAddress)server.localAddress()).getPort();
-                try(var source=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot)){
-                    assertThat(source.usable()).isFalse();settled(source.poll(Duration.ofSeconds(2)));assertThat(source.usable()).isTrue();
-                    try(var c=f.connection()){assertThat(reconciler.allowed(c,principal)).isTrue();}
-                    java.util.concurrent.locks.LockSupport.parkNanos(Duration.ofMillis(1100).toNanos());
-                    assertThat(source.usable()).isFalse();
-                    mode.set(1);var invalid=source.poll(Duration.ofSeconds(2));assertThat(invalid.logical().toCompletableFuture()).isCompletedExceptionally();invalid.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(source.usable()).isFalse();
-                    for(int malformed:new int[]{4,5,6,7,9}){
-                        mode.set(malformed);var rejected=source.poll(Duration.ofSeconds(2));assertThat(rejected.logical().toCompletableFuture()).isCompletedExceptionally();rejected.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(source.usable()).isFalse();
+                  });
+          release.run();
+          var original = running.get(2, TimeUnit.SECONDS);
+          callbackDone.get(2, TimeUnit.SECONDS);
+          original.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+          assertThat(globalDrain.get().toCompletableFuture()).isNotDone();
+          assertThat(reentrant.usable()).isFalse();
+        }
+        mode.set(0);
+        var identity =
+            new io.webrtc.signaling.auth.IdentitySecurityContract(
+                route.key().issuer(),
+                "TEST_ONLY_AUDIENCE",
+                Duration.ofMinutes(10),
+                Duration.ofSeconds(30),
+                Duration.ofMillis(500),
+                Duration.ofSeconds(1),
+                true,
+                "TEST_ONLY_SOURCE");
+        var sourceEnrollment =
+            new NativeActorSourceEnrollment(
+                "c001",
+                1,
+                pod,
+                boot,
+                identity,
+                new NativeActorSourceEnrollment.Endpoint(
+                    URI.create("https://localhost:" + port + "/v1/clock-bound"),
+                    NativeClockSourceIT.clientTls(true),
+                    Map.of("TEST_ONLY_SOURCE", keys.getPublic())),
+                new NativeActorSourceEnrollment.Endpoint(
+                    URI.create("https://localhost:" + port + "/v1/revocations"),
+                    NativeClockSourceIT.clientTls(true),
+                    Map.of("TEST_ONLY_SOURCE", keys.getPublic())));
+        var sourceDefaults =
+            new org.springframework.boot.env.YamlPropertySourceLoader()
+                .load(
+                    "TEST_ONLY_defaults",
+                    new org.springframework.core.io.FileSystemResource(
+                        "../config/production-defaults.yaml"));
+        for (var plane : io.webrtc.signaling.app.SignalingApplication.Plane.values()) {
+          new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+              .withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+              .withBean(NativeActorSourceEnrollment.class, () -> sourceEnrollment)
+              .withBean(SqlTransactions.class, () -> f.runtime.sql)
+              .withInitializer(
+                  context -> {
+                    sourceDefaults.forEach(
+                        value -> context.getEnvironment().getPropertySources().addLast(value));
+                    context
+                        .getEnvironment()
+                        .setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));
+                  })
+              .withPropertyValues(
+                  "signaling.identity.issuer=" + identity.issuer(),
+                  "signaling.identity.audience=" + identity.audience())
+              .run(
+                  context -> {
+                    assertThat(context).hasNotFailed();
+                    if (plane != io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR) {
+                      assertThat(context)
+                          .doesNotHaveBean(NativeClockSource.class)
+                          .doesNotHaveBean(NativeRevocationSource.class);
+                      return;
                     }
-                    assertThat(CoordinatorGrantIT.done(reconciler.progress()).offset()).isZero();
-                    mode.set(2);settled(source.poll(Duration.ofSeconds(2)));assertThat(source.usable()).isFalse();assertThat(f.sessions.lookupLiveRoutes(route.user(),1).toCompletableFuture().join()).isEmpty();
-                    assertThat(CoordinatorGrantIT.done(reconciler.progress()).checkedAt()).isEqualTo(Instant.EPOCH);
-                    mode.set(3);settled(source.poll(Duration.ofSeconds(2)));assertThat(source.usable()).isTrue();assertThat(CoordinatorGrantIT.done(reconciler.progress()).offset()).isEqualTo(2);
-                    try(var c=f.connection()){assertThat(reconciler.allowed(c,principal)).isFalse();}
-                    mode.set(0);var eventsSeen=new CountDownLatch(1);
-                    try(var scheduler=new NativeWorkerScheduler(List.of(source.job(Duration.ofMillis(100))),event->{if(event.status()==NativeWorkerScheduler.Status.COMPLETED)eventsSeen.countDown();})){
-                        scheduler.start();assertThat(eventsSeen.await(3,TimeUnit.SECONDS)).isTrue();scheduler.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
-                    }
-                    source.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(source.usable()).isFalse();assertThat(source.poll(Duration.ofSeconds(2)).logical().toCompletableFuture()).isCompletedExceptionally();
-                }
-                assertThat(offsets).containsSubsequence(0L,0L,0L,1L,2L);
-                try(var wrong=new NativeRevocationSource(URI.create("https://127.0.0.1:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot)){
-                    var operation=wrong.poll(Duration.ofSeconds(2));assertThat(operation.logical().toCompletableFuture()).isCompletedExceptionally();operation.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(wrong.usable()).isFalse();
-                }
-                mode.set(8);
-                try(var waiting=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot);var tasks=Executors.newVirtualThreadPerTaskExecutor()){
-                    var poll=tasks.submit(()->waiting.poll(Duration.ofSeconds(2)));var release=heldResponse.get().get(1,TimeUnit.SECONDS);
-                    var draining=waiting.drain().toCompletableFuture();assertThat(draining).isNotDone();assertThat(poll).isNotDone();assertThat(waiting.usable()).isFalse();
-                    release.run();settled(poll.get(2,TimeUnit.SECONDS));draining.get(2,TimeUnit.SECONDS);assertThat(waiting.usable()).isFalse();
-                }
-                heldResponse.set(new CompletableFuture<>());mode.set(8);
-                try(var reentrant=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),new SecondFactoryUnknownContext(NativeClockSourceIT.clientTls(true)),verifier,reconciler,pod,boot);var tasks=Executors.newVirtualThreadPerTaskExecutor()){
-                    var running=tasks.submit(()->reentrant.poll(Duration.ofSeconds(2)));var release=heldResponse.get().get(1,TimeUnit.SECONDS);
-                    var globalDrain=new AtomicReference<CompletionStage<Void>>();var callbackDone=new CompletableFuture<Void>();
-                    reentrant.settleAdmitted().whenComplete((v,e)->{try{var unknown=reentrant.poll(Duration.ofSeconds(1));assertThat(unknown.logical().toCompletableFuture()).isCompletedExceptionally();assertThat(unknown.physicalCompletion().toCompletableFuture()).isNotDone();globalDrain.set(reentrant.drain());callbackDone.complete(null);}catch(Throwable failure){callbackDone.completeExceptionally(failure);}});
-                    release.run();var original=running.get(2,TimeUnit.SECONDS);callbackDone.get(2,TimeUnit.SECONDS);
-                    original.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(globalDrain.get().toCompletableFuture()).isNotDone();assertThat(reentrant.usable()).isFalse();
-                }
-                mode.set(0);
-                var identity=new io.webrtc.signaling.auth.IdentitySecurityContract(route.key().issuer(),"TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofMillis(500),Duration.ofSeconds(1),true,"TEST_ONLY_SOURCE");
-                var sourceEnrollment=new NativeActorSourceEnrollment("c001",1,pod,boot,identity,
-                    new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:"+port+"/v1/clock-bound"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic())),
-                    new NativeActorSourceEnrollment.Endpoint(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),Map.of("TEST_ONLY_SOURCE",keys.getPublic())));
-                var sourceDefaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
-                for(var plane:io.webrtc.signaling.app.SignalingApplication.Plane.values()){
-                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
-                        .withBean(NativeActorSourceEnrollment.class,()->sourceEnrollment).withBean(SqlTransactions.class,()->f.runtime.sql)
-                        .withInitializer(context->{sourceDefaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));})
-                        .withPropertyValues("signaling.identity.issuer="+identity.issuer(),"signaling.identity.audience="+identity.audience())
-                        .run(context->{
-                            assertThat(context).hasNotFailed();
-                            if(plane!=io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR){assertThat(context).doesNotHaveBean(NativeClockSource.class).doesNotHaveBean(NativeRevocationSource.class);return;}
-                            assertThat(context).hasSingleBean(NativeClockSource.class).hasSingleBean(NativeRevocationSource.class).hasSingleBean(NativeCellHealthSource.class).hasSingleBean(NativeActorSecurityPolicies.class);
-                            var nativeClock=context.getBean(NativeClockSource.class);var nativeRevocations=context.getBean(NativeRevocationSource.class);var nativePrimary=context.getBean(NativeCellHealthSource.class);var nativeMonitor=context.getBean(ClockSafetyMonitor.class);
-                            assertThat(nativeMonitor.valid()).isFalse();assertThat(nativeRevocations.usable()).isFalse();assertThat(nativePrimary.usable()).isFalse();
-                            assertThat(nativeClock.poll(Duration.ofSeconds(1))).isTrue();settled(nativeRevocations.poll(Duration.ofSeconds(2)));settled(nativePrimary.poll(Duration.ofSeconds(2)));
-                            assertThat(nativeMonitor.valid()).isTrue();assertThat(nativeRevocations.usable()).isTrue();assertThat(nativePrimary.usable()).isTrue();
-                            boolean allowed=SessionAuthReadIT.done(f.runtime.sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),connection->context.getBean(NativeActorSecurityPolicies.class).allowed(connection,principal)));assertThat(allowed).isFalse();
-                            nativeClock.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);nativeRevocations.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);nativePrimary.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);
-                            assertThat(nativeMonitor.valid()).isFalse();assertThat(nativeRevocations.usable()).isFalse();assertThat(nativePrimary.usable()).isFalse();
+                    assertThat(context)
+                        .hasSingleBean(NativeClockSource.class)
+                        .hasSingleBean(NativeRevocationSource.class)
+                        .hasSingleBean(NativeCellHealthSource.class)
+                        .hasSingleBean(NativeActorSecurityPolicies.class);
+                    var nativeClock = context.getBean(NativeClockSource.class);
+                    var nativeRevocations = context.getBean(NativeRevocationSource.class);
+                    var nativePrimary = context.getBean(NativeCellHealthSource.class);
+                    var nativeMonitor = context.getBean(ClockSafetyMonitor.class);
+                    assertThat(nativeMonitor.valid()).isFalse();
+                    assertThat(nativeRevocations.usable()).isFalse();
+                    assertThat(nativePrimary.usable()).isFalse();
+                    assertThat(nativeClock.poll(Duration.ofSeconds(1))).isTrue();
+                    settled(nativeRevocations.poll(Duration.ofSeconds(2)));
+                    settled(nativePrimary.poll(Duration.ofSeconds(2)));
+                    assertThat(nativeMonitor.valid()).isTrue();
+                    assertThat(nativeRevocations.usable()).isTrue();
+                    assertThat(nativePrimary.usable()).isTrue();
+                    boolean allowed =
+                        SessionAuthReadIT.done(
+                            f.runtime.sql.submitTracked(
+                                DbClass.CRITICAL,
+                                Duration.ofSeconds(2),
+                                connection ->
+                                    context
+                                        .getBean(NativeActorSecurityPolicies.class)
+                                        .allowed(connection, principal)));
+                    assertThat(allowed).isFalse();
+                    nativeClock.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+                    nativeRevocations.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+                    nativePrimary.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+                    assertThat(nativeMonitor.valid()).isFalse();
+                    assertThat(nativeRevocations.usable()).isFalse();
+                    assertThat(nativePrimary.usable()).isFalse();
+                  });
+        }
+        var system =
+            org.apache.pekko.actor.typed.ActorSystem.<Void>create(
+                org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),
+                "native-sources-c001",
+                NativeActorCompositionIT.config("a"));
+        var systems = new ArrayList<org.apache.pekko.actor.typed.ActorSystem<Void>>();
+        systems.add(system);
+        var installed = new AtomicReference<io.webrtc.signaling.rpc.NativeActorComposition>();
+        try {
+          var readiness = new ClusterReadiness();
+          var monitor =
+              new ClockSafetyMonitor(
+                  "c001",
+                  1,
+                  pod,
+                  boot,
+                  Map.of("TEST_ONLY_SOURCE", keys.getPublic()),
+                  Clock.systemUTC(),
+                  System::nanoTime);
+          var clockSource =
+              new NativeClockSource(
+                  URI.create("https://localhost:" + port + "/v1/clock-bound"),
+                  NativeClockSourceIT.clientTls(true),
+                  monitor,
+                  pod,
+                  boot);
+          var primary = new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql, "c001", 1));
+          var revocations =
+              new NativeRevocationSource(
+                  URI.create("https://localhost:" + port + "/v1/revocations"),
+                  NativeClockSourceIT.clientTls(true),
+                  verifier,
+                  reconciler,
+                  pod,
+                  boot);
+          assertThatThrownBy(
+                  () ->
+                      new NativeActorSafetySources(
+                          system,
+                          readiness,
+                          Set.of("az-a"),
+                          "b".repeat(64),
+                          monitor,
+                          clockSource,
+                          primary,
+                          revocations))
+              .isInstanceOf(IllegalArgumentException.class);
+          var protectedJob = clockSource.job(Duration.ofMillis(100));
+          org.junit.jupiter.api.Assertions.assertAll(
+              () ->
+                  assertThatThrownBy(
+                          () ->
+                              new NativeActorSchedulingEnrollment(
+                                  system,
+                                  Set.of("az-a"),
+                                  "a".repeat(64),
+                                  List.of(protectedJob),
+                                  event -> {},
+                                  new InetSocketAddress("127.0.0.1", 0),
+                                  () -> true,
+                                  () -> "TEST_ONLY\n"))
+                      .isInstanceOf(IllegalArgumentException.class)
+                      .hasMessageContaining("Maintenance"),
+              () ->
+                  assertThatThrownBy(
+                          () ->
+                              new NativeActorSchedulingEnrollment(
+                                  system,
+                                  Set.of("az-a"),
+                                  "a".repeat(64),
+                                  Collections.nCopies(13, protectedJob),
+                                  event -> {},
+                                  new InetSocketAddress("127.0.0.1", 0),
+                                  () -> true,
+                                  () -> "TEST_ONLY\n"))
+                      .isInstanceOf(IllegalArgumentException.class)
+                      .hasMessageContaining("Maintenance"));
+          var sourceOwners = new AtomicReference<NativeActorSafetySources>();
+          var workerOwner = new AtomicReference<NativeWorkerScheduler>();
+          var healthOwner = new AtomicReference<PrivateHealthServer>();
+          var scheduling =
+              new NativeActorSchedulingEnrollment(
+                  system,
+                  Set.of("az-a", "az-b", "az-c"),
+                  "a".repeat(64),
+                  List.of(),
+                  event -> {},
+                  new InetSocketAddress("127.0.0.1", 0),
+                  () -> !system.getWhenTerminated().toCompletableFuture().isDone(),
+                  () -> "TEST_ONLY 1\n");
+          var schedulingDefaults =
+              new org.springframework.boot.env.YamlPropertySourceLoader()
+                  .load(
+                      "TEST_ONLY_defaults",
+                      new org.springframework.core.io.FileSystemResource(
+                          "../config/production-defaults.yaml"));
+          new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+              .withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+              .withBean(NativeActorSchedulingEnrollment.class, () -> scheduling)
+              .withBean(ClusterReadiness.class, () -> readiness)
+              .withBean(ClockSafetyMonitor.class, () -> monitor)
+              .withBean(
+                  NativeClockSource.class,
+                  () -> clockSource,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
+              .withBean(
+                  NativeCellHealthSource.class,
+                  () -> primary,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
+              .withBean(
+                  NativeRevocationSource.class,
+                  () -> revocations,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
+              .withInitializer(
+                  context -> {
+                    schedulingDefaults.forEach(
+                        value -> context.getEnvironment().getPropertySources().addLast(value));
+                    context.getEnvironment().setActiveProfiles("actor");
+                  })
+              .withPropertyValues(
+                  "signaling.identity.issuer=TEST_ONLY_ISSUER",
+                  "signaling.identity.audience=TEST_ONLY_AUDIENCE")
+              .run(
+                  context -> {
+                    assertThat(context)
+                        .hasNotFailed()
+                        .hasSingleBean(NativeActorSafetySources.class)
+                        .hasSingleBean(NativeWorkerScheduler.class)
+                        .hasSingleBean(PrivateHealthServer.class);
+                    sourceOwners.set(context.getBean(NativeActorSafetySources.class));
+                    workerOwner.set(context.getBean(NativeWorkerScheduler.class));
+                    healthOwner.set(context.getBean(PrivateHealthServer.class));
+                    assertThat(healthOwner.get().port()).isPositive();
+                  });
+          try (var sources = sourceOwners.get();
+              var scheduler = workerOwner.get();
+              var health = healthOwner.get()) {
+            scheduler.start();
+            org.awaitility.Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .until(() -> monitor.valid() && primary.usable() && revocations.usable());
+            var facts = sources.refresh();
+            assertThat(facts.fingerprintValid()).isTrue();
+            assertThat(facts.cellActive()).isTrue();
+            assertThat(facts.safetyPoolUsable()).isTrue();
+            assertThat(facts.clockBoundValid()).isTrue();
+            assertThat(readiness.businessReady()).isFalse();
+            assertThat(facts.upActors()).isZero();
+            assertThat(facts.regionsRegistered()).isFalse();
+            try (var tokens =
+                new io.webrtc.signaling.auth.BoundedTokenVerifier(
+                    (token, now) -> {
+                      throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");
+                    },
+                    1,
+                    8,
+                    Duration.ofSeconds(1))) {
+              var proofs =
+                  new io.webrtc.signaling.rpc.HomeAuthorizationProof(
+                      "c001", "test", keys.getPrivate(), Map.of("c001/test", keys.getPublic()));
+              var businessEnrollment =
+                  new NativeActorBusinessEnrollment(
+                      system,
+                      "c001",
+                      1,
+                      1,
+                      pod,
+                      proofs,
+                      user -> new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001", 1, 1),
+                      (connection, from, to) -> false,
+                      tokens,
+                      io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
+              var policyBean = new AtomicReference<NativeActorSecurityPolicies>();
+              var defaults =
+                  new org.springframework.boot.env.YamlPropertySourceLoader()
+                      .load(
+                          "TEST_ONLY_defaults",
+                          new org.springframework.core.io.FileSystemResource(
+                              "../config/production-defaults.yaml"));
+              for (String zone : List.of("a", "b", "c"))
+                systems.add(
+                    org.apache.pekko.actor.typed.ActorSystem.<Void>create(
+                        org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),
+                        "native-sources-c001",
+                        NativeActorCompositionIT.config(zone)));
+              var seed = org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().address();
+              for (var member : systems)
+                org.apache.pekko.cluster.typed.Cluster.get(member)
+                    .manager()
+                    .tell(new org.apache.pekko.cluster.typed.JoinSeedNodes(List.of(seed)));
+              org.awaitility.Awaitility.await()
+                  .atMost(Duration.ofSeconds(25))
+                  .until(
+                      () ->
+                          systems.stream()
+                              .allMatch(
+                                  member ->
+                                      org.apache.pekko.cluster.typed.Cluster.get(member)
+                                          .selfMember()
+                                          .status()
+                                          .equals(org.apache.pekko.cluster.MemberStatus.up())));
+              for (var plane : io.webrtc.signaling.app.SignalingApplication.Plane.values()) {
+                new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                    .withUserConfiguration(
+                        io.webrtc.signaling.app.SignalingApplication.class,
+                        LateNativePolicyEnrollment.class)
+                    .withBean(
+                        NativePolicyEnrollment.class,
+                        () -> new NativePolicyEnrollment(reconciler, monitor))
+                    .withBean(NativeActorBusinessEnrollment.class, () -> businessEnrollment)
+                    .withBean(SqlTransactions.class, () -> f.runtime.sql)
+                    .withBean(ClusterReadiness.class, () -> readiness)
+                    .withInitializer(
+                        context -> {
+                          defaults.forEach(
+                              value ->
+                                  context.getEnvironment().getPropertySources().addLast(value));
+                          context
+                              .getEnvironment()
+                              .setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));
+                        })
+                    .withPropertyValues(
+                        "signaling.identity.issuer=TEST_ONLY_ISSUER",
+                        "signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                    .run(
+                        context -> {
+                          assertThat(context).hasNotFailed();
+                          if (plane == io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR) {
+                            assertThat(context)
+                                .hasSingleBean(NativeActorSecurityPolicies.class)
+                                .hasSingleBean(
+                                    io.webrtc.signaling.rpc.NativeActorComposition.class);
+                            policyBean.set(context.getBean(NativeActorSecurityPolicies.class));
+                            installed.set(
+                                context.getBean(
+                                    io.webrtc.signaling.rpc.NativeActorComposition.class));
+                            assertThat(context)
+                                .hasSingleBean(
+                                    io.webrtc.signaling.actors.cluster.ShardingBootstrap.Regions
+                                        .class);
+                          } else
+                            assertThat(context)
+                                .doesNotHaveBean(NativeActorSecurityPolicies.class)
+                                .doesNotHaveBean(
+                                    io.webrtc.signaling.rpc.NativeActorComposition.class);
                         });
-                }
-                var system=org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config("a"));
-                var systems=new ArrayList<org.apache.pekko.actor.typed.ActorSystem<Void>>();systems.add(system);
-                var installed=new AtomicReference<io.webrtc.signaling.rpc.NativeActorComposition>();
-                try{
-                    var readiness=new ClusterReadiness();var monitor=new ClockSafetyMonitor("c001",1,pod,boot,Map.of("TEST_ONLY_SOURCE",keys.getPublic()),Clock.systemUTC(),System::nanoTime);
-                    var clockSource=new NativeClockSource(URI.create("https://localhost:"+port+"/v1/clock-bound"),NativeClockSourceIT.clientTls(true),monitor,pod,boot);
-                    var primary=new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql,"c001",1));
-                    var revocations=new NativeRevocationSource(URI.create("https://localhost:"+port+"/v1/revocations"),NativeClockSourceIT.clientTls(true),verifier,reconciler,pod,boot);
-                    assertThatThrownBy(()->new NativeActorSafetySources(system,readiness,Set.of("az-a"),"b".repeat(64),monitor,clockSource,primary,revocations)).isInstanceOf(IllegalArgumentException.class);
-                    var protectedJob=clockSource.job(Duration.ofMillis(100));
-                    org.junit.jupiter.api.Assertions.assertAll(
-                        ()->assertThatThrownBy(()->new NativeActorSchedulingEnrollment(system,Set.of("az-a"),"a".repeat(64),List.of(protectedJob),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Maintenance"),
-                        ()->assertThatThrownBy(()->new NativeActorSchedulingEnrollment(system,Set.of("az-a"),"a".repeat(64),Collections.nCopies(13,protectedJob),event->{},new InetSocketAddress("127.0.0.1",0),()->true,()->"TEST_ONLY\n")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Maintenance"));
-                    var sourceOwners=new AtomicReference<NativeActorSafetySources>();var workerOwner=new AtomicReference<NativeWorkerScheduler>();var healthOwner=new AtomicReference<PrivateHealthServer>();
-                    var scheduling=new NativeActorSchedulingEnrollment(system,Set.of("az-a","az-b","az-c"),"a".repeat(64),List.of(),event->{},new InetSocketAddress("127.0.0.1",0),()->!system.getWhenTerminated().toCompletableFuture().isDone(),()->"TEST_ONLY 1\n");
-                    var schedulingDefaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
-                    new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
-                        .withBean(NativeActorSchedulingEnrollment.class,()->scheduling).withBean(ClusterReadiness.class,()->readiness)
-                        .withBean(ClockSafetyMonitor.class,()->monitor).withBean(NativeClockSource.class,()->clockSource,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
-                        .withBean(NativeCellHealthSource.class,()->primary,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
-                        .withBean(NativeRevocationSource.class,()->revocations,definition->((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName(""))
-                        .withInitializer(context->{schedulingDefaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles("actor");})
-                        .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
-                        .run(context->{assertThat(context).hasNotFailed().hasSingleBean(NativeActorSafetySources.class).hasSingleBean(NativeWorkerScheduler.class).hasSingleBean(PrivateHealthServer.class);
-                            sourceOwners.set(context.getBean(NativeActorSafetySources.class));workerOwner.set(context.getBean(NativeWorkerScheduler.class));healthOwner.set(context.getBean(PrivateHealthServer.class));
-                            assertThat(healthOwner.get().port()).isPositive();});
-                    try(var sources=sourceOwners.get();var scheduler=workerOwner.get();var health=healthOwner.get()){
-                        scheduler.start();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->monitor.valid()&&primary.usable()&&revocations.usable());
-                        var facts=sources.refresh();assertThat(facts.fingerprintValid()).isTrue();assertThat(facts.cellActive()).isTrue();assertThat(facts.safetyPoolUsable()).isTrue();assertThat(facts.clockBoundValid()).isTrue();
-                        assertThat(readiness.businessReady()).isFalse();assertThat(facts.upActors()).isZero();assertThat(facts.regionsRegistered()).isFalse();
-                        try(var tokens=new io.webrtc.signaling.auth.BoundedTokenVerifier((token,now)->{throw new IllegalArgumentException("TEST_ONLY_UNUSED_AUTH");},1,8,Duration.ofSeconds(1))){
-                            var proofs=new io.webrtc.signaling.rpc.HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));
-                            var businessEnrollment=new NativeActorBusinessEnrollment(system,"c001",1,1,pod,proofs,
-                                user->new io.webrtc.signaling.rpc.ProofBindings.TrustedHome("c001",1,1),
-                                (connection,from,to)->false,tokens,io.webrtc.signaling.auth.CallAuthorizationPolicy.denyAll());
-                            var policyBean=new AtomicReference<NativeActorSecurityPolicies>();
-                            var defaults=new org.springframework.boot.env.YamlPropertySourceLoader().load("TEST_ONLY_defaults",new org.springframework.core.io.FileSystemResource("../config/production-defaults.yaml"));
-                            for(String zone:List.of("a","b","c"))systems.add(org.apache.pekko.actor.typed.ActorSystem.<Void>create(org.apache.pekko.actor.typed.javadsl.Behaviors.empty(),"native-sources-c001",NativeActorCompositionIT.config(zone)));
-                            var seed=org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().address();
-                            for(var member:systems)org.apache.pekko.cluster.typed.Cluster.get(member).manager().tell(new org.apache.pekko.cluster.typed.JoinSeedNodes(List.of(seed)));
-                            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(25)).until(()->systems.stream().allMatch(member->org.apache.pekko.cluster.typed.Cluster.get(member).selfMember().status().equals(org.apache.pekko.cluster.MemberStatus.up())));
-                            for(var plane:io.webrtc.signaling.app.SignalingApplication.Plane.values()) {
-                                new org.springframework.boot.test.context.runner.ApplicationContextRunner().withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class,LateNativePolicyEnrollment.class)
-                                    .withBean(NativePolicyEnrollment.class,()->new NativePolicyEnrollment(reconciler,monitor))
-                                    .withBean(NativeActorBusinessEnrollment.class,()->businessEnrollment)
-                                    .withBean(SqlTransactions.class,()->f.runtime.sql).withBean(ClusterReadiness.class,()->readiness)
-                                    .withInitializer(context->{defaults.forEach(value->context.getEnvironment().getPropertySources().addLast(value));context.getEnvironment().setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));})
-                                    .withPropertyValues("signaling.identity.issuer=TEST_ONLY_ISSUER","signaling.identity.audience=TEST_ONLY_AUDIENCE")
-                                    .run(context->{assertThat(context).hasNotFailed();if(plane==io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR){
-                                        assertThat(context).hasSingleBean(NativeActorSecurityPolicies.class).hasSingleBean(io.webrtc.signaling.rpc.NativeActorComposition.class);
-                                        policyBean.set(context.getBean(NativeActorSecurityPolicies.class));installed.set(context.getBean(io.webrtc.signaling.rpc.NativeActorComposition.class));
-                                        assertThat(context).hasSingleBean(io.webrtc.signaling.actors.cluster.ShardingBootstrap.Regions.class);
-                                    }else assertThat(context).doesNotHaveBean(NativeActorSecurityPolicies.class).doesNotHaveBean(io.webrtc.signaling.rpc.NativeActorComposition.class);});
-                            }
-                            var policies=policyBean.get();
-                            var actors=installed.get();assertThat(actors.system()).isSameAs(system);assertThat(actors.readiness()).isSameAs(readiness);
-                            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->{sources.refresh();return readiness.businessReady();});
-                            assertThat(readiness.snapshot().upActors()).isEqualTo(4);assertThat(readiness.snapshot().reachableAzCount()).isEqualTo(3);assertThat(readiness.snapshot().regionsRegistered()).isTrue();
-                            boolean current=SessionAuthReadIT.done(f.runtime.sql.submitTracked(DbClass.CRITICAL,Duration.ofSeconds(2),connection->policies.current(connection,route.user())));assertThat(current).isTrue();
-                        }
-                        scheduler.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);monitor.invalidate();
-                        assertThat(readiness.snapshot().clockBoundValid()).isTrue();assertThat(readiness.businessReady()).isFalse();assertThat(readiness.safetyReady()).isFalse();
-                        sources.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(primary.usable()).isFalse();assertThat(revocations.usable()).isFalse();
-                    }
-                }finally{for(var member:systems)member.terminate();for(var member:systems)member.getWhenTerminated().toCompletableFuture().get(15,TimeUnit.SECONDS);if(installed.get()!=null)installed.get().drainRoots().toCompletableFuture().get(5,TimeUnit.SECONDS);}
-            }finally{if(server!=null)server.close().sync();children.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();boss.shutdownGracefully(0,2,TimeUnit.SECONDS).sync();}
+              }
+              var policies = policyBean.get();
+              var actors = installed.get();
+              assertThat(actors.system()).isSameAs(system);
+              assertThat(actors.readiness()).isSameAs(readiness);
+              org.awaitility.Awaitility.await()
+                  .atMost(Duration.ofSeconds(5))
+                  .until(
+                      () -> {
+                        sources.refresh();
+                        return readiness.businessReady();
+                      });
+              assertThat(readiness.snapshot().upActors()).isEqualTo(4);
+              assertThat(readiness.snapshot().reachableAzCount()).isEqualTo(3);
+              assertThat(readiness.snapshot().regionsRegistered()).isTrue();
+              boolean current =
+                  SessionAuthReadIT.done(
+                      f.runtime.sql.submitTracked(
+                          DbClass.CRITICAL,
+                          Duration.ofSeconds(2),
+                          connection -> policies.current(connection, route.user())));
+              assertThat(current).isTrue();
+            }
+            scheduler.drain().toCompletableFuture().get(3, TimeUnit.SECONDS);
+            monitor.invalidate();
+            assertThat(readiness.snapshot().clockBoundValid()).isTrue();
+            assertThat(readiness.businessReady()).isFalse();
+            assertThat(readiness.safetyReady()).isFalse();
+            sources.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertThat(primary.usable()).isFalse();
+            assertThat(revocations.usable()).isFalse();
+          }
+        } finally {
+          for (var member : systems) member.terminate();
+          for (var member : systems)
+            member.getWhenTerminated().toCompletableFuture().get(15, TimeUnit.SECONDS);
+          if (installed.get() != null)
+            installed.get().drainRoots().toCompletableFuture().get(5, TimeUnit.SECONDS);
         }
+      } finally {
+        if (server != null) server.close().sync();
+        children.shutdownGracefully(0, 2, TimeUnit.SECONDS).sync();
+        boss.shutdownGracefully(0, 2, TimeUnit.SECONDS).sync();
+      }
     }
-    record NativePolicyEnrollment(RevocationReconciler revocations,ClockSafetyMonitor clock){}
-    @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods=false)
-    static class LateNativePolicyEnrollment {
-        @org.springframework.context.annotation.Bean RevocationReconciler nativeRevocations(NativePolicyEnrollment enrollment){return enrollment.revocations();}
-        @org.springframework.context.annotation.Bean ClockSafetyMonitor nativeClock(NativePolicyEnrollment enrollment){return enrollment.clock();}
+  }
+
+  record NativePolicyEnrollment(RevocationReconciler revocations, ClockSafetyMonitor clock) {}
+
+  @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods = false)
+  static class LateNativePolicyEnrollment {
+    @org.springframework.context.annotation.Bean
+    RevocationReconciler nativeRevocations(NativePolicyEnrollment enrollment) {
+      return enrollment.revocations();
     }
 
-    /** TEST_ONLY factory failure signal after a first genuine mTLS socket; cleanup remains unknown. */
-    private static final class SecondFactoryUnknownContext extends javax.net.ssl.SSLContext {
-        SecondFactoryUnknownContext(javax.net.ssl.SSLContext delegate){super(new SecondFactoryUnknownSpi(delegate),new Provider("TEST_ONLY_UNKNOWN_FACTORY","1","Failure injection"){},"TLSv1.3");}
+    @org.springframework.context.annotation.Bean
+    ClockSafetyMonitor nativeClock(NativePolicyEnrollment enrollment) {
+      return enrollment.clock();
     }
-    private static final class SecondFactoryUnknownSpi extends javax.net.ssl.SSLContextSpi {
-        private final javax.net.ssl.SSLContext delegate;private final AtomicInteger calls=new AtomicInteger();
-        SecondFactoryUnknownSpi(javax.net.ssl.SSLContext delegate){this.delegate=delegate;}
-        protected void engineInit(javax.net.ssl.KeyManager[] k,javax.net.ssl.TrustManager[] t,SecureRandom r){throw new UnsupportedOperationException();}
-        protected javax.net.ssl.SSLSocketFactory engineGetSocketFactory(){var original=delegate.getSocketFactory();return new javax.net.ssl.SSLSocketFactory(){
-            public String[] getDefaultCipherSuites(){return original.getDefaultCipherSuites();}public String[] getSupportedCipherSuites(){return original.getSupportedCipherSuites();}
-            public java.net.Socket createSocket()throws java.io.IOException{if(calls.incrementAndGet()>1)throw new java.io.IOException("TEST_ONLY_UNKNOWN_FACTORY_EFFECTS");return original.createSocket();}
-            public java.net.Socket createSocket(java.net.Socket s,String h,int p,boolean a)throws java.io.IOException{return original.createSocket(s,h,p,a);}
-            public java.net.Socket createSocket(String h,int p)throws java.io.IOException{return original.createSocket(h,p);}
-            public java.net.Socket createSocket(String h,int p,InetAddress l,int lp)throws java.io.IOException{return original.createSocket(h,p,l,lp);}
-            public java.net.Socket createSocket(InetAddress h,int p)throws java.io.IOException{return original.createSocket(h,p);}
-            public java.net.Socket createSocket(InetAddress h,int p,InetAddress l,int lp)throws java.io.IOException{return original.createSocket(h,p,l,lp);}
-        };}
-        protected javax.net.ssl.SSLServerSocketFactory engineGetServerSocketFactory(){return delegate.getServerSocketFactory();}
-        protected javax.net.ssl.SSLEngine engineCreateSSLEngine(){return delegate.createSSLEngine();}
-        protected javax.net.ssl.SSLEngine engineCreateSSLEngine(String h,int p){return delegate.createSSLEngine(h,p);}
-        protected javax.net.ssl.SSLSessionContext engineGetServerSessionContext(){return delegate.getServerSessionContext();}
-        protected javax.net.ssl.SSLSessionContext engineGetClientSessionContext(){return delegate.getClientSessionContext();}
+  }
+
+  /**
+   * TEST_ONLY factory failure signal after a first genuine mTLS socket; cleanup remains unknown.
+   */
+  private static final class SecondFactoryUnknownContext extends javax.net.ssl.SSLContext {
+    SecondFactoryUnknownContext(javax.net.ssl.SSLContext delegate) {
+      super(
+          new SecondFactoryUnknownSpi(delegate),
+          new Provider("TEST_ONLY_UNKNOWN_FACTORY", "1", "Failure injection") {},
+          "TLSv1.3");
     }
-    static void settled(io.webrtc.signaling.rpc.RpcOperation<?> operation)throws Exception {operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);}
+  }
+
+  private static final class SecondFactoryUnknownSpi extends javax.net.ssl.SSLContextSpi {
+    private final javax.net.ssl.SSLContext delegate;
+    private final AtomicInteger calls = new AtomicInteger();
+
+    SecondFactoryUnknownSpi(javax.net.ssl.SSLContext delegate) {
+      this.delegate = delegate;
+    }
+
+    protected void engineInit(
+        javax.net.ssl.KeyManager[] k, javax.net.ssl.TrustManager[] t, SecureRandom r) {
+      throw new UnsupportedOperationException();
+    }
+
+    protected javax.net.ssl.SSLSocketFactory engineGetSocketFactory() {
+      var original = delegate.getSocketFactory();
+      return new javax.net.ssl.SSLSocketFactory() {
+        public String[] getDefaultCipherSuites() {
+          return original.getDefaultCipherSuites();
+        }
+
+        public String[] getSupportedCipherSuites() {
+          return original.getSupportedCipherSuites();
+        }
+
+        public java.net.Socket createSocket() throws java.io.IOException {
+          if (calls.incrementAndGet() > 1)
+            throw new java.io.IOException("TEST_ONLY_UNKNOWN_FACTORY_EFFECTS");
+          return original.createSocket();
+        }
+
+        public java.net.Socket createSocket(java.net.Socket s, String h, int p, boolean a)
+            throws java.io.IOException {
+          return original.createSocket(s, h, p, a);
+        }
+
+        public java.net.Socket createSocket(String h, int p) throws java.io.IOException {
+          return original.createSocket(h, p);
+        }
+
+        public java.net.Socket createSocket(String h, int p, InetAddress l, int lp)
+            throws java.io.IOException {
+          return original.createSocket(h, p, l, lp);
+        }
+
+        public java.net.Socket createSocket(InetAddress h, int p) throws java.io.IOException {
+          return original.createSocket(h, p);
+        }
+
+        public java.net.Socket createSocket(InetAddress h, int p, InetAddress l, int lp)
+            throws java.io.IOException {
+          return original.createSocket(h, p, l, lp);
+        }
+      };
+    }
+
+    protected javax.net.ssl.SSLServerSocketFactory engineGetServerSocketFactory() {
+      return delegate.getServerSocketFactory();
+    }
+
+    protected javax.net.ssl.SSLEngine engineCreateSSLEngine() {
+      return delegate.createSSLEngine();
+    }
+
+    protected javax.net.ssl.SSLEngine engineCreateSSLEngine(String h, int p) {
+      return delegate.createSSLEngine(h, p);
+    }
+
+    protected javax.net.ssl.SSLSessionContext engineGetServerSessionContext() {
+      return delegate.getServerSessionContext();
+    }
+
+    protected javax.net.ssl.SSLSessionContext engineGetClientSessionContext() {
+      return delegate.getClientSessionContext();
+    }
+  }
+
+  static void settled(io.webrtc.signaling.rpc.RpcOperation<?> operation) throws Exception {
+    operation.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    operation.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+  }
 }

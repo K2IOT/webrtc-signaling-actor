@@ -1,5 +1,7 @@
 package io.webrtc.signaling.rpc;
+
 import static org.assertj.core.api.Assertions.*;
+
 import io.webrtc.signaling.actors.relay.*;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.*;
@@ -9,30 +11,355 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import org.junit.jupiter.api.Test;
-/** TEST_ONLY native projection/write fixtures. Production transport/native SQL verification are separate. */
-class NativeRelayProducerTest {
-    final NativeRelayRoundCacheTest f=new NativeRelayRoundCacheTest();final NativeRelayAuthorization.AuthorizedRound first=f.round();
-    final AtomicInteger reads=new AtomicInteger(),writes=new AtomicInteger();final List<RelayDelivery> sent=new ArrayList<>();
-    final RelayBufferBudget memory=new RelayBufferBudget(262144);final CompletableFuture<Void> cleanup=new CompletableFuture<>();
-    NativeRelayAuthorization.AuthorizedRound round(CallCommand command){if(command.sender().equals(f.sender))return first;var a=first.authorization();var b=new RelayAuthorizationCache.Snapshot(a.callId(),a.activationId(),a.callVersion(),a.negotiationId(),a.iceGeneration(),a.state(),f.recipient,f.sender,a.group(),a.checkedAtNanos(),a.tokenUntilNanos(),a.reservationUntilNanos(),a.groupUntilNanos(),a.securityUntilNanos());return new NativeRelayAuthorization.AuthorizedRound(b,first.grant(),first.authorizationUntil(),new RelayDestination("c001","TEST_ONLY_SOURCE_GW",UUID.randomUUID(),f.sender));}
-    NativeRelayRoundCache cache(){return new NativeRelayRoundCache(4,2,(c,p,b)->{reads.incrementAndGet();return new RpcOperation<>(CompletableFuture.completedFuture(round(c)),CompletableFuture.completedFuture(null));},f.mono::get,f.trusted::get,c->Optional.of(f.group));}
-    CallCommand command(SignalEnvelope.Type type,AuthenticatedSession sender){String body=switch(type){case OFFER,ANSWER->"{\"sdp\":\"v=0\\r\\n\"}";case ICE_CANDIDATES->"{\"startSequence\":\"1\",\"candidates\":[{\"candidate\":\"candidate:1 1 UDP 1 127.0.0.1 9 typ host\",\"sdpMid\":\"0\",\"usernameFragment\":\"TEST_ONLY_UFRAG\"}]}";case END_OF_CANDIDATES->"{\"terminalSequence\":\"2\"}";default->throw new IllegalArgumentException();};return new ProtocolValidator(ProtocolLimits.v1()).bind(new SignalEnvelope(1,type,new RequestId(UUID.randomUUID()),f.call,new NegotiationId(17),new IceGeneration(29),body),sender);}
-    static com.google.protobuf.ByteString uuid(UUID id){return com.google.protobuf.ByteString.copyFrom(java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array());}
-    static SessionIdentity identity(AuthenticatedSession s){return SessionIdentity.newBuilder().setUserId(s.userId().value()).setIssuer(s.key().issuer()).setJti(s.key().jti()).setIncarnation(uuid(s.incarnation().value())).setConnectionGeneration(s.connectionGeneration()).setConnectionId(uuid(s.connectionId())).build();}
-    RpcBusinessHandler.RelayRequest wire(CallCommand command){return new RpcBusinessHandler.RelayRequest(InternalCommand.newBuilder().setSchemaMajor(1).setOperationId(command.requestId().value().toString()).setDestinationCell("c001").setCallId(command.callId().value()).setType(command.type().name()).setCommandScope(command.scope().value()).setSender(identity(command.sender())).setPayloadHash(com.google.protobuf.ByteString.copyFrom(HexFormat.of().parseHex(command.intentHash()))).setRemainingBudgetMs(1000).setPayload(com.google.protobuf.ByteString.copyFrom(RpcBusinessHandler.encode(new RpcBusinessHandler.CallPayload(command,"TEST_ONLY_R1")))).build(),new CellRpcServer.Peer("c001","gateway","TEST_ONLY_GATEWAY"),Duration.ofSeconds(1));}
-    NativeRelayProducer producer(NativeRelayRoundCache cache,boolean held){return new NativeRelayProducer(cache,4,f.mono::get,f.trusted::get,c->Optional.of(f.group),memory,(destination,delivery,budget)->{assertThat(destination.recipient()).isEqualTo(delivery.recipient());assertThat(budget).isPositive().isLessThanOrEqualTo(Duration.ofSeconds(1));writes.incrementAndGet();sent.add(delivery);return new RpcOperation<>(CompletableFuture.completedFuture(new RelayWriteReceipt(delivery.command().callId(),delivery.command().requestId(),delivery.command().type(),delivery.callVersion(),17,29)),held?cleanup:CompletableFuture.completedFuture(null));});}
-    @Test void allFourKindsUseCommittedNativeRolesRouteAndVolatileWriteReceipts()throws Exception {try(var cache=cache();var producer=producer(cache,false)){for(var type:List.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES)){var original=command(type,type==SignalEnvelope.Type.ANSWER?f.recipient:f.sender);var operation=producer.apply(wire(original));var reply=operation.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);operation.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(reply.getAckCommitted()).isFalse();assertThat(reply.getStatus()).isEqualTo("WRITE_COMPLETED");assertThat(reply.getOperationId()).isEqualTo(original.requestId().value().toString());assertThat(reply.getCallId()).isEqualTo(f.call.value());assertThat(reply.getCallVersion()).isEqualTo(7);assertThat(sent.getLast().command()).isEqualTo(original);assertThat(sent.getLast().authorizationUntil()).isEqualTo(first.authorizationUntil());}assertThat(reads).hasValue(2);assertThat(writes).hasValue(4);}assertThat(memory.retainedBytes()).isZero();}
-    @Test void duplicateSdpKeepsOriginalWriteReceiptAndPhysicalCleanup()throws Exception {try(var cache=cache();var producer=producer(cache,true)){var command=command(SignalEnvelope.Type.OFFER,f.sender);var first=producer.apply(wire(command));var retry=producer.apply(wire(command));var receipt=first.logical().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(retry.logical().toCompletableFuture().get(2,TimeUnit.SECONDS)).isEqualTo(receipt);assertThat(writes).hasValue(1);assertThat(reads).hasValue(1);assertThat(first.physicalCompletion().toCompletableFuture()).isNotDone();assertThat(retry.physicalCompletion().toCompletableFuture()).isNotDone();producer.invalidate(f.call);assertThat(memory.retainedBytes()).isPositive();cleanup.complete(null);first.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);retry.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(memory.retainedBytes()).isZero();}finally{cleanup.complete(null);}}
-    @Test void invalidationAndClockLossCannotAuthorizeMoreWrites()throws Exception {try(var cache=cache();var producer=producer(cache,false)){var offer=command(SignalEnvelope.Type.OFFER,f.sender);producer.apply(wire(offer)).logical().toCompletableFuture().get(2,TimeUnit.SECONDS);producer.invalidate(f.call);f.trusted.set(false);var denied=producer.apply(wire(offer));assertThat(denied.logical().toCompletableFuture().get(2,TimeUnit.SECONDS).getErrorCode()).isNotEmpty();denied.physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(writes).hasValue(1);}}
-    @Test void newerCommittedRoundCannotDeadlockWithOriginalSdpWriteCallback()throws Exception {
-        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var mx=java.lang.management.ManagementFactory.getThreadMXBean();
-        var cache=new NativeRelayRoundCache(4,2,(c,p,b)->{var selected=round(c);if(c.negotiationId().value()==18){var a=selected.authorization();var projection=new RelayAuthorizationCache.Snapshot(a.callId(),a.activationId(),8,18,30,a.state(),a.sender(),a.recipient(),a.group(),a.checkedAtNanos(),a.tokenUntilNanos(),a.reservationUntilNanos(),a.groupUntilNanos(),a.securityUntilNanos());selected=new NativeRelayAuthorization.AuthorizedRound(projection,new NegotiationRelay.Grant(a.callId(),a.activationId(),8,18,30,f.sender,f.recipient,first.grant().untilNanos(),f.group),selected.authorizationUntil(),selected.destination());}return new RpcOperation<>(CompletableFuture.completedFuture(selected),CompletableFuture.completedFuture(null));},f.mono::get,f.trusted::get,c->Optional.of(f.group));
-        var producer=new NativeRelayProducer(cache,4,f.mono::get,f.trusted::get,c->Optional.of(f.group),memory,(destination,delivery,budget)->{if(delivery.command().negotiationId().value()==17){entered.countDown();try{if(!release.await(3,TimeUnit.SECONDS))throw new IllegalStateException("TEST_ONLY_BARRIER_TIMEOUT");}catch(InterruptedException interrupted){throw new IllegalStateException(interrupted);}}return new RpcOperation<>(CompletableFuture.completedFuture(new RelayWriteReceipt(delivery.command().callId(),delivery.command().requestId(),delivery.command().type(),delivery.callVersion(),delivery.command().negotiationId().value(),delivery.command().iceGeneration().value())),CompletableFuture.completedFuture(null));});
-        var old=command(SignalEnvelope.Type.OFFER,f.sender);var fresh=new ProtocolValidator(ProtocolLimits.v1()).bind(new SignalEnvelope(1,old.type(),new RequestId(UUID.randomUUID()),f.call,new NegotiationId(18),new IceGeneration(30),old.payloadJson()),f.sender);var oldResult=new CompletableFuture<RpcOperation<InternalReply>>();var newResult=new CompletableFuture<RpcOperation<InternalReply>>();
-        var oldThread=Thread.ofPlatform().daemon().name("TEST_ONLY_ORIGINAL_SDP").start(()->{try{oldResult.complete(producer.apply(wire(old)));}catch(Throwable failure){oldResult.completeExceptionally(failure);}});assertThat(entered.await(1,TimeUnit.SECONDS)).isTrue();
-        var newThread=Thread.ofPlatform().daemon().name("TEST_ONLY_NEW_ROUND").start(()->{try{newResult.complete(producer.apply(wire(fresh)));}catch(Throwable failure){newResult.completeExceptionally(failure);}});
-        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1)).until(()->{var info=mx.getThreadInfo(newThread.threadId());return info!=null&&info.getThreadState()==Thread.State.BLOCKED&&info.getLockOwnerId()==oldThread.threadId();});release.countDown();
-        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->oldResult.isDone()&&newResult.isDone());oldResult.join().physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);newResult.join().physicalCompletion().toCompletableFuture().get(2,TimeUnit.SECONDS);producer.close();cache.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);assertThat(memory.retainedBytes()).isZero();
-    }
 
+/**
+ * TEST_ONLY native projection/write fixtures. Production transport/native SQL verification are
+ * separate.
+ */
+class NativeRelayProducerTest {
+  final NativeRelayRoundCacheTest f = new NativeRelayRoundCacheTest();
+  final NativeRelayAuthorization.AuthorizedRound first = f.round();
+  final AtomicInteger reads = new AtomicInteger(), writes = new AtomicInteger();
+  final List<RelayDelivery> sent = new ArrayList<>();
+  final RelayBufferBudget memory = new RelayBufferBudget(262144);
+  final CompletableFuture<Void> cleanup = new CompletableFuture<>();
+
+  NativeRelayAuthorization.AuthorizedRound round(CallCommand command) {
+    if (command.sender().equals(f.sender)) return first;
+    var a = first.authorization();
+    var b =
+        new RelayAuthorizationCache.Snapshot(
+            a.callId(),
+            a.activationId(),
+            a.callVersion(),
+            a.negotiationId(),
+            a.iceGeneration(),
+            a.state(),
+            f.recipient,
+            f.sender,
+            a.group(),
+            a.checkedAtNanos(),
+            a.tokenUntilNanos(),
+            a.reservationUntilNanos(),
+            a.groupUntilNanos(),
+            a.securityUntilNanos());
+    return new NativeRelayAuthorization.AuthorizedRound(
+        b,
+        first.grant(),
+        first.authorizationUntil(),
+        new RelayDestination("c001", "TEST_ONLY_SOURCE_GW", UUID.randomUUID(), f.sender));
+  }
+
+  NativeRelayRoundCache cache() {
+    return new NativeRelayRoundCache(
+        4,
+        2,
+        (c, p, b) -> {
+          reads.incrementAndGet();
+          return new RpcOperation<>(
+              CompletableFuture.completedFuture(round(c)), CompletableFuture.completedFuture(null));
+        },
+        f.mono::get,
+        f.trusted::get,
+        c -> Optional.of(f.group));
+  }
+
+  CallCommand command(SignalEnvelope.Type type, AuthenticatedSession sender) {
+    String body =
+        switch (type) {
+          case OFFER, ANSWER -> "{\"sdp\":\"v=0\\r\\n\"}";
+          case ICE_CANDIDATES ->
+              "{\"startSequence\":\"1\",\"candidates\":[{\"candidate\":\"candidate:1 1 UDP 1 127.0.0.1 9 typ host\",\"sdpMid\":\"0\",\"usernameFragment\":\"TEST_ONLY_UFRAG\"}]}";
+          case END_OF_CANDIDATES -> "{\"terminalSequence\":\"2\"}";
+          default -> throw new IllegalArgumentException();
+        };
+    return new ProtocolValidator(ProtocolLimits.v1())
+        .bind(
+            new SignalEnvelope(
+                1,
+                type,
+                new RequestId(UUID.randomUUID()),
+                f.call,
+                new NegotiationId(17),
+                new IceGeneration(29),
+                body),
+            sender);
+  }
+
+  static com.google.protobuf.ByteString uuid(UUID id) {
+    return com.google.protobuf.ByteString.copyFrom(
+        java.nio.ByteBuffer.allocate(16)
+            .putLong(id.getMostSignificantBits())
+            .putLong(id.getLeastSignificantBits())
+            .array());
+  }
+
+  static SessionIdentity identity(AuthenticatedSession s) {
+    return SessionIdentity.newBuilder()
+        .setUserId(s.userId().value())
+        .setIssuer(s.key().issuer())
+        .setJti(s.key().jti())
+        .setIncarnation(uuid(s.incarnation().value()))
+        .setConnectionGeneration(s.connectionGeneration())
+        .setConnectionId(uuid(s.connectionId()))
+        .build();
+  }
+
+  RpcBusinessHandler.RelayRequest wire(CallCommand command) {
+    return new RpcBusinessHandler.RelayRequest(
+        InternalCommand.newBuilder()
+            .setSchemaMajor(1)
+            .setOperationId(command.requestId().value().toString())
+            .setDestinationCell("c001")
+            .setCallId(command.callId().value())
+            .setType(command.type().name())
+            .setCommandScope(command.scope().value())
+            .setSender(identity(command.sender()))
+            .setPayloadHash(
+                com.google.protobuf.ByteString.copyFrom(
+                    HexFormat.of().parseHex(command.intentHash())))
+            .setRemainingBudgetMs(1000)
+            .setPayload(
+                com.google.protobuf.ByteString.copyFrom(
+                    RpcBusinessHandler.encode(
+                        new RpcBusinessHandler.CallPayload(command, "TEST_ONLY_R1"))))
+            .build(),
+        new CellRpcServer.Peer("c001", "gateway", "TEST_ONLY_GATEWAY"),
+        Duration.ofSeconds(1));
+  }
+
+  NativeRelayProducer producer(NativeRelayRoundCache cache, boolean held) {
+    return new NativeRelayProducer(
+        cache,
+        4,
+        f.mono::get,
+        f.trusted::get,
+        c -> Optional.of(f.group),
+        memory,
+        (destination, delivery, budget) -> {
+          assertThat(destination.recipient()).isEqualTo(delivery.recipient());
+          assertThat(budget).isPositive().isLessThanOrEqualTo(Duration.ofSeconds(1));
+          writes.incrementAndGet();
+          sent.add(delivery);
+          return new RpcOperation<>(
+              CompletableFuture.completedFuture(
+                  new RelayWriteReceipt(
+                      delivery.command().callId(),
+                      delivery.command().requestId(),
+                      delivery.command().type(),
+                      delivery.callVersion(),
+                      17,
+                      29)),
+              held ? cleanup : CompletableFuture.completedFuture(null));
+        });
+  }
+
+  @Test
+  void allFourKindsUseCommittedNativeRolesRouteAndVolatileWriteReceipts() throws Exception {
+    try (var cache = cache();
+        var producer = producer(cache, false)) {
+      for (var type :
+          List.of(
+              SignalEnvelope.Type.OFFER,
+              SignalEnvelope.Type.ANSWER,
+              SignalEnvelope.Type.ICE_CANDIDATES,
+              SignalEnvelope.Type.END_OF_CANDIDATES)) {
+        var original = command(type, type == SignalEnvelope.Type.ANSWER ? f.recipient : f.sender);
+        var operation = producer.apply(wire(original));
+        var reply = operation.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+        operation.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+        assertThat(reply.getAckCommitted()).isFalse();
+        assertThat(reply.getStatus()).isEqualTo("WRITE_COMPLETED");
+        assertThat(reply.getOperationId()).isEqualTo(original.requestId().value().toString());
+        assertThat(reply.getCallId()).isEqualTo(f.call.value());
+        assertThat(reply.getCallVersion()).isEqualTo(7);
+        assertThat(sent.getLast().command()).isEqualTo(original);
+        assertThat(sent.getLast().authorizationUntil()).isEqualTo(first.authorizationUntil());
+      }
+      assertThat(reads).hasValue(2);
+      assertThat(writes).hasValue(4);
+    }
+    assertThat(memory.retainedBytes()).isZero();
+  }
+
+  @Test
+  void duplicateSdpKeepsOriginalWriteReceiptAndPhysicalCleanup() throws Exception {
+    try (var cache = cache();
+        var producer = producer(cache, true)) {
+      var command = command(SignalEnvelope.Type.OFFER, f.sender);
+      var first = producer.apply(wire(command));
+      var retry = producer.apply(wire(command));
+      var receipt = first.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+      assertThat(retry.logical().toCompletableFuture().get(2, TimeUnit.SECONDS)).isEqualTo(receipt);
+      assertThat(writes).hasValue(1);
+      assertThat(reads).hasValue(1);
+      assertThat(first.physicalCompletion().toCompletableFuture()).isNotDone();
+      assertThat(retry.physicalCompletion().toCompletableFuture()).isNotDone();
+      producer.invalidate(f.call);
+      assertThat(memory.retainedBytes()).isPositive();
+      cleanup.complete(null);
+      first.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+      retry.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+      assertThat(memory.retainedBytes()).isZero();
+    } finally {
+      cleanup.complete(null);
+    }
+  }
+
+  @Test
+  void invalidationAndClockLossCannotAuthorizeMoreWrites() throws Exception {
+    try (var cache = cache();
+        var producer = producer(cache, false)) {
+      var offer = command(SignalEnvelope.Type.OFFER, f.sender);
+      producer.apply(wire(offer)).logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+      producer.invalidate(f.call);
+      f.trusted.set(false);
+      var denied = producer.apply(wire(offer));
+      assertThat(denied.logical().toCompletableFuture().get(2, TimeUnit.SECONDS).getErrorCode())
+          .isNotEmpty();
+      denied.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+      assertThat(writes).hasValue(1);
+    }
+  }
+
+  @Test
+  void newerCommittedRoundCannotDeadlockWithOriginalSdpWriteCallback() throws Exception {
+    var entered = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var mx = java.lang.management.ManagementFactory.getThreadMXBean();
+    var cache =
+        new NativeRelayRoundCache(
+            4,
+            2,
+            (c, p, b) -> {
+              var selected = round(c);
+              if (c.negotiationId().value() == 18) {
+                var a = selected.authorization();
+                var projection =
+                    new RelayAuthorizationCache.Snapshot(
+                        a.callId(),
+                        a.activationId(),
+                        8,
+                        18,
+                        30,
+                        a.state(),
+                        a.sender(),
+                        a.recipient(),
+                        a.group(),
+                        a.checkedAtNanos(),
+                        a.tokenUntilNanos(),
+                        a.reservationUntilNanos(),
+                        a.groupUntilNanos(),
+                        a.securityUntilNanos());
+                selected =
+                    new NativeRelayAuthorization.AuthorizedRound(
+                        projection,
+                        new NegotiationRelay.Grant(
+                            a.callId(),
+                            a.activationId(),
+                            8,
+                            18,
+                            30,
+                            f.sender,
+                            f.recipient,
+                            first.grant().untilNanos(),
+                            f.group),
+                        selected.authorizationUntil(),
+                        selected.destination());
+              }
+              return new RpcOperation<>(
+                  CompletableFuture.completedFuture(selected),
+                  CompletableFuture.completedFuture(null));
+            },
+            f.mono::get,
+            f.trusted::get,
+            c -> Optional.of(f.group));
+    var producer =
+        new NativeRelayProducer(
+            cache,
+            4,
+            f.mono::get,
+            f.trusted::get,
+            c -> Optional.of(f.group),
+            memory,
+            (destination, delivery, budget) -> {
+              if (delivery.command().negotiationId().value() == 17) {
+                entered.countDown();
+                try {
+                  if (!release.await(3, TimeUnit.SECONDS))
+                    throw new IllegalStateException("TEST_ONLY_BARRIER_TIMEOUT");
+                } catch (InterruptedException interrupted) {
+                  throw new IllegalStateException(interrupted);
+                }
+              }
+              return new RpcOperation<>(
+                  CompletableFuture.completedFuture(
+                      new RelayWriteReceipt(
+                          delivery.command().callId(),
+                          delivery.command().requestId(),
+                          delivery.command().type(),
+                          delivery.callVersion(),
+                          delivery.command().negotiationId().value(),
+                          delivery.command().iceGeneration().value())),
+                  CompletableFuture.completedFuture(null));
+            });
+    var old = command(SignalEnvelope.Type.OFFER, f.sender);
+    var fresh =
+        new ProtocolValidator(ProtocolLimits.v1())
+            .bind(
+                new SignalEnvelope(
+                    1,
+                    old.type(),
+                    new RequestId(UUID.randomUUID()),
+                    f.call,
+                    new NegotiationId(18),
+                    new IceGeneration(30),
+                    old.payloadJson()),
+                f.sender);
+    var oldResult = new CompletableFuture<RpcOperation<InternalReply>>();
+    var newResult = new CompletableFuture<RpcOperation<InternalReply>>();
+    var oldThread =
+        Thread.ofPlatform()
+            .daemon()
+            .name("TEST_ONLY_ORIGINAL_SDP")
+            .start(
+                () -> {
+                  try {
+                    oldResult.complete(producer.apply(wire(old)));
+                  } catch (Throwable failure) {
+                    oldResult.completeExceptionally(failure);
+                  }
+                });
+    assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
+    var newThread =
+        Thread.ofPlatform()
+            .daemon()
+            .name("TEST_ONLY_NEW_ROUND")
+            .start(
+                () -> {
+                  try {
+                    newResult.complete(producer.apply(wire(fresh)));
+                  } catch (Throwable failure) {
+                    newResult.completeExceptionally(failure);
+                  }
+                });
+    org.awaitility.Awaitility.await()
+        .atMost(Duration.ofSeconds(1))
+        .until(
+            () -> {
+              var info = mx.getThreadInfo(newThread.threadId());
+              return info != null
+                  && info.getThreadState() == Thread.State.BLOCKED
+                  && info.getLockOwnerId() == oldThread.threadId();
+            });
+    release.countDown();
+    org.awaitility.Awaitility.await()
+        .atMost(Duration.ofSeconds(2))
+        .until(() -> oldResult.isDone() && newResult.isDone());
+    oldResult.join().physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    newResult.join().physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    producer.close();
+    cache.drain().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    assertThat(memory.retainedBytes()).isZero();
+  }
 }

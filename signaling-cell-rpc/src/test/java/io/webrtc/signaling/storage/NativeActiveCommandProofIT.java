@@ -1,53 +1,461 @@
 package io.webrtc.signaling.storage;
+
 import static org.assertj.core.api.Assertions.*;
-import io.webrtc.signaling.rpc.*;
+
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.*;
-import io.webrtc.signaling.storage.HomeParticipationService.*;
+import io.webrtc.signaling.rpc.*;
 import io.webrtc.signaling.storage.CallSnapshotRepository.*;
+import io.webrtc.signaling.storage.HomeParticipationService.*;
 import java.security.*;
 import java.time.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
-class NativeActiveCommandProofIT {
-    static <T>T done(DbOperation<T> operation){try{return operation.logical().toCompletableFuture().join();}finally{operation.physicalCompletion().toCompletableFuture().join();}}
-    @Test void nativeActiveProjectionsIssueCommandProofsAndPrimaryGrantConsumesTheSameActivationRoundAndRoot()throws Exception{
-        try(var f=new LocalInviteAtomicIT.Fixture()){
-            var caller=f.sender("active-command-caller");var winner=f.sender("active-command-winner");var invite=f.invite(caller,winner.userId());var call=f.service().executeCallCommand(invite).toCompletableFuture().join().callId();var group=f.token(call);var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();var proofs=new HomeAuthorizationProof("c001","test",keys.getPrivate(),Map.of("c001/test",keys.getPublic()));var bindings=new ProofBindings(proofs,Clock.systemUTC());var issuer=new NativeProofIssuer(proofs,Clock.systemUTC(),()->true,group::equals);var grants=new CoordinatorGrantService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER");var home=new HomeParticipationService(f.runtime.sql,"c001",1,bindings.homeVerifier("c001"));var reads=new HomeProofReadService(home,(c,u)->true,(c,r)->true);var activationService=new HomeActivationService(home,(c,u)->true);
-            var queryAction=new AuthorizationIntent("QUERY",null,0,null,0,null,null);var accept=AcceptCompletionIT.accept(winner,call);done(f.service().executeUnderAuthorityTracked(accept,new CallCommandService.Authority(call,group,1,"TEST_ONLY_VERIFIED",1),Duration.ofSeconds(2)));var winnerQuery=sign(issuer,grants,invite,call,winner.userId(),accept.requestId().value(),group,1,queryAction);var view=done(reads.observe(winnerQuery,winner,Duration.ofSeconds(2)));var route=view.currentRoutes().getFirst();var claimAction=new AuthorizationIntent("CLAIM",view.participation().reservationId(),0,null,0,null,route);var claim=sign(issuer,grants,invite,call,winner.userId(),accept.requestId().value(),group,1,claimAction);done(new AcceptWinnerService(home,(c,r)->true).claimAcceptTracked(claim,view.participation().reservationId(),route,Duration.ofSeconds(2)));
-            var workflow=new CallWorkflowService(f.runtime.sql,"c001",1,"TEST_ONLY_LOCAL_OWNER",(t,s)->t.proof().equals("TEST_ONLY_FIXTURE_TRANSITION"));var participant=new Participant(winner.userId(),winner.key(),winner.incarnation(),1);UUID activation=UUID.randomUUID();
-            done(workflow.apply(new CallWorkflowService.Transition(call,group,1,1,accept.requestId().value(),CallWorkflowService.Step.ACCEPT,participant,List.of(),null,Instant.now().plusSeconds(4),null,"TEST_ONLY_FIXTURE_TRANSITION",null),Duration.ofSeconds(2)));
-            done(workflow.apply(new CallWorkflowService.Transition(call,group,1,2,UUID.randomUUID(),CallWorkflowService.Step.ACTIVATE,participant,List.of(),activation,Instant.now().plusSeconds(4),null,"TEST_ONLY_FIXTURE_TRANSITION",null),Duration.ofSeconds(2)));
-            for(var session:List.of(caller,winner)){UUID operation=UUID.randomUUID();var request=sign(issuer,grants,invite,call,session.userId(),operation,group,3,queryAction);var nativeView=done(reads.observe(request,session,Duration.ofSeconds(2)));var p=nativeView.participation();var action=new AuthorizationIntent("CONFIRM",p.reservationId(),p.version(),activation,3,p.winner(),null);var sealed=sign(issuer,grants,invite,call,session.userId(),operation,group,3,action);done(activationService.confirmTracked(sealed,p.reservationId(),p.version(),activation,3,p.winner(),operation,Duration.ofSeconds(2)));}
-            var ready=done(workflow.apply(new CallWorkflowService.Transition(call,group,1,3,UUID.randomUUID(),CallWorkflowService.Step.READY,participant,List.of(),activation,Instant.now().plusSeconds(4),Instant.now().plusSeconds(20),"TEST_ONLY_FIXTURE_TRANSITION",null),Duration.ofSeconds(2))).snapshot();
-            var command=NegotiationGrantIT.request(caller,call);var issuerRequest=sign(issuer,grants,invite,call,caller.userId(),command.requestId().value(),group,4,queryAction);var recipientRequest=sign(issuer,grants,invite,call,winner.userId(),command.requestId().value(),group,4,queryAction);var callerView=done(reads.observe(issuerRequest,caller,Duration.ofSeconds(2)));var winnerView=done(reads.observe(recipientRequest,winner,Duration.ofSeconds(2)));var backend=new io.webrtc.signaling.actors.user.PostgresUserBackend(new UserSnapshotService(f.runtime.sql,"c001",1),f.sessions,new UserReservationService(home),new AcceptWinnerService(home,(c,r)->true),activationService,reads);
-            var commandBackend=new java.util.concurrent.atomic.AtomicReference<CallCommandService>();
-            var actors=new RpcBusinessHandler.ActorIngress(){
-                public java.util.concurrent.CompletionStage<io.webrtc.signaling.actors.call.CallActor.GrantReply> grant(Request request,AuthorizationIntent action,String destination,Instant deadline,int bytes){return workflow.load(call,group,Duration.between(Instant.now(),deadline)).logical().thenCompose(snapshot->grants.issue(request,action,group,1,snapshot.orElseThrow().version(),Duration.between(Instant.now(),deadline)).logical()).thenApply(issued->new io.webrtc.signaling.actors.call.CallActor.GrantReply("GRANTED",issued,issuer.coordinator(request,destination,issued)));}
-                public java.util.concurrent.CompletionStage<io.webrtc.signaling.actors.user.UserCommand.Result> user(io.webrtc.signaling.actors.user.UserCommand.Operation op,Instant deadline,int bytes){return backend.execute(op,Duration.between(Instant.now(),deadline)).logical();}
-                public java.util.concurrent.CompletionStage<CallCommandService.Outcome> call(CallCommand command,String proof,Instant deadline,int bytes){return workflow.load(call,group,Duration.between(Instant.now(),deadline)).logical().thenCompose(snapshot->commandBackend.get().executeUnderAuthorityTracked(command,new CallCommandService.Authority(call,group,1,proof,snapshot.orElseThrow().version()),Duration.between(Instant.now(),deadline)).logical());}
-                public java.util.concurrent.CompletionStage<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition transition,Instant deadline,int bytes){throw new AssertionError();}
-            };
-            var bridge=new RpcBusinessHandler("c001",actors,bindings,proofs,u->new ProofBindings.TrustedHome("c001",1,1),r->java.util.concurrent.CompletableFuture.failedFuture(new AssertionError()),r->java.util.concurrent.CompletableFuture.failedFuture(new AssertionError()),Clock.systemUTC(),issuer).businessAdmission(()->true);
-            var networkCleanup=new java.util.concurrent.CompletableFuture<Void>();
-            var network=new NativeSagaEffects.Network(){public java.util.concurrent.CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand wire,Duration budget){return bridge.execute(op,wire,new CellRpcServer.Peer("c001","actor"),budget);}public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(CellRpcServer.Operation op,io.webrtc.signaling.protocol.internal.InternalCommand wire,Duration budget){return new RpcOperation<>(call(op,wire,budget),networkCleanup);}};
-            var client=new NativeHomeProofClient(actors,network,Clock.systemUTC());String callerProof=client.proveCommand(issuerRequest,"c001",caller,command,ready.caller(),Duration.ofSeconds(2)).toCompletableFuture().join().signed();String winnerProof=client.proveCommand(recipientRequest,"c001",winner,command,ready.winner(),Duration.ofSeconds(2)).toCompletableFuture().join().signed();
-            var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var callerRoute=callerView.currentRoutes().getFirst();var auth=done(registry.readCurrentSessionTracked(callerRoute,SessionAuthReadIT.principal(callerRoute),1,Duration.ofSeconds(2)));String source=proofs.sessionProofs().issue(auth,command);var bundle=new CriticalCommandProof(source,callerProof,winnerProof).encode();var nativeCommands=new CallCommandService(f.runtime.sql,"c001",1,c->{throw new AssertionError();},bindings.commandVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1)),bindings.negotiationVerifier("c001",u->new ProofBindings.TrustedHome("c001",1,1))).businessAdmission(()->true);
-            commandBackend.set(nativeCommands);
-            var producer=new NativeCriticalCommandExecutor(nativeCommands,client,actors,u->new ProofBindings.TrustedHome("c001",1,1),"c001",1,Clock.systemUTC());
-            var pending=producer.execute(command,source,Duration.ofSeconds(2));var outcome=pending.logical().toCompletableFuture().join();
-            assertThatThrownBy(()->pending.physicalCompletion().toCompletableFuture().get(250,java.util.concurrent.TimeUnit.MILLISECONDS)).isInstanceOf(java.util.concurrent.TimeoutException.class);networkCleanup.complete(null);pending.physicalCompletion().toCompletableFuture().get(1,java.util.concurrent.TimeUnit.SECONDS);assertThat(outcome.code()).isEqualTo("NEGOTIATION_GRANTED");assertThat(outcome.version()).isEqualTo(5);assertThat(nativeCommands.loadCallSnapshot(caller,call).toCompletableFuture().join().negotiationId()).isEqualTo(1);
-            var callerMedia=ReattachMediaIT.command(SignalEnvelope.Type.MEDIA_CONNECTED,caller,call,1,1);
-            var winnerMedia=ReattachMediaIT.command(SignalEnvelope.Type.MEDIA_CONNECTED,winner,call,1,1);
-            String callerSource=proofs.sessionProofs().issue(done(registry.readCurrentSessionTracked(callerRoute,SessionAuthReadIT.principal(callerRoute),1,Duration.ofSeconds(2))),callerMedia);
-            var winnerRoute=winnerView.currentRoutes().getFirst();String winnerSource=proofs.sessionProofs().issue(done(registry.readCurrentSessionTracked(winnerRoute,SessionAuthReadIT.principal(winnerRoute),1,Duration.ofSeconds(2))),winnerMedia);
-            assertThat(producer.execute(callerMedia,callerSource,Duration.ofSeconds(2)).logical().toCompletableFuture().join().code()).isEqualTo("MEDIA_RECORDED");
-            assertThat(nativeCommands.loadCallSnapshot(caller,call).toCompletableFuture().join().state()).isEqualTo("CONNECTING");
-            assertThat(producer.execute(winnerMedia,winnerSource,Duration.ofSeconds(2)).logical().toCompletableFuture().join().state()).isEqualTo("ESTABLISHED");
-            assertThat(producer.execute(callerMedia,callerSource,Duration.ofSeconds(2)).logical().toCompletableFuture().join().code()).isEqualTo("MEDIA_RECORDED");
-            assertThatThrownBy(()->producer.execute(callerMedia,winnerSource,Duration.ofSeconds(2)).logical().toCompletableFuture().join()).hasCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
 
-        }
+class NativeActiveCommandProofIT {
+  static <T> T done(DbOperation<T> operation) {
+    try {
+      return operation.logical().toCompletableFuture().join();
+    } finally {
+      operation.physicalCompletion().toCompletableFuture().join();
     }
-    static Request sign(NativeProofIssuer issuer,CoordinatorGrantService grants,CallCommand invite,CallId call,UserId user,UUID operation,AuthoritySql.GroupToken group,long version,AuthorizationIntent action){Instant now=Instant.now();var template=new Request(user,call,invite.requestId().value(),invite.intentHash(),1,Phase.RINGING,new Grant(group.cell(),group.storageEpoch(),1,group.group(),group.epoch(),1,operation,now,now.plusSeconds(5),"PENDING_NATIVE_SIGNATURE"));return issuer.coordinator(template,"c001",done(grants.issue(template,action,group,1,version,Duration.ofSeconds(2))));}
+  }
+
+  @Test
+  void
+      nativeActiveProjectionsIssueCommandProofsAndPrimaryGrantConsumesTheSameActivationRoundAndRoot()
+          throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var caller = f.sender("active-command-caller");
+      var winner = f.sender("active-command-winner");
+      var invite = f.invite(caller, winner.userId());
+      var call = f.service().executeCallCommand(invite).toCompletableFuture().join().callId();
+      var group = f.token(call);
+      var keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+      var proofs =
+          new HomeAuthorizationProof(
+              "c001", "test", keys.getPrivate(), Map.of("c001/test", keys.getPublic()));
+      var bindings = new ProofBindings(proofs, Clock.systemUTC());
+      var issuer = new NativeProofIssuer(proofs, Clock.systemUTC(), () -> true, group::equals);
+      var grants = new CoordinatorGrantService(f.runtime.sql, "c001", 1, "TEST_ONLY_LOCAL_OWNER");
+      var home =
+          new HomeParticipationService(f.runtime.sql, "c001", 1, bindings.homeVerifier("c001"));
+      var reads = new HomeProofReadService(home, (c, u) -> true, (c, r) -> true);
+      var activationService = new HomeActivationService(home, (c, u) -> true);
+      var queryAction = new AuthorizationIntent("QUERY", null, 0, null, 0, null, null);
+      var accept = AcceptCompletionIT.accept(winner, call);
+      done(
+          f.service()
+              .executeUnderAuthorityTracked(
+                  accept,
+                  new CallCommandService.Authority(call, group, 1, "TEST_ONLY_VERIFIED", 1),
+                  Duration.ofSeconds(2)));
+      var winnerQuery =
+          sign(
+              issuer,
+              grants,
+              invite,
+              call,
+              winner.userId(),
+              accept.requestId().value(),
+              group,
+              1,
+              queryAction);
+      var view = done(reads.observe(winnerQuery, winner, Duration.ofSeconds(2)));
+      var route = view.currentRoutes().getFirst();
+      var claimAction =
+          new AuthorizationIntent(
+              "CLAIM", view.participation().reservationId(), 0, null, 0, null, route);
+      var claim =
+          sign(
+              issuer,
+              grants,
+              invite,
+              call,
+              winner.userId(),
+              accept.requestId().value(),
+              group,
+              1,
+              claimAction);
+      done(
+          new AcceptWinnerService(home, (c, r) -> true)
+              .claimAcceptTracked(
+                  claim, view.participation().reservationId(), route, Duration.ofSeconds(2)));
+      var workflow =
+          new CallWorkflowService(
+              f.runtime.sql,
+              "c001",
+              1,
+              "TEST_ONLY_LOCAL_OWNER",
+              (t, s) -> t.proof().equals("TEST_ONLY_FIXTURE_TRANSITION"));
+      var participant = new Participant(winner.userId(), winner.key(), winner.incarnation(), 1);
+      UUID activation = UUID.randomUUID();
+      done(
+          workflow.apply(
+              new CallWorkflowService.Transition(
+                  call,
+                  group,
+                  1,
+                  1,
+                  accept.requestId().value(),
+                  CallWorkflowService.Step.ACCEPT,
+                  participant,
+                  List.of(),
+                  null,
+                  Instant.now().plusSeconds(4),
+                  null,
+                  "TEST_ONLY_FIXTURE_TRANSITION",
+                  null),
+              Duration.ofSeconds(2)));
+      done(
+          workflow.apply(
+              new CallWorkflowService.Transition(
+                  call,
+                  group,
+                  1,
+                  2,
+                  UUID.randomUUID(),
+                  CallWorkflowService.Step.ACTIVATE,
+                  participant,
+                  List.of(),
+                  activation,
+                  Instant.now().plusSeconds(4),
+                  null,
+                  "TEST_ONLY_FIXTURE_TRANSITION",
+                  null),
+              Duration.ofSeconds(2)));
+      for (var session : List.of(caller, winner)) {
+        UUID operation = UUID.randomUUID();
+        var request =
+            sign(issuer, grants, invite, call, session.userId(), operation, group, 3, queryAction);
+        var nativeView = done(reads.observe(request, session, Duration.ofSeconds(2)));
+        var p = nativeView.participation();
+        var action =
+            new AuthorizationIntent(
+                "CONFIRM", p.reservationId(), p.version(), activation, 3, p.winner(), null);
+        var sealed =
+            sign(issuer, grants, invite, call, session.userId(), operation, group, 3, action);
+        done(
+            activationService.confirmTracked(
+                sealed,
+                p.reservationId(),
+                p.version(),
+                activation,
+                3,
+                p.winner(),
+                operation,
+                Duration.ofSeconds(2)));
+      }
+      var ready =
+          done(workflow.apply(
+                  new CallWorkflowService.Transition(
+                      call,
+                      group,
+                      1,
+                      3,
+                      UUID.randomUUID(),
+                      CallWorkflowService.Step.READY,
+                      participant,
+                      List.of(),
+                      activation,
+                      Instant.now().plusSeconds(4),
+                      Instant.now().plusSeconds(20),
+                      "TEST_ONLY_FIXTURE_TRANSITION",
+                      null),
+                  Duration.ofSeconds(2)))
+              .snapshot();
+      var command = NegotiationGrantIT.request(caller, call);
+      var issuerRequest =
+          sign(
+              issuer,
+              grants,
+              invite,
+              call,
+              caller.userId(),
+              command.requestId().value(),
+              group,
+              4,
+              queryAction);
+      var recipientRequest =
+          sign(
+              issuer,
+              grants,
+              invite,
+              call,
+              winner.userId(),
+              command.requestId().value(),
+              group,
+              4,
+              queryAction);
+      var callerView = done(reads.observe(issuerRequest, caller, Duration.ofSeconds(2)));
+      var winnerView = done(reads.observe(recipientRequest, winner, Duration.ofSeconds(2)));
+      var backend =
+          new io.webrtc.signaling.actors.user.PostgresUserBackend(
+              new UserSnapshotService(f.runtime.sql, "c001", 1),
+              f.sessions,
+              new UserReservationService(home),
+              new AcceptWinnerService(home, (c, r) -> true),
+              activationService,
+              reads);
+      var commandBackend = new java.util.concurrent.atomic.AtomicReference<CallCommandService>();
+      var actors =
+          new RpcBusinessHandler.ActorIngress() {
+            public java.util.concurrent.CompletionStage<
+                    io.webrtc.signaling.actors.call.CallActor.GrantReply>
+                grant(
+                    Request request,
+                    AuthorizationIntent action,
+                    String destination,
+                    Instant deadline,
+                    int bytes) {
+              return workflow
+                  .load(call, group, Duration.between(Instant.now(), deadline))
+                  .logical()
+                  .thenCompose(
+                      snapshot ->
+                          grants
+                              .issue(
+                                  request,
+                                  action,
+                                  group,
+                                  1,
+                                  snapshot.orElseThrow().version(),
+                                  Duration.between(Instant.now(), deadline))
+                              .logical())
+                  .thenApply(
+                      issued ->
+                          new io.webrtc.signaling.actors.call.CallActor.GrantReply(
+                              "GRANTED", issued, issuer.coordinator(request, destination, issued)));
+            }
+
+            public java.util.concurrent.CompletionStage<
+                    io.webrtc.signaling.actors.user.UserCommand.Result>
+                user(
+                    io.webrtc.signaling.actors.user.UserCommand.Operation op,
+                    Instant deadline,
+                    int bytes) {
+              return backend.execute(op, Duration.between(Instant.now(), deadline)).logical();
+            }
+
+            public java.util.concurrent.CompletionStage<CallCommandService.Outcome> call(
+                CallCommand command, String proof, Instant deadline, int bytes) {
+              return workflow
+                  .load(call, group, Duration.between(Instant.now(), deadline))
+                  .logical()
+                  .thenCompose(
+                      snapshot ->
+                          commandBackend
+                              .get()
+                              .executeUnderAuthorityTracked(
+                                  command,
+                                  new CallCommandService.Authority(
+                                      call, group, 1, proof, snapshot.orElseThrow().version()),
+                                  Duration.between(Instant.now(), deadline))
+                              .logical());
+            }
+
+            public java.util.concurrent.CompletionStage<CallWorkflowService.Outcome> progress(
+                CallWorkflowService.Transition transition, Instant deadline, int bytes) {
+              throw new AssertionError();
+            }
+          };
+      var bridge =
+          new RpcBusinessHandler(
+                  "c001",
+                  actors,
+                  bindings,
+                  proofs,
+                  u -> new ProofBindings.TrustedHome("c001", 1, 1),
+                  r -> java.util.concurrent.CompletableFuture.failedFuture(new AssertionError()),
+                  r -> java.util.concurrent.CompletableFuture.failedFuture(new AssertionError()),
+                  Clock.systemUTC(),
+                  issuer)
+              .businessAdmission(() -> true);
+      var networkCleanup = new java.util.concurrent.CompletableFuture<Void>();
+      var network =
+          new NativeSagaEffects.Network() {
+            public java.util.concurrent.CompletionStage<
+                    io.webrtc.signaling.protocol.internal.InternalReply>
+                call(
+                    CellRpcServer.Operation op,
+                    io.webrtc.signaling.protocol.internal.InternalCommand wire,
+                    Duration budget) {
+              return bridge.execute(op, wire, new CellRpcServer.Peer("c001", "actor"), budget);
+            }
+
+            public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(
+                CellRpcServer.Operation op,
+                io.webrtc.signaling.protocol.internal.InternalCommand wire,
+                Duration budget) {
+              return new RpcOperation<>(call(op, wire, budget), networkCleanup);
+            }
+          };
+      var client = new NativeHomeProofClient(actors, network, Clock.systemUTC());
+      String callerProof =
+          client
+              .proveCommand(
+                  issuerRequest, "c001", caller, command, ready.caller(), Duration.ofSeconds(2))
+              .toCompletableFuture()
+              .join()
+              .signed();
+      String winnerProof =
+          client
+              .proveCommand(
+                  recipientRequest, "c001", winner, command, ready.winner(), Duration.ofSeconds(2))
+              .toCompletableFuture()
+              .join()
+              .signed();
+      var registry = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> true);
+      var callerRoute = callerView.currentRoutes().getFirst();
+      var auth =
+          done(
+              registry.readCurrentSessionTracked(
+                  callerRoute, SessionAuthReadIT.principal(callerRoute), 1, Duration.ofSeconds(2)));
+      String source = proofs.sessionProofs().issue(auth, command);
+      var bundle = new CriticalCommandProof(source, callerProof, winnerProof).encode();
+      var nativeCommands =
+          new CallCommandService(
+                  f.runtime.sql,
+                  "c001",
+                  1,
+                  c -> {
+                    throw new AssertionError();
+                  },
+                  bindings.commandVerifier(
+                      "c001", u -> new ProofBindings.TrustedHome("c001", 1, 1)),
+                  bindings.negotiationVerifier(
+                      "c001", u -> new ProofBindings.TrustedHome("c001", 1, 1)))
+              .businessAdmission(() -> true);
+      commandBackend.set(nativeCommands);
+      var producer =
+          new NativeCriticalCommandExecutor(
+              nativeCommands,
+              client,
+              actors,
+              u -> new ProofBindings.TrustedHome("c001", 1, 1),
+              "c001",
+              1,
+              Clock.systemUTC());
+      var pending = producer.execute(command, source, Duration.ofSeconds(2));
+      var outcome = pending.logical().toCompletableFuture().join();
+      assertThatThrownBy(
+              () ->
+                  pending
+                      .physicalCompletion()
+                      .toCompletableFuture()
+                      .get(250, java.util.concurrent.TimeUnit.MILLISECONDS))
+          .isInstanceOf(java.util.concurrent.TimeoutException.class);
+      networkCleanup.complete(null);
+      pending
+          .physicalCompletion()
+          .toCompletableFuture()
+          .get(1, java.util.concurrent.TimeUnit.SECONDS);
+      assertThat(outcome.code()).isEqualTo("NEGOTIATION_GRANTED");
+      assertThat(outcome.version()).isEqualTo(5);
+      assertThat(
+              nativeCommands
+                  .loadCallSnapshot(caller, call)
+                  .toCompletableFuture()
+                  .join()
+                  .negotiationId())
+          .isEqualTo(1);
+      var callerMedia =
+          ReattachMediaIT.command(SignalEnvelope.Type.MEDIA_CONNECTED, caller, call, 1, 1);
+      var winnerMedia =
+          ReattachMediaIT.command(SignalEnvelope.Type.MEDIA_CONNECTED, winner, call, 1, 1);
+      String callerSource =
+          proofs
+              .sessionProofs()
+              .issue(
+                  done(
+                      registry.readCurrentSessionTracked(
+                          callerRoute,
+                          SessionAuthReadIT.principal(callerRoute),
+                          1,
+                          Duration.ofSeconds(2))),
+                  callerMedia);
+      var winnerRoute = winnerView.currentRoutes().getFirst();
+      String winnerSource =
+          proofs
+              .sessionProofs()
+              .issue(
+                  done(
+                      registry.readCurrentSessionTracked(
+                          winnerRoute,
+                          SessionAuthReadIT.principal(winnerRoute),
+                          1,
+                          Duration.ofSeconds(2))),
+                  winnerMedia);
+      assertThat(
+              producer
+                  .execute(callerMedia, callerSource, Duration.ofSeconds(2))
+                  .logical()
+                  .toCompletableFuture()
+                  .join()
+                  .code())
+          .isEqualTo("MEDIA_RECORDED");
+      assertThat(nativeCommands.loadCallSnapshot(caller, call).toCompletableFuture().join().state())
+          .isEqualTo("CONNECTING");
+      assertThat(
+              producer
+                  .execute(winnerMedia, winnerSource, Duration.ofSeconds(2))
+                  .logical()
+                  .toCompletableFuture()
+                  .join()
+                  .state())
+          .isEqualTo("ESTABLISHED");
+      assertThat(
+              producer
+                  .execute(callerMedia, callerSource, Duration.ofSeconds(2))
+                  .logical()
+                  .toCompletableFuture()
+                  .join()
+                  .code())
+          .isEqualTo("MEDIA_RECORDED");
+      assertThatThrownBy(
+              () ->
+                  producer
+                      .execute(callerMedia, winnerSource, Duration.ofSeconds(2))
+                      .logical()
+                      .toCompletableFuture()
+                      .join())
+          .hasCauseInstanceOf(CallCommandService.AuthorizationRejected.class);
+    }
+  }
+
+  static Request sign(
+      NativeProofIssuer issuer,
+      CoordinatorGrantService grants,
+      CallCommand invite,
+      CallId call,
+      UserId user,
+      UUID operation,
+      AuthoritySql.GroupToken group,
+      long version,
+      AuthorizationIntent action) {
+    Instant now = Instant.now();
+    var template =
+        new Request(
+            user,
+            call,
+            invite.requestId().value(),
+            invite.intentHash(),
+            1,
+            Phase.RINGING,
+            new Grant(
+                group.cell(),
+                group.storageEpoch(),
+                1,
+                group.group(),
+                group.epoch(),
+                1,
+                operation,
+                now,
+                now.plusSeconds(5),
+                "PENDING_NATIVE_SIGNATURE"));
+    return issuer.coordinator(
+        template,
+        "c001",
+        done(grants.issue(template, action, group, 1, version, Duration.ofSeconds(2))));
+  }
 }

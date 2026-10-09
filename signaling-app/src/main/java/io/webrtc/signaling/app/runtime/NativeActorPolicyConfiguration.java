@@ -10,9 +10,11 @@ import org.springframework.context.annotation.*;
 /** Install actor policies only from the explicit native source and live clock owners. */
 @AutoConfiguration
 @Profile("actor")
-@ConditionalOnBean({RevocationReconciler.class,ClockSafetyMonitor.class})
+@ConditionalOnBean({RevocationReconciler.class, ClockSafetyMonitor.class})
 public class NativeActorPolicyConfiguration {
-    @Bean NativeActorSecurityPolicies nativeActorSecurityPolicies(RevocationReconciler source,ClockSafetyMonitor clock){
-        return new NativeActorSecurityPolicies(source,clock::valid);
-    }
+  @Bean
+  NativeActorSecurityPolicies nativeActorSecurityPolicies(
+      RevocationReconciler source, ClockSafetyMonitor clock) {
+    return new NativeActorSecurityPolicies(source, clock::valid);
+  }
 }

@@ -1,82 +1,563 @@
 package io.webrtc.signaling.storage;
+
+import com.fasterxml.jackson.databind.*;
 import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.storage.CallSnapshotRepository.*;
-import com.fasterxml.jackson.databind.*;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.*;
 import java.time.*;
 import java.util.*;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-/** The workflow authority is a primary SQL transaction; timer, proof and actor caches are inputs only. */
+
+/**
+ * The workflow authority is a primary SQL transaction; timer, proof and actor caches are inputs
+ * only.
+ */
 public final class CallWorkflowService {
-    public enum Step {RING,ACCEPT,ACTIVATE,READY,ESTABLISH,TERMINATE}
-    public record Transition(CallId call,AuthoritySql.GroupToken group,long directoryEpoch,long expectedVersion,UUID operation,Step step,Participant winner,List<Participant> offered,UUID activationId,Instant proofExpiresAt,Instant participantUntil,String proof,String reason){
-        public Transition{Objects.requireNonNull(call);Objects.requireNonNull(group);Objects.requireNonNull(operation);Objects.requireNonNull(step);Objects.requireNonNull(proofExpiresAt);offered=List.copyOf(offered);if(directoryEpoch<1||expectedVersion<1||offered.size()>5||offered.stream().map(Participant::key).distinct().count()!=offered.size()||proof==null||proof.getBytes(StandardCharsets.UTF_8).length>8192||reason!=null&&!reason.matches("[A-Z_]{1,64}"))throw new IllegalArgumentException("Invalid bounded workflow transition");}
+  public enum Step {
+    RING,
+    ACCEPT,
+    ACTIVATE,
+    READY,
+    ESTABLISH,
+    TERMINATE
+  }
+
+  public record Transition(
+      CallId call,
+      AuthoritySql.GroupToken group,
+      long directoryEpoch,
+      long expectedVersion,
+      UUID operation,
+      Step step,
+      Participant winner,
+      List<Participant> offered,
+      UUID activationId,
+      Instant proofExpiresAt,
+      Instant participantUntil,
+      String proof,
+      String reason) {
+    public Transition {
+      Objects.requireNonNull(call);
+      Objects.requireNonNull(group);
+      Objects.requireNonNull(operation);
+      Objects.requireNonNull(step);
+      Objects.requireNonNull(proofExpiresAt);
+      offered = List.copyOf(offered);
+      if (directoryEpoch < 1
+          || expectedVersion < 1
+          || offered.size() > 5
+          || offered.stream().map(Participant::key).distinct().count() != offered.size()
+          || proof == null
+          || proof.getBytes(StandardCharsets.UTF_8).length > 8192
+          || reason != null && !reason.matches("[A-Z_]{1,64}"))
+        throw new IllegalArgumentException("Invalid bounded workflow transition");
     }
-    public record Outcome(String code,Snapshot snapshot,List<UUID> eventIds) implements io.webrtc.signaling.protocol.ApplicationSerializable {public Outcome{Objects.requireNonNull(code);eventIds=List.copyOf(eventIds);}}
-    private record Stored(String code,long version,String state,List<UUID> eventIds) {}
-    @FunctionalInterface public interface ProofVerifier {boolean verify(Transition transition,Snapshot snapshot);}
-    private static final ObjectMapper JSON=new ObjectMapper().findAndRegisterModules();
-    private final SqlTransactions sql;private final String cell,owner;private final long epoch;private final ProofVerifier verifier;private final RouteLossVerifier routeLossVerifier;
-    private final CallSnapshotRepository calls=new CallSnapshotRepository();private final CommandResultRepository results=new CommandResultRepository();private final OutboxRepository outbox;
-    public CallWorkflowService(SqlTransactions sql,String cell,long epoch,String localOwnerNode,ProofVerifier verifier){this(sql,cell,epoch,localOwnerNode,verifier,loss->null);}
-    public CallWorkflowService(SqlTransactions sql,String cell,long epoch,String localOwnerNode,ProofVerifier verifier,RouteLossVerifier routeLossVerifier){this.routeLossVerifier=Objects.requireNonNull(routeLossVerifier);this.sql=Objects.requireNonNull(sql);this.cell=Objects.requireNonNull(cell);this.epoch=epoch;owner=Objects.requireNonNull(localOwnerNode);this.verifier=Objects.requireNonNull(verifier);outbox=new OutboxRepository(sql,cell,epoch);}
-    public record RouteLoss(CallId call,AuthoritySql.GroupToken group,AuthenticatedSession sender,String nativeProof){public RouteLoss{Objects.requireNonNull(call);Objects.requireNonNull(group);Objects.requireNonNull(sender);if(nativeProof==null||nativeProof.length()>8192)throw new IllegalArgumentException("Invalid route-loss proof");}public String toString(){return "RouteLoss[redacted]";}}
-    /** Returns the original native closed/expired timestamp after verifying full route identity and home provenance. */
-    @FunctionalInterface public interface RouteLossVerifier {Instant observedAt(RouteLoss loss);}
-    public DbOperation<Snapshot> routeLost(RouteLoss loss,Duration budget){return sql.submitTracked(DbClass.RECOVERY,budget,c->{var current=guard(c,loss.call(),loss.group(),0);if(current.terminalAt()!=null)return current;var sender=loss.sender();boolean caller=current.caller().sameBinding(sender),winner=current.winner()!=null&&current.winner().sameBinding(sender);if(!caller&&!winner)return current;var metadata=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.readTree(current.deadlines());String route=caller?"callerRoute":"winnerRoute",grace=caller?"callerGraceUntil":"winnerGraceUntil";if(metadata.has(route)&&!JSON.treeToValue(metadata.get(route),AuthenticatedSession.class).equals(sender))return current;Instant observed=routeLossVerifier.observedAt(loss);if(observed==null||observed.isAfter(now(c)))throw new AuthoritySql.FencedException();if(metadata.has(grace))return current;metadata.put(grace,observed.plusSeconds(75).toString());try(var q=c.prepareStatement("UPDATE call_state SET version=version+1,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")){q.setString(1,JSON.writeValueAsString(metadata));q.setLong(2,loss.group().epoch());q.setString(3,current.callId().value());q.setLong(4,current.version());if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();}current=calls.find(c,current.callId());events(c,current,"SIGNALING_UNREACHABLE");return current;});}
-    public static String nextState(String state,Step step){if(Set.of("TERMINAL","FAILED").contains(state))return state;if(step==Step.TERMINATE)return "TERMINAL";return switch(step){case RING->from(state,"PREPARING","RINGING");case ACCEPT->from(state,"RINGING","ACCEPTED");case ACTIVATE->from(state,"ACCEPTED","ACTIVATING");case READY->from(state,"ACTIVATING","CONNECTING");case ESTABLISH->from(state,"CONNECTING","ESTABLISHED");default->throw new IllegalArgumentException("Unknown workflow step");};}
-    private static String from(String actual,String required,String next){if(!actual.equals(required))throw new IllegalArgumentException("Illegal workflow transition");return next;}
-    public DbOperation<Outcome> apply(Transition transition,Duration budget){return sql.submitTracked(transition.step()==Step.TERMINATE?DbClass.TERMINATION:DbClass.CRITICAL,budget,c->{
-        Snapshot previous=guard(c,transition.call(),transition.group(),transition.directoryEpoch());Instant now=now(c);
-        if(!verifier.verify(transition,previous)||!transition.proofExpiresAt().isAfter(now)||transition.proofExpiresAt().isAfter(now.plusSeconds(5)))throw new AuthoritySql.FencedException();
-        String intent=intent(transition);Stored replay=findStep(c,transition.call(),transition.operation(),intent);if(replay!=null)return new Outcome(replay.code(),previous,replay.eventIds());
-        if(previous.terminalAt()!=null)return new Outcome("ALREADY_TERMINAL",previous,List.of());
-        if(previous.version()!=transition.expectedVersion())return record(c,transition,intent,new Outcome("STALE_VERSION",previous,List.of()));
-        String state=nextState(previous.state(),transition.step());validateEvidence(c,transition,previous,now);
-        var deadlines=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.readTree(previous.deadlines());
-        switch(transition.step()){case RING->deadlines.put("ringUntil",now.plusSeconds(30).toString());case ACCEPT->deadlines.put("activationUntil",now.plusSeconds(5).toString());default->{}}
-        Participant winner=transition.step()==Step.ACCEPT?transition.winner():previous.winner();UUID activation=transition.step()==Step.ACTIVATE?transition.activationId():previous.activationId();
-        String offered=transition.step()==Step.RING?JSON.writeValueAsString(transition.offered()):previous.offeredSessions();long version=Math.addExact(previous.version(),1);
-        try(var s=c.prepareStatement("UPDATE call_state SET state=?,version=?,winner_issuer=?,winner_jti=?,winner_incarnation=?,winner_generation=?,activation_id=?,saga_phase=?,deadlines=?::jsonb,offered_sessions=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp(),terminal_reason=?,terminal_at=CASE WHEN ? THEN clock_timestamp() ELSE NULL END,expires_at=CASE WHEN ? THEN clock_timestamp()+interval '24 hours 5 seconds' ELSE NULL END WHERE call_id=? AND version=? AND terminal_at IS NULL")){
-            s.setString(1,state);s.setLong(2,version);s.setString(3,winner==null?null:winner.key().issuer());s.setString(4,winner==null?null:winner.key().jti());s.setObject(5,winner==null?null:winner.incarnation().value());if(winner==null)s.setNull(6,Types.BIGINT);else s.setLong(6,winner.generation());s.setObject(7,activation);s.setString(8,saga(state));s.setString(9,JSON.writeValueAsString(deadlines));s.setString(10,offered);s.setLong(11,transition.group().epoch());boolean terminal=state.equals("TERMINAL");s.setString(12,terminal?transition.reason():null);s.setBoolean(13,terminal);s.setBoolean(14,terminal);s.setString(15,previous.callId().value());s.setLong(16,previous.version());if(s.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();
-        }
-        Snapshot current=calls.find(c,previous.callId());String code=state.equals("ACCEPTED")?"ACCEPTED_PENDING_ACTIVATION":state.equals("CONNECTING")?"CALL_READY":state;
-        var events=events(c,current,code);completeOrigin(c,current,code,events);
-        if(transition.step()==Step.ACCEPT){var key=current.winner().key();var scope=CommandScope.call(current.callId());var request=new RequestId(transition.operation());var result=results.find(c,key,scope,request);if(result!=null&&result.status().equals("PENDING"))results.finalizeResult(c,key,scope,request,new CallCommandService.Outcome("FINAL",code,current.callId(),current.version(),current.state(),events));}
-        return record(c,transition,intent,new Outcome(code,current,events));
-    });}
-    private void validateEvidence(Connection c,Transition t,Snapshot s,Instant now)throws Exception {
-        if(t.step()==Step.TERMINATE){if(t.reason()==null)throw new IllegalArgumentException("Terminal reason is required");return;}
-        if(!callerReservationLive(c,s))throw new AuthoritySql.FencedException();
-        if(t.step()==Step.RING){if(t.offered().isEmpty()||t.offered().stream().anyMatch(p->!p.user().equals(s.callee())))throw new AuthoritySql.FencedException();}
-        if(t.step()==Step.ACCEPT){if(t.winner()==null||!t.winner().user().equals(s.callee()))throw new AuthoritySql.FencedException();boolean offered=false;for(var p:JSON.readTree(s.offeredSessions()))if(JSON.treeToValue(p,Participant.class).equals(t.winner()))offered=true;if(!offered)throw new AuthoritySql.FencedException();}
-        if(Set.of(Step.ACTIVATE,Step.READY,Step.ESTABLISH).contains(t.step())&&(s.winner()==null||!s.winner().equals(t.winner())))throw new AuthoritySql.FencedException();
-        if(t.step()==Step.ACTIVATE&&t.activationId()==null)throw new AuthoritySql.FencedException();
-        if(t.step()==Step.READY&&(!Objects.equals(s.activationId(),t.activationId())||t.participantUntil()==null||!t.participantUntil().isAfter(now.plusSeconds(5))))throw new AuthoritySql.FencedException();
-        if(t.step()==Step.ESTABLISH){var media=JSON.readTree(s.deadlines());if(s.negotiationId()<1||!media.path("mediaCallerConnected").asBoolean()||!media.path("mediaWinnerConnected").asBoolean()||media.path("iceGeneration").asText("0").equals("0")||media.path("negotiationState").asText().equals("INVALIDATED"))throw new AuthoritySql.FencedException();}
+  }
+
+  public record Outcome(String code, Snapshot snapshot, List<UUID> eventIds)
+      implements io.webrtc.signaling.protocol.ApplicationSerializable {
+    public Outcome {
+      Objects.requireNonNull(code);
+      eventIds = List.copyOf(eventIds);
     }
-    private Snapshot guard(Connection c,CallId call,AuthoritySql.GroupToken token,long directoryEpoch)throws Exception {
-        validateToken(call,token);Snapshot hint=calls.find(c,call);if(hint==null)throw new AuthoritySql.FencedException();
-        long directory=directoryEpoch>0?directoryEpoch:bucketEpoch(c,hint.bucket());AuthoritySql.coordinator(c,token,Map.of(hint.bucket(),directory),List.of(hint.caller().user().value()),List.of(call.value()));
-        Snapshot current=calls.find(c,call);if(current==null||current.group()!=token.group()||current.hashVersion()!=token.hashVersion())throw new AuthoritySql.FencedException();return current;
+  }
+
+  private record Stored(String code, long version, String state, List<UUID> eventIds) {}
+
+  @FunctionalInterface
+  public interface ProofVerifier {
+    boolean verify(Transition transition, Snapshot snapshot);
+  }
+
+  private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
+  private final SqlTransactions sql;
+  private final String cell, owner;
+  private final long epoch;
+  private final ProofVerifier verifier;
+  private final RouteLossVerifier routeLossVerifier;
+  private final CallSnapshotRepository calls = new CallSnapshotRepository();
+  private final CommandResultRepository results = new CommandResultRepository();
+  private final OutboxRepository outbox;
+
+  public CallWorkflowService(
+      SqlTransactions sql, String cell, long epoch, String localOwnerNode, ProofVerifier verifier) {
+    this(sql, cell, epoch, localOwnerNode, verifier, loss -> null);
+  }
+
+  public CallWorkflowService(
+      SqlTransactions sql,
+      String cell,
+      long epoch,
+      String localOwnerNode,
+      ProofVerifier verifier,
+      RouteLossVerifier routeLossVerifier) {
+    this.routeLossVerifier = Objects.requireNonNull(routeLossVerifier);
+    this.sql = Objects.requireNonNull(sql);
+    this.cell = Objects.requireNonNull(cell);
+    this.epoch = epoch;
+    owner = Objects.requireNonNull(localOwnerNode);
+    this.verifier = Objects.requireNonNull(verifier);
+    outbox = new OutboxRepository(sql, cell, epoch);
+  }
+
+  public record RouteLoss(
+      CallId call, AuthoritySql.GroupToken group, AuthenticatedSession sender, String nativeProof) {
+    public RouteLoss {
+      Objects.requireNonNull(call);
+      Objects.requireNonNull(group);
+      Objects.requireNonNull(sender);
+      if (nativeProof == null || nativeProof.length() > 8192)
+        throw new IllegalArgumentException("Invalid route-loss proof");
     }
-    private void validateToken(CallId call,AuthoritySql.GroupToken token){if(!cell.equals(call.coordinatorCell())||!cell.equals(token.cell())||token.storageEpoch()!=epoch||token.hashVersion()!=1||token.group()!=HomeParticipationService.group(call)||!owner.equals(token.node()))throw new AuthoritySql.FencedException();}
-    public DbOperation<Optional<Snapshot>> load(CallId call,AuthoritySql.GroupToken token,Duration budget){return load(call,token,budget,false);}
-    public DbOperation<Optional<Snapshot>> loadCold(CallId call,AuthoritySql.GroupToken token,Duration budget){return load(call,token,budget,true);}
-    private DbOperation<Optional<Snapshot>> load(CallId call,AuthoritySql.GroupToken token,Duration budget,boolean cold){return sql.submitTracked(DbClass.RECOVERY,budget,c->{validateToken(call,token);AuthoritySql.cellBarrier(c,false);AuthoritySql.validateCell(c,cell,epoch);Snapshot hint=calls.find(c,call);if(hint==null){AuthoritySql.groupBarrier(c,token.group(),false);AuthoritySql.validateGroup(c,token);return Optional.empty();}Snapshot current=guard(c,call,token,0);if(current.terminalAt()==null&&!callerReservationLive(c,current))return Optional.of(terminal(c,current,token,"PARTICIPATION_EXPIRED"));
-        if(cold&&current.terminalAt()==null&&current.negotiationId()>0){var metadata=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.readTree(current.deadlines());if(!Set.of("COMPLETE","INVALIDATED").contains(metadata.path("negotiationState").asText())){
-            metadata.put("negotiationState","INVALIDATED");try(var q=c.prepareStatement("UPDATE call_state SET version=version+1,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")){q.setString(1,JSON.writeValueAsString(metadata));q.setLong(2,token.epoch());q.setString(3,call.value());q.setLong(4,current.version());if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();}current=calls.find(c,call);events(c,current,"RESYNC_REQUIRED");
-        }}return Optional.of(current);});}
-    public DbOperation<Outcome> expire(CallId call,AuthoritySql.GroupToken token,long version,Duration budget){return sql.submitTracked(DbClass.TERMINATION,budget,c->{Snapshot s=guard(c,call,token,0);if(s.terminalAt()!=null)return new Outcome("ALREADY_TERMINAL",s,List.of());if(s.version()!=version)return new Outcome("STALE_VERSION",s,List.of());Instant due=DurableDeadlines.due(s);if(due==null||due.isAfter(now(c)))return new Outcome("NOT_DUE",s,List.of());Snapshot terminal=terminal(c,s,token,"TIMEOUT");return new Outcome("TIMEOUT",terminal,List.of());});}
-    private Snapshot terminal(Connection c,Snapshot s,AuthoritySql.GroupToken token,String reason)throws Exception {try(var q=c.prepareStatement("UPDATE call_state SET state='TERMINAL',version=version+1,saga_phase='COMPENSATE',terminal_reason=?,terminal_at=clock_timestamp(),expires_at=clock_timestamp()+interval '24 hours 5 seconds',last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")){q.setString(1,reason);q.setLong(2,token.epoch());q.setString(3,s.callId().value());q.setLong(4,s.version());if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();}var current=calls.find(c,s.callId());var events=events(c,current,"CALL_TERMINATED");completeOrigin(c,current,reason,events);return current;}
-    private static boolean callerReservationLive(Connection c,Snapshot s)throws SQLException {try(var q=c.prepareStatement("SELECT lease_until>clock_timestamp() FROM user_reservation WHERE user_id=? AND call_id=?")){q.setString(1,s.caller().user().value());q.setString(2,s.callId().value());try(var r=q.executeQuery()){return r.next()&&r.getBoolean(1);}}}
-    private List<UUID> events(Connection c,Snapshot s,String code)throws Exception {var recipients=new LinkedHashSet<Participant>();recipients.add(s.caller());if(s.winner()!=null)recipients.add(s.winner());else for(var p:JSON.readTree(s.offeredSessions()))recipients.add(JSON.treeToValue(p,Participant.class));var ids=new ArrayList<UUID>();for(var p:recipients){String destination=JSON.writeValueAsString(Map.of("userId",p.user().value(),"issuer",p.key().issuer(),"jti",p.key().jti()));String payload=JSON.writeValueAsString(Map.of("type",code,"callId",s.callId().value(),"callVersion",Long.toString(s.version()),"state",s.state()));ids.add(outbox.insert(c,s.bucket(),s.callId(),s.version(),destination,payload));}return List.copyOf(ids);}
-    private void completeOrigin(Connection c,Snapshot s,String code,List<UUID> events)throws Exception {if(!Set.of("RINGING","TERMINAL","FAILED").contains(s.state()))return;var stored=results.find(c,s.caller().key(),CommandScope.invite(),s.inviteRequest());if(stored!=null&&stored.status().equals("PENDING"))results.finalizeResult(c,s.caller().key(),CommandScope.invite(),s.inviteRequest(),new CallCommandService.Outcome("FINAL",code,s.callId(),s.version(),s.state(),events));}
-    private Outcome record(Connection c,Transition t,String intent,Outcome value)throws Exception {try(var q=c.prepareStatement("SELECT count(*) FROM call_workflow_step WHERE call_id=?")){q.setString(1,t.call().value());try(var r=q.executeQuery()){r.next();if(r.getInt(1)>=16)throw new DbOverloadedException();}}try(var q=c.prepareStatement("INSERT INTO call_workflow_step(call_id,operation_id,intent_hash,outcome) VALUES(?,?,?,?::jsonb)")){q.setString(1,t.call().value());q.setObject(2,t.operation());q.setBytes(3,HexFormat.of().parseHex(intent));q.setString(4,JSON.writeValueAsString(new Stored(value.code(),value.snapshot().version(),value.snapshot().state(),value.eventIds())));q.executeUpdate();}return value;}
-    private Stored findStep(Connection c,CallId call,UUID operation,String intent)throws Exception {try(var q=c.prepareStatement("SELECT intent_hash,outcome FROM call_workflow_step WHERE call_id=? AND operation_id=?")){q.setString(1,call.value());q.setObject(2,operation);try(var r=q.executeQuery()){if(!r.next())return null;if(!intent.equals(HexFormat.of().formatHex(r.getBytes(1))))throw new CommandResultRepository.IntentConflict();return JSON.readValue(r.getString(2),Stored.class);}}}
-    private static String intent(Transition t)throws Exception {var normalized=new TreeMap<String,Object>();normalized.put("callId",t.call().value());normalized.put("step",t.step().name());normalized.put("winner",t.winner());normalized.put("offered",t.offered());normalized.put("activation",t.activationId());normalized.put("reason",t.reason());return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(JSON.writeValueAsBytes(normalized)));}
-    private static Instant now(Connection c)throws SQLException {try(var q=c.createStatement();var r=q.executeQuery("SELECT clock_timestamp()")){r.next();return r.getTimestamp(1).toInstant();}}
-    private static long bucketEpoch(Connection c,int bucket)throws SQLException {try(var q=c.prepareStatement("SELECT directory_epoch FROM bucket_authority WHERE bucket_id=?")){q.setInt(1,bucket);try(var r=q.executeQuery()){if(!r.next())throw new AuthoritySql.FencedException();return r.getLong(1);}}}
-    private static String saga(String state){return switch(state){case "RINGING"->"WAIT_ACCEPT";case "ACCEPTED"->"CONFIRM_HOMES";case "ACTIVATING"->"CONFIRM_ACTIVATION";case "CONNECTING","ESTABLISHED"->"ACTIVE";case "TERMINAL"->"COMPENSATE";default->"RESERVE_REMOTE";};}
+
+    public String toString() {
+      return "RouteLoss[redacted]";
+    }
+  }
+
+  /**
+   * Returns the original native closed/expired timestamp after verifying full route identity and
+   * home provenance.
+   */
+  @FunctionalInterface
+  public interface RouteLossVerifier {
+    Instant observedAt(RouteLoss loss);
+  }
+
+  public DbOperation<Snapshot> routeLost(RouteLoss loss, Duration budget) {
+    return sql.submitTracked(
+        DbClass.RECOVERY,
+        budget,
+        c -> {
+          var current = guard(c, loss.call(), loss.group(), 0);
+          if (current.terminalAt() != null) return current;
+          var sender = loss.sender();
+          boolean caller = current.caller().sameBinding(sender),
+              winner = current.winner() != null && current.winner().sameBinding(sender);
+          if (!caller && !winner) return current;
+          var metadata =
+              (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(current.deadlines());
+          String route = caller ? "callerRoute" : "winnerRoute",
+              grace = caller ? "callerGraceUntil" : "winnerGraceUntil";
+          if (metadata.has(route)
+              && !JSON.treeToValue(metadata.get(route), AuthenticatedSession.class).equals(sender))
+            return current;
+          Instant observed = routeLossVerifier.observedAt(loss);
+          if (observed == null || observed.isAfter(now(c)))
+            throw new AuthoritySql.FencedException();
+          if (metadata.has(grace)) return current;
+          metadata.put(grace, observed.plusSeconds(75).toString());
+          try (var q =
+              c.prepareStatement(
+                  "UPDATE call_state SET version=version+1,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            q.setString(1, JSON.writeValueAsString(metadata));
+            q.setLong(2, loss.group().epoch());
+            q.setString(3, current.callId().value());
+            q.setLong(4, current.version());
+            if (q.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
+          }
+          current = calls.find(c, current.callId());
+          events(c, current, "SIGNALING_UNREACHABLE");
+          return current;
+        });
+  }
+
+  public static String nextState(String state, Step step) {
+    if (Set.of("TERMINAL", "FAILED").contains(state)) return state;
+    if (step == Step.TERMINATE) return "TERMINAL";
+    return switch (step) {
+      case RING -> from(state, "PREPARING", "RINGING");
+      case ACCEPT -> from(state, "RINGING", "ACCEPTED");
+      case ACTIVATE -> from(state, "ACCEPTED", "ACTIVATING");
+      case READY -> from(state, "ACTIVATING", "CONNECTING");
+      case ESTABLISH -> from(state, "CONNECTING", "ESTABLISHED");
+      default -> throw new IllegalArgumentException("Unknown workflow step");
+    };
+  }
+
+  private static String from(String actual, String required, String next) {
+    if (!actual.equals(required)) throw new IllegalArgumentException("Illegal workflow transition");
+    return next;
+  }
+
+  public DbOperation<Outcome> apply(Transition transition, Duration budget) {
+    return sql.submitTracked(
+        transition.step() == Step.TERMINATE ? DbClass.TERMINATION : DbClass.CRITICAL,
+        budget,
+        c -> {
+          Snapshot previous =
+              guard(c, transition.call(), transition.group(), transition.directoryEpoch());
+          Instant now = now(c);
+          if (!verifier.verify(transition, previous)
+              || !transition.proofExpiresAt().isAfter(now)
+              || transition.proofExpiresAt().isAfter(now.plusSeconds(5)))
+            throw new AuthoritySql.FencedException();
+          String intent = intent(transition);
+          Stored replay = findStep(c, transition.call(), transition.operation(), intent);
+          if (replay != null) return new Outcome(replay.code(), previous, replay.eventIds());
+          if (previous.terminalAt() != null)
+            return new Outcome("ALREADY_TERMINAL", previous, List.of());
+          if (previous.version() != transition.expectedVersion())
+            return record(c, transition, intent, new Outcome("STALE_VERSION", previous, List.of()));
+          String state = nextState(previous.state(), transition.step());
+          validateEvidence(c, transition, previous, now);
+          var deadlines =
+              (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(previous.deadlines());
+          switch (transition.step()) {
+            case RING -> deadlines.put("ringUntil", now.plusSeconds(30).toString());
+            case ACCEPT -> deadlines.put("activationUntil", now.plusSeconds(5).toString());
+            default -> {}
+          }
+          Participant winner =
+              transition.step() == Step.ACCEPT ? transition.winner() : previous.winner();
+          UUID activation =
+              transition.step() == Step.ACTIVATE
+                  ? transition.activationId()
+                  : previous.activationId();
+          String offered =
+              transition.step() == Step.RING
+                  ? JSON.writeValueAsString(transition.offered())
+                  : previous.offeredSessions();
+          long version = Math.addExact(previous.version(), 1);
+          try (var s =
+              c.prepareStatement(
+                  "UPDATE call_state SET state=?,version=?,winner_issuer=?,winner_jti=?,winner_incarnation=?,winner_generation=?,activation_id=?,saga_phase=?,deadlines=?::jsonb,offered_sessions=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp(),terminal_reason=?,terminal_at=CASE WHEN ? THEN clock_timestamp() ELSE NULL END,expires_at=CASE WHEN ? THEN clock_timestamp()+interval '24 hours 5 seconds' ELSE NULL END WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            s.setString(1, state);
+            s.setLong(2, version);
+            s.setString(3, winner == null ? null : winner.key().issuer());
+            s.setString(4, winner == null ? null : winner.key().jti());
+            s.setObject(5, winner == null ? null : winner.incarnation().value());
+            if (winner == null) s.setNull(6, Types.BIGINT);
+            else s.setLong(6, winner.generation());
+            s.setObject(7, activation);
+            s.setString(8, saga(state));
+            s.setString(9, JSON.writeValueAsString(deadlines));
+            s.setString(10, offered);
+            s.setLong(11, transition.group().epoch());
+            boolean terminal = state.equals("TERMINAL");
+            s.setString(12, terminal ? transition.reason() : null);
+            s.setBoolean(13, terminal);
+            s.setBoolean(14, terminal);
+            s.setString(15, previous.callId().value());
+            s.setLong(16, previous.version());
+            if (s.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
+          }
+          Snapshot current = calls.find(c, previous.callId());
+          String code =
+              state.equals("ACCEPTED")
+                  ? "ACCEPTED_PENDING_ACTIVATION"
+                  : state.equals("CONNECTING") ? "CALL_READY" : state;
+          var events = events(c, current, code);
+          completeOrigin(c, current, code, events);
+          if (transition.step() == Step.ACCEPT) {
+            var key = current.winner().key();
+            var scope = CommandScope.call(current.callId());
+            var request = new RequestId(transition.operation());
+            var result = results.find(c, key, scope, request);
+            if (result != null && result.status().equals("PENDING"))
+              results.finalizeResult(
+                  c,
+                  key,
+                  scope,
+                  request,
+                  new CallCommandService.Outcome(
+                      "FINAL", code, current.callId(), current.version(), current.state(), events));
+          }
+          return record(c, transition, intent, new Outcome(code, current, events));
+        });
+  }
+
+  private void validateEvidence(Connection c, Transition t, Snapshot s, Instant now)
+      throws Exception {
+    if (t.step() == Step.TERMINATE) {
+      if (t.reason() == null) throw new IllegalArgumentException("Terminal reason is required");
+      return;
+    }
+    if (!callerReservationLive(c, s)) throw new AuthoritySql.FencedException();
+    if (t.step() == Step.RING) {
+      if (t.offered().isEmpty() || t.offered().stream().anyMatch(p -> !p.user().equals(s.callee())))
+        throw new AuthoritySql.FencedException();
+    }
+    if (t.step() == Step.ACCEPT) {
+      if (t.winner() == null || !t.winner().user().equals(s.callee()))
+        throw new AuthoritySql.FencedException();
+      boolean offered = false;
+      for (var p : JSON.readTree(s.offeredSessions()))
+        if (JSON.treeToValue(p, Participant.class).equals(t.winner())) offered = true;
+      if (!offered) throw new AuthoritySql.FencedException();
+    }
+    if (Set.of(Step.ACTIVATE, Step.READY, Step.ESTABLISH).contains(t.step())
+        && (s.winner() == null || !s.winner().equals(t.winner())))
+      throw new AuthoritySql.FencedException();
+    if (t.step() == Step.ACTIVATE && t.activationId() == null)
+      throw new AuthoritySql.FencedException();
+    if (t.step() == Step.READY
+        && (!Objects.equals(s.activationId(), t.activationId())
+            || t.participantUntil() == null
+            || !t.participantUntil().isAfter(now.plusSeconds(5))))
+      throw new AuthoritySql.FencedException();
+    if (t.step() == Step.ESTABLISH) {
+      var media = JSON.readTree(s.deadlines());
+      if (s.negotiationId() < 1
+          || !media.path("mediaCallerConnected").asBoolean()
+          || !media.path("mediaWinnerConnected").asBoolean()
+          || media.path("iceGeneration").asText("0").equals("0")
+          || media.path("negotiationState").asText().equals("INVALIDATED"))
+        throw new AuthoritySql.FencedException();
+    }
+  }
+
+  private Snapshot guard(
+      Connection c, CallId call, AuthoritySql.GroupToken token, long directoryEpoch)
+      throws Exception {
+    validateToken(call, token);
+    Snapshot hint = calls.find(c, call);
+    if (hint == null) throw new AuthoritySql.FencedException();
+    long directory = directoryEpoch > 0 ? directoryEpoch : bucketEpoch(c, hint.bucket());
+    AuthoritySql.coordinator(
+        c,
+        token,
+        Map.of(hint.bucket(), directory),
+        List.of(hint.caller().user().value()),
+        List.of(call.value()));
+    Snapshot current = calls.find(c, call);
+    if (current == null
+        || current.group() != token.group()
+        || current.hashVersion() != token.hashVersion()) throw new AuthoritySql.FencedException();
+    return current;
+  }
+
+  private void validateToken(CallId call, AuthoritySql.GroupToken token) {
+    if (!cell.equals(call.coordinatorCell())
+        || !cell.equals(token.cell())
+        || token.storageEpoch() != epoch
+        || token.hashVersion() != 1
+        || token.group() != HomeParticipationService.group(call)
+        || !owner.equals(token.node())) throw new AuthoritySql.FencedException();
+  }
+
+  public DbOperation<Optional<Snapshot>> load(
+      CallId call, AuthoritySql.GroupToken token, Duration budget) {
+    return load(call, token, budget, false);
+  }
+
+  public DbOperation<Optional<Snapshot>> loadCold(
+      CallId call, AuthoritySql.GroupToken token, Duration budget) {
+    return load(call, token, budget, true);
+  }
+
+  private DbOperation<Optional<Snapshot>> load(
+      CallId call, AuthoritySql.GroupToken token, Duration budget, boolean cold) {
+    return sql.submitTracked(
+        DbClass.RECOVERY,
+        budget,
+        c -> {
+          validateToken(call, token);
+          AuthoritySql.cellBarrier(c, false);
+          AuthoritySql.validateCell(c, cell, epoch);
+          Snapshot hint = calls.find(c, call);
+          if (hint == null) {
+            AuthoritySql.groupBarrier(c, token.group(), false);
+            AuthoritySql.validateGroup(c, token);
+            return Optional.empty();
+          }
+          Snapshot current = guard(c, call, token, 0);
+          if (current.terminalAt() == null && !callerReservationLive(c, current))
+            return Optional.of(terminal(c, current, token, "PARTICIPATION_EXPIRED"));
+          if (cold && current.terminalAt() == null && current.negotiationId() > 0) {
+            var metadata =
+                (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(current.deadlines());
+            if (!Set.of("COMPLETE", "INVALIDATED")
+                .contains(metadata.path("negotiationState").asText())) {
+              metadata.put("negotiationState", "INVALIDATED");
+              try (var q =
+                  c.prepareStatement(
+                      "UPDATE call_state SET version=version+1,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+                q.setString(1, JSON.writeValueAsString(metadata));
+                q.setLong(2, token.epoch());
+                q.setString(3, call.value());
+                q.setLong(4, current.version());
+                if (q.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
+              }
+              current = calls.find(c, call);
+              events(c, current, "RESYNC_REQUIRED");
+            }
+          }
+          return Optional.of(current);
+        });
+  }
+
+  public DbOperation<Outcome> expire(
+      CallId call, AuthoritySql.GroupToken token, long version, Duration budget) {
+    return sql.submitTracked(
+        DbClass.TERMINATION,
+        budget,
+        c -> {
+          Snapshot s = guard(c, call, token, 0);
+          if (s.terminalAt() != null) return new Outcome("ALREADY_TERMINAL", s, List.of());
+          if (s.version() != version) return new Outcome("STALE_VERSION", s, List.of());
+          Instant due = DurableDeadlines.due(s);
+          if (due == null || due.isAfter(now(c))) return new Outcome("NOT_DUE", s, List.of());
+          Snapshot terminal = terminal(c, s, token, "TIMEOUT");
+          return new Outcome("TIMEOUT", terminal, List.of());
+        });
+  }
+
+  private Snapshot terminal(Connection c, Snapshot s, AuthoritySql.GroupToken token, String reason)
+      throws Exception {
+    try (var q =
+        c.prepareStatement(
+            "UPDATE call_state SET state='TERMINAL',version=version+1,saga_phase='COMPENSATE',terminal_reason=?,terminal_at=clock_timestamp(),expires_at=clock_timestamp()+interval '24 hours 5 seconds',last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+      q.setString(1, reason);
+      q.setLong(2, token.epoch());
+      q.setString(3, s.callId().value());
+      q.setLong(4, s.version());
+      if (q.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
+    }
+    var current = calls.find(c, s.callId());
+    var events = events(c, current, "CALL_TERMINATED");
+    completeOrigin(c, current, reason, events);
+    return current;
+  }
+
+  private static boolean callerReservationLive(Connection c, Snapshot s) throws SQLException {
+    try (var q =
+        c.prepareStatement(
+            "SELECT lease_until>clock_timestamp() FROM user_reservation WHERE user_id=? AND call_id=?")) {
+      q.setString(1, s.caller().user().value());
+      q.setString(2, s.callId().value());
+      try (var r = q.executeQuery()) {
+        return r.next() && r.getBoolean(1);
+      }
+    }
+  }
+
+  private List<UUID> events(Connection c, Snapshot s, String code) throws Exception {
+    var recipients = new LinkedHashSet<Participant>();
+    recipients.add(s.caller());
+    if (s.winner() != null) recipients.add(s.winner());
+    else
+      for (var p : JSON.readTree(s.offeredSessions()))
+        recipients.add(JSON.treeToValue(p, Participant.class));
+    var ids = new ArrayList<UUID>();
+    for (var p : recipients) {
+      String destination =
+          JSON.writeValueAsString(
+              Map.of("userId", p.user().value(), "issuer", p.key().issuer(), "jti", p.key().jti()));
+      String payload =
+          JSON.writeValueAsString(
+              Map.of(
+                  "type",
+                  code,
+                  "callId",
+                  s.callId().value(),
+                  "callVersion",
+                  Long.toString(s.version()),
+                  "state",
+                  s.state()));
+      ids.add(outbox.insert(c, s.bucket(), s.callId(), s.version(), destination, payload));
+    }
+    return List.copyOf(ids);
+  }
+
+  private void completeOrigin(Connection c, Snapshot s, String code, List<UUID> events)
+      throws Exception {
+    if (!Set.of("RINGING", "TERMINAL", "FAILED").contains(s.state())) return;
+    var stored = results.find(c, s.caller().key(), CommandScope.invite(), s.inviteRequest());
+    if (stored != null && stored.status().equals("PENDING"))
+      results.finalizeResult(
+          c,
+          s.caller().key(),
+          CommandScope.invite(),
+          s.inviteRequest(),
+          new CallCommandService.Outcome(
+              "FINAL", code, s.callId(), s.version(), s.state(), events));
+  }
+
+  private Outcome record(Connection c, Transition t, String intent, Outcome value)
+      throws Exception {
+    try (var q = c.prepareStatement("SELECT count(*) FROM call_workflow_step WHERE call_id=?")) {
+      q.setString(1, t.call().value());
+      try (var r = q.executeQuery()) {
+        r.next();
+        if (r.getInt(1) >= 16) throw new DbOverloadedException();
+      }
+    }
+    try (var q =
+        c.prepareStatement(
+            "INSERT INTO call_workflow_step(call_id,operation_id,intent_hash,outcome) VALUES(?,?,?,?::jsonb)")) {
+      q.setString(1, t.call().value());
+      q.setObject(2, t.operation());
+      q.setBytes(3, HexFormat.of().parseHex(intent));
+      q.setString(
+          4,
+          JSON.writeValueAsString(
+              new Stored(
+                  value.code(),
+                  value.snapshot().version(),
+                  value.snapshot().state(),
+                  value.eventIds())));
+      q.executeUpdate();
+    }
+    return value;
+  }
+
+  private Stored findStep(Connection c, CallId call, UUID operation, String intent)
+      throws Exception {
+    try (var q =
+        c.prepareStatement(
+            "SELECT intent_hash,outcome FROM call_workflow_step WHERE call_id=? AND operation_id=?")) {
+      q.setString(1, call.value());
+      q.setObject(2, operation);
+      try (var r = q.executeQuery()) {
+        if (!r.next()) return null;
+        if (!intent.equals(HexFormat.of().formatHex(r.getBytes(1))))
+          throw new CommandResultRepository.IntentConflict();
+        return JSON.readValue(r.getString(2), Stored.class);
+      }
+    }
+  }
+
+  private static String intent(Transition t) throws Exception {
+    var normalized = new TreeMap<String, Object>();
+    normalized.put("callId", t.call().value());
+    normalized.put("step", t.step().name());
+    normalized.put("winner", t.winner());
+    normalized.put("offered", t.offered());
+    normalized.put("activation", t.activationId());
+    normalized.put("reason", t.reason());
+    return HexFormat.of()
+        .formatHex(MessageDigest.getInstance("SHA-256").digest(JSON.writeValueAsBytes(normalized)));
+  }
+
+  private static Instant now(Connection c) throws SQLException {
+    try (var q = c.createStatement();
+        var r = q.executeQuery("SELECT clock_timestamp()")) {
+      r.next();
+      return r.getTimestamp(1).toInstant();
+    }
+  }
+
+  private static long bucketEpoch(Connection c, int bucket) throws SQLException {
+    try (var q =
+        c.prepareStatement("SELECT directory_epoch FROM bucket_authority WHERE bucket_id=?")) {
+      q.setInt(1, bucket);
+      try (var r = q.executeQuery()) {
+        if (!r.next()) throw new AuthoritySql.FencedException();
+        return r.getLong(1);
+      }
+    }
+  }
+
+  private static String saga(String state) {
+    return switch (state) {
+      case "RINGING" -> "WAIT_ACCEPT";
+      case "ACCEPTED" -> "CONFIRM_HOMES";
+      case "ACTIVATING" -> "CONFIRM_ACTIVATION";
+      case "CONNECTING", "ESTABLISHED" -> "ACTIVE";
+      case "TERMINAL" -> "COMPENSATE";
+      default -> "RESERVE_REMOTE";
+    };
+  }
 }

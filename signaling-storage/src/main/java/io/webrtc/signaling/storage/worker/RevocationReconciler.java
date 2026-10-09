@@ -1,47 +1,315 @@
 package io.webrtc.signaling.storage.worker;
-import io.webrtc.signaling.storage.*;
+
 import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.protocol.Identity.*;
+import io.webrtc.signaling.storage.*;
 import java.sql.*;
 import java.time.*;
 import java.util.*;
 import java.util.function.Predicate;
-/** Authenticated source high-water advances atomically with native security epochs and session invalidation. */
-public final class RevocationReconciler implements SessionRegistryService.NativeSecurityPolicy {
-    public record KeyRetirement(String issuer,String signingKeyId,long sourceOffset,Instant committedAt){public KeyRetirement{new SessionKey(issuer,"key-retirement");if(signingKeyId==null||!signingKeyId.matches("[A-Za-z0-9._:-]{1,128}")||sourceOffset<1)throw new IllegalArgumentException("Invalid key retirement");Objects.requireNonNull(committedAt);}}
-    public record Batch(long fromOffset,long highWater,List<RevocationState.Event> events,Instant checkedAt,String sourceProof,List<KeyRetirement> retiredKeys,long currentSourceHighWater){
-        public Batch(long fromOffset,long highWater,List<RevocationState.Event> events,Instant checkedAt,String sourceProof,List<KeyRetirement> retiredKeys){this(fromOffset,highWater,events,checkedAt,sourceProof,retiredKeys,highWater);}
-        public boolean caughtUp(){return highWater==currentSourceHighWater;}
-        public Batch(long fromOffset,long highWater,List<RevocationState.Event> events,Instant checkedAt){this(fromOffset,highWater,events,checkedAt,"",List.of());}
-        public Batch(long fromOffset,long highWater,List<RevocationState.Event> events,Instant checkedAt,String sourceProof){this(fromOffset,highWater,events,checkedAt,sourceProof,List.of());}
-        public Batch{retiredKeys=List.copyOf(retiredKeys);if(retiredKeys.size()+events.size()>16)throw new IllegalArgumentException("Revocation page exceeds bound");for(var key:retiredKeys)if(key.sourceOffset()<=fromOffset||key.sourceOffset()>highWater||key.committedAt().isAfter(checkedAt))throw new IllegalArgumentException("Invalid retirement ordering");Objects.requireNonNull(checkedAt);Objects.requireNonNull(sourceProof);events=List.copyOf(events);if(fromOffset<0||highWater<fromOffset||currentSourceHighWater<highWater||events.size()>16||sourceProof.length()>8192)throw new IllegalArgumentException("Invalid revocation page");long previous=fromOffset;for(var event:events){if(event.sourceOffset()<=previous||event.sourceOffset()>highWater||event.committedAt().isAfter(checkedAt))throw new IllegalArgumentException("Invalid revocation ordering");previous=event.sourceOffset();}}
-        public String toString(){return "RevocationBatch[redacted]";}
-    }
-    private final SqlTransactions sql;private final String cell;private final long epoch;private final Duration freshness;private final Predicate<Batch> source;
-    public RevocationReconciler(SqlTransactions sql,String cell,long epoch,Duration freshness,Predicate<Batch> authenticatedSource){this.sql=Objects.requireNonNull(sql);this.cell=Objects.requireNonNull(cell);this.epoch=epoch;this.freshness=Objects.requireNonNull(freshness);if(freshness.isNegative()||freshness.isZero()||freshness.compareTo(Duration.ofSeconds(5))>0)throw new IllegalArgumentException("Revocation freshness exceeds bound");source=Objects.requireNonNull(authenticatedSource);}
-    public Duration freshness(){return freshness;}
-    public DbOperation<Long> apply(Batch batch){return apply(batch,Duration.ofSeconds(2));}
-    public DbOperation<Long> apply(Batch batch,Duration budget){validateBudget(budget);return sql.submitTracked(DbClass.MAINTENANCE,budget,c->{if(batch.retiredKeys().isEmpty())WorkerFence.cell(c,cell,epoch);else{AuthoritySql.cellBarrier(c,true);AuthoritySql.validateCell(c,cell,epoch);}if(!source.test(batch))throw new AuthoritySql.FencedException();Instant now;try(var q=c.createStatement();var r=q.executeQuery("SELECT clock_timestamp()")){r.next();now=r.getTimestamp(1).toInstant();}if(batch.checkedAt().isAfter(now)||Duration.between(batch.checkedAt(),now).compareTo(freshness)>0)throw new AuthoritySql.FencedException();try(var q=c.createStatement()){q.execute("INSERT INTO security_progress(singleton_id,source_offset,checked_at,source_checked_at) VALUES(1,0,'epoch','epoch') ON CONFLICT DO NOTHING");}long current;try(var q=c.createStatement();var r=q.executeQuery("SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE NOWAIT")){r.next();current=r.getLong(1);}if(batch.fromOffset()<current&&batch.highWater()<=current)return current;if(batch.fromOffset()!=current)throw new AuthoritySql.FencedException();for(int bucket:new TreeSet<>(batch.events().stream().map(e->SessionRegistryService.bucket(e.userId())).toList()))WorkerFence.bucket(c,bucket);AuthoritySql.userGuards(c,batch.events().stream().map(e->e.userId().value()).toList());
-        for(var event:batch.events()){try(var q=c.prepareStatement("INSERT INTO security_epoch(issuer,subject_key,epoch,source_offset,committed_at) VALUES(?,?,?,?,?) ON CONFLICT(issuer,subject_key) DO UPDATE SET epoch=GREATEST(security_epoch.epoch,EXCLUDED.epoch),source_offset=GREATEST(security_epoch.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(security_epoch.committed_at,EXCLUDED.committed_at)")){q.setString(1,event.issuer());q.setString(2,subject(event.userId(),event.jti()));q.setLong(3,event.epoch());q.setLong(4,event.sourceOffset());q.setTimestamp(5,Timestamp.from(event.committedAt()));q.executeUpdate();}String scope=event.jti()==null?"":" AND jti=?";try(var q=c.prepareStatement("UPDATE session_registry SET closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE issuer=? AND user_id=? AND security_epoch<=? AND closed_at IS NULL"+scope)){q.setString(1,event.issuer());q.setString(2,event.userId().value());q.setLong(3,event.epoch());if(event.jti()!=null)q.setString(4,event.jti());q.executeUpdate();}}
-        for(var key:batch.retiredKeys())try(var q=c.prepareStatement("INSERT INTO retired_signing_key(issuer,signing_key_id,source_offset,committed_at) VALUES(?,?,?,?) ON CONFLICT(issuer,signing_key_id) DO UPDATE SET source_offset=GREATEST(retired_signing_key.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(retired_signing_key.committed_at,EXCLUDED.committed_at)")){q.setString(1,key.issuer());q.setString(2,key.signingKeyId());q.setLong(3,key.sourceOffset());q.setTimestamp(4,Timestamp.from(key.committedAt()));q.executeUpdate();}
-        try(var q=c.prepareStatement("UPDATE security_progress SET source_offset=?,checked_at=clock_timestamp(),source_checked_at=CASE WHEN ? THEN ? ELSE 'epoch'::timestamptz END WHERE singleton_id=1 AND source_offset=?")){q.setLong(1,batch.highWater());q.setBoolean(2,batch.caughtUp());q.setTimestamp(3,Timestamp.from(batch.checkedAt()));q.setLong(4,current);if(q.executeUpdate()!=1)throw new AuthoritySql.RetryableConflict();}return batch.highWater();});}
-    @Override public boolean allowed(Connection c,AuthPrincipal principal)throws SQLException{return allowed(c,principal.userId(),principal.key(),principal.signingKeyId(),principal.securityEpoch());}
-    public boolean allowedRoute(Connection c,SessionRepository.Route route)throws SQLException{return allowed(c,route.user(),route.key(),route.signingKeyId(),route.securityEpoch());}
-    /** Freshness is read from this cell's primary in the original caller transaction, not an empty cache. */
-    public boolean sourceCurrent(Connection c)throws SQLException{return currentProgress(c,null);}
-    public boolean sourceCurrent(Connection c,Instant tokenExpiresAt)throws SQLException{return currentProgress(c,Objects.requireNonNull(tokenExpiresAt));}
-    private boolean currentProgress(Connection c,Instant tokenExpiresAt)throws SQLException{
-        WorkerFence.cell(c,cell,epoch);
-        String expiry=tokenExpiresAt==null?"":" AND ?>clock_timestamp()";
-        try(var q=c.prepareStatement("SELECT NOT pg_is_in_recovery() AND checked_at<=clock_timestamp() AND source_checked_at<=clock_timestamp() AND LEAST(checked_at,source_checked_at)>clock_timestamp()-(? * interval '1 millisecond')"+expiry+" FROM security_progress WHERE singleton_id=1")){
-            q.setLong(1,freshness.toMillis());if(tokenExpiresAt!=null)q.setTimestamp(2,Timestamp.from(tokenExpiresAt));
-            try(var r=q.executeQuery()){return r.next()&&r.getBoolean(1);}
-        }
-    }
-    private boolean allowed(Connection c,UserId user,SessionKey key,String signingKeyId,long securityEpoch)throws SQLException{try(var q=c.prepareStatement("SELECT p.checked_at<=clock_timestamp() AND p.source_checked_at<=clock_timestamp() AND LEAST(p.checked_at,p.source_checked_at)>clock_timestamp()-(? * interval '1 millisecond') AND NOT EXISTS (SELECT 1 FROM retired_signing_key k WHERE k.issuer=? AND k.signing_key_id=?) AND NOT EXISTS (SELECT 1 FROM security_epoch e WHERE e.issuer=? AND e.subject_key IN (?,?) AND e.epoch>=?) FROM security_progress p WHERE singleton_id=1")){q.setLong(1,freshness.toMillis());q.setString(2,key.issuer());q.setString(3,signingKeyId);q.setString(4,key.issuer());q.setString(5,subject(user,null));q.setString(6,subject(user,key.jti()));q.setLong(7,securityEpoch);try(var r=q.executeQuery()){return r.next()&&r.getBoolean(1);}}}
 
-    public DbOperation<RevocationState.Progress> progress(){return progress(Duration.ofSeconds(2));}
-    public DbOperation<RevocationState.Progress> progress(Duration budget){validateBudget(budget);return sql.submitTracked(DbClass.RECOVERY,budget,c->{WorkerFence.cell(c,cell,epoch);try(var q=c.createStatement();var r=q.executeQuery("SELECT source_offset,LEAST(checked_at,source_checked_at) FROM security_progress WHERE singleton_id=1")){return r.next()?new RevocationState.Progress(r.getLong(1),r.getTimestamp(2).toInstant()):new RevocationState.Progress(0,Instant.EPOCH);}});}
-    private static void validateBudget(Duration budget){if(budget==null||budget.isNegative()||budget.isZero()||budget.compareTo(Duration.ofSeconds(2))>0)throw new IllegalArgumentException("Remaining revocation poll budget must be positive and at most2s");}
-    public static String subject(UserId user,String jti){var encoder=Base64.getUrlEncoder().withoutPadding();return "u:"+encoder.encodeToString(user.value().getBytes(java.nio.charset.StandardCharsets.UTF_8))+(jti==null?"":":j:"+encoder.encodeToString(jti.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+/**
+ * Authenticated source high-water advances atomically with native security epochs and session
+ * invalidation.
+ */
+public final class RevocationReconciler implements SessionRegistryService.NativeSecurityPolicy {
+  public record KeyRetirement(
+      String issuer, String signingKeyId, long sourceOffset, Instant committedAt) {
+    public KeyRetirement {
+      new SessionKey(issuer, "key-retirement");
+      if (signingKeyId == null
+          || !signingKeyId.matches("[A-Za-z0-9._:-]{1,128}")
+          || sourceOffset < 1) throw new IllegalArgumentException("Invalid key retirement");
+      Objects.requireNonNull(committedAt);
+    }
+  }
+
+  public record Batch(
+      long fromOffset,
+      long highWater,
+      List<RevocationState.Event> events,
+      Instant checkedAt,
+      String sourceProof,
+      List<KeyRetirement> retiredKeys,
+      long currentSourceHighWater) {
+    public Batch(
+        long fromOffset,
+        long highWater,
+        List<RevocationState.Event> events,
+        Instant checkedAt,
+        String sourceProof,
+        List<KeyRetirement> retiredKeys) {
+      this(fromOffset, highWater, events, checkedAt, sourceProof, retiredKeys, highWater);
+    }
+
+    public boolean caughtUp() {
+      return highWater == currentSourceHighWater;
+    }
+
+    public Batch(
+        long fromOffset, long highWater, List<RevocationState.Event> events, Instant checkedAt) {
+      this(fromOffset, highWater, events, checkedAt, "", List.of());
+    }
+
+    public Batch(
+        long fromOffset,
+        long highWater,
+        List<RevocationState.Event> events,
+        Instant checkedAt,
+        String sourceProof) {
+      this(fromOffset, highWater, events, checkedAt, sourceProof, List.of());
+    }
+
+    public Batch {
+      retiredKeys = List.copyOf(retiredKeys);
+      if (retiredKeys.size() + events.size() > 16)
+        throw new IllegalArgumentException("Revocation page exceeds bound");
+      for (var key : retiredKeys)
+        if (key.sourceOffset() <= fromOffset
+            || key.sourceOffset() > highWater
+            || key.committedAt().isAfter(checkedAt))
+          throw new IllegalArgumentException("Invalid retirement ordering");
+      Objects.requireNonNull(checkedAt);
+      Objects.requireNonNull(sourceProof);
+      events = List.copyOf(events);
+      if (fromOffset < 0
+          || highWater < fromOffset
+          || currentSourceHighWater < highWater
+          || events.size() > 16
+          || sourceProof.length() > 8192)
+        throw new IllegalArgumentException("Invalid revocation page");
+      long previous = fromOffset;
+      for (var event : events) {
+        if (event.sourceOffset() <= previous
+            || event.sourceOffset() > highWater
+            || event.committedAt().isAfter(checkedAt))
+          throw new IllegalArgumentException("Invalid revocation ordering");
+        previous = event.sourceOffset();
+      }
+    }
+
+    public String toString() {
+      return "RevocationBatch[redacted]";
+    }
+  }
+
+  private final SqlTransactions sql;
+  private final String cell;
+  private final long epoch;
+  private final Duration freshness;
+  private final Predicate<Batch> source;
+
+  public RevocationReconciler(
+      SqlTransactions sql,
+      String cell,
+      long epoch,
+      Duration freshness,
+      Predicate<Batch> authenticatedSource) {
+    this.sql = Objects.requireNonNull(sql);
+    this.cell = Objects.requireNonNull(cell);
+    this.epoch = epoch;
+    this.freshness = Objects.requireNonNull(freshness);
+    if (freshness.isNegative()
+        || freshness.isZero()
+        || freshness.compareTo(Duration.ofSeconds(5)) > 0)
+      throw new IllegalArgumentException("Revocation freshness exceeds bound");
+    source = Objects.requireNonNull(authenticatedSource);
+  }
+
+  public Duration freshness() {
+    return freshness;
+  }
+
+  public DbOperation<Long> apply(Batch batch) {
+    return apply(batch, Duration.ofSeconds(2));
+  }
+
+  public DbOperation<Long> apply(Batch batch, Duration budget) {
+    validateBudget(budget);
+    return sql.submitTracked(
+        DbClass.MAINTENANCE,
+        budget,
+        c -> {
+          if (batch.retiredKeys().isEmpty()) WorkerFence.cell(c, cell, epoch);
+          else {
+            AuthoritySql.cellBarrier(c, true);
+            AuthoritySql.validateCell(c, cell, epoch);
+          }
+          if (!source.test(batch)) throw new AuthoritySql.FencedException();
+          Instant now;
+          try (var q = c.createStatement();
+              var r = q.executeQuery("SELECT clock_timestamp()")) {
+            r.next();
+            now = r.getTimestamp(1).toInstant();
+          }
+          if (batch.checkedAt().isAfter(now)
+              || Duration.between(batch.checkedAt(), now).compareTo(freshness) > 0)
+            throw new AuthoritySql.FencedException();
+          try (var q = c.createStatement()) {
+            q.execute(
+                "INSERT INTO security_progress(singleton_id,source_offset,checked_at,source_checked_at) VALUES(1,0,'epoch','epoch') ON CONFLICT DO NOTHING");
+          }
+          long current;
+          try (var q = c.createStatement();
+              var r =
+                  q.executeQuery(
+                      "SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE NOWAIT")) {
+            r.next();
+            current = r.getLong(1);
+          }
+          if (batch.fromOffset() < current && batch.highWater() <= current) return current;
+          if (batch.fromOffset() != current) throw new AuthoritySql.FencedException();
+          for (int bucket :
+              new TreeSet<>(
+                  batch.events().stream()
+                      .map(e -> SessionRegistryService.bucket(e.userId()))
+                      .toList())) WorkerFence.bucket(c, bucket);
+          AuthoritySql.userGuards(c, batch.events().stream().map(e -> e.userId().value()).toList());
+          for (var event : batch.events()) {
+            try (var q =
+                c.prepareStatement(
+                    "INSERT INTO security_epoch(issuer,subject_key,epoch,source_offset,committed_at) VALUES(?,?,?,?,?) ON CONFLICT(issuer,subject_key) DO UPDATE SET epoch=GREATEST(security_epoch.epoch,EXCLUDED.epoch),source_offset=GREATEST(security_epoch.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(security_epoch.committed_at,EXCLUDED.committed_at)")) {
+              q.setString(1, event.issuer());
+              q.setString(2, subject(event.userId(), event.jti()));
+              q.setLong(3, event.epoch());
+              q.setLong(4, event.sourceOffset());
+              q.setTimestamp(5, Timestamp.from(event.committedAt()));
+              q.executeUpdate();
+            }
+            String scope = event.jti() == null ? "" : " AND jti=?";
+            try (var q =
+                c.prepareStatement(
+                    "UPDATE session_registry SET closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE issuer=? AND user_id=? AND security_epoch<=? AND closed_at IS NULL"
+                        + scope)) {
+              q.setString(1, event.issuer());
+              q.setString(2, event.userId().value());
+              q.setLong(3, event.epoch());
+              if (event.jti() != null) q.setString(4, event.jti());
+              q.executeUpdate();
+            }
+          }
+          for (var key : batch.retiredKeys())
+            try (var q =
+                c.prepareStatement(
+                    "INSERT INTO retired_signing_key(issuer,signing_key_id,source_offset,committed_at) VALUES(?,?,?,?) ON CONFLICT(issuer,signing_key_id) DO UPDATE SET source_offset=GREATEST(retired_signing_key.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(retired_signing_key.committed_at,EXCLUDED.committed_at)")) {
+              q.setString(1, key.issuer());
+              q.setString(2, key.signingKeyId());
+              q.setLong(3, key.sourceOffset());
+              q.setTimestamp(4, Timestamp.from(key.committedAt()));
+              q.executeUpdate();
+            }
+          try (var q =
+              c.prepareStatement(
+                  "UPDATE security_progress SET source_offset=?,checked_at=clock_timestamp(),source_checked_at=CASE WHEN ? THEN ? ELSE 'epoch'::timestamptz END WHERE singleton_id=1 AND source_offset=?")) {
+            q.setLong(1, batch.highWater());
+            q.setBoolean(2, batch.caughtUp());
+            q.setTimestamp(3, Timestamp.from(batch.checkedAt()));
+            q.setLong(4, current);
+            if (q.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
+          }
+          return batch.highWater();
+        });
+  }
+
+  @Override
+  public boolean allowed(Connection c, AuthPrincipal principal) throws SQLException {
+    return allowed(
+        c,
+        principal.userId(),
+        principal.key(),
+        principal.signingKeyId(),
+        principal.securityEpoch());
+  }
+
+  public boolean allowedRoute(Connection c, SessionRepository.Route route) throws SQLException {
+    return allowed(c, route.user(), route.key(), route.signingKeyId(), route.securityEpoch());
+  }
+
+  /**
+   * Freshness is read from this cell's primary in the original caller transaction, not an empty
+   * cache.
+   */
+  public boolean sourceCurrent(Connection c) throws SQLException {
+    return currentProgress(c, null);
+  }
+
+  public boolean sourceCurrent(Connection c, Instant tokenExpiresAt) throws SQLException {
+    return currentProgress(c, Objects.requireNonNull(tokenExpiresAt));
+  }
+
+  private boolean currentProgress(Connection c, Instant tokenExpiresAt) throws SQLException {
+    WorkerFence.cell(c, cell, epoch);
+    String expiry = tokenExpiresAt == null ? "" : " AND ?>clock_timestamp()";
+    try (var q =
+        c.prepareStatement(
+            "SELECT NOT pg_is_in_recovery() AND checked_at<=clock_timestamp() AND source_checked_at<=clock_timestamp() AND LEAST(checked_at,source_checked_at)>clock_timestamp()-(? * interval '1 millisecond')"
+                + expiry
+                + " FROM security_progress WHERE singleton_id=1")) {
+      q.setLong(1, freshness.toMillis());
+      if (tokenExpiresAt != null) q.setTimestamp(2, Timestamp.from(tokenExpiresAt));
+      try (var r = q.executeQuery()) {
+        return r.next() && r.getBoolean(1);
+      }
+    }
+  }
+
+  private boolean allowed(
+      Connection c, UserId user, SessionKey key, String signingKeyId, long securityEpoch)
+      throws SQLException {
+    try (var q =
+        c.prepareStatement(
+            "SELECT p.checked_at<=clock_timestamp() AND p.source_checked_at<=clock_timestamp() AND LEAST(p.checked_at,p.source_checked_at)>clock_timestamp()-(? * interval '1 millisecond') AND NOT EXISTS (SELECT 1 FROM retired_signing_key k WHERE k.issuer=? AND k.signing_key_id=?) AND NOT EXISTS (SELECT 1 FROM security_epoch e WHERE e.issuer=? AND e.subject_key IN (?,?) AND e.epoch>=?) FROM security_progress p WHERE singleton_id=1")) {
+      q.setLong(1, freshness.toMillis());
+      q.setString(2, key.issuer());
+      q.setString(3, signingKeyId);
+      q.setString(4, key.issuer());
+      q.setString(5, subject(user, null));
+      q.setString(6, subject(user, key.jti()));
+      q.setLong(7, securityEpoch);
+      try (var r = q.executeQuery()) {
+        return r.next() && r.getBoolean(1);
+      }
+    }
+  }
+
+  public DbOperation<RevocationState.Progress> progress() {
+    return progress(Duration.ofSeconds(2));
+  }
+
+  public DbOperation<RevocationState.Progress> progress(Duration budget) {
+    validateBudget(budget);
+    return sql.submitTracked(
+        DbClass.RECOVERY,
+        budget,
+        c -> {
+          WorkerFence.cell(c, cell, epoch);
+          try (var q = c.createStatement();
+              var r =
+                  q.executeQuery(
+                      "SELECT source_offset,LEAST(checked_at,source_checked_at) FROM security_progress WHERE singleton_id=1")) {
+            return r.next()
+                ? new RevocationState.Progress(r.getLong(1), r.getTimestamp(2).toInstant())
+                : new RevocationState.Progress(0, Instant.EPOCH);
+          }
+        });
+  }
+
+  private static void validateBudget(Duration budget) {
+    if (budget == null
+        || budget.isNegative()
+        || budget.isZero()
+        || budget.compareTo(Duration.ofSeconds(2)) > 0)
+      throw new IllegalArgumentException(
+          "Remaining revocation poll budget must be positive and at most2s");
+  }
+
+  public static String subject(UserId user, String jti) {
+    var encoder = Base64.getUrlEncoder().withoutPadding();
+    return "u:"
+        + encoder.encodeToString(user.value().getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        + (jti == null
+            ? ""
+            : ":j:"
+                + encoder.encodeToString(jti.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+  }
 }

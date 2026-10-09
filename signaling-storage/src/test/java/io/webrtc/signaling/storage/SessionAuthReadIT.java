@@ -1,31 +1,172 @@
 package io.webrtc.signaling.storage;
+
 import static org.assertj.core.api.Assertions.*;
+
 import io.webrtc.signaling.auth.AuthPrincipal;
 import io.webrtc.signaling.protocol.Identity.*;
 import java.time.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
-class SessionAuthReadIT {
-    static <T>T done(DbOperation<T> operation){try{return operation.logical().toCompletableFuture().join();}finally{operation.physicalCompletion().toCompletableFuture().join();}}
-    static AuthPrincipal principal(SessionRepository.Route route){return new AuthPrincipal(route.user(),route.key(),route.tokenExpiresAt(),Instant.now().minusSeconds(1),route.signingKeyId(),route.securityEpoch());}
-    static SessionRepository.Route route(LocalInviteAtomicIT.Fixture f,AuthenticatedSession sender)throws Exception{try(var c=f.connection()){return new SessionRepository().find(c,sender.key());}}
-    @Test void freshSessionAuthorityReadWorksWithoutAnyCallParticipation()throws Exception{try(var f=new LocalInviteAtomicIT.Fixture()){var sender=f.sender("auth-read");var route=route(f,sender);var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var view=done(registry.readCurrentSessionTracked(route,principal(route),1,Duration.ofSeconds(2)));assertThat(view.route()).isEqualTo(route);assertThat(view.sourceCell()).isEqualTo("c001");assertThat(view.proofUntil()).isAfter(view.checkedAt()).isBeforeOrEqualTo(view.checkedAt().plusSeconds(5));try(var c=f.connection();var q=c.createStatement();var r=q.executeQuery("SELECT count(*) FROM home_participation")){r.next();assertThat(r.getInt(1)).isZero();}}}
-    @Test void replacedGenerationAndRevokedNativePolicyCannotReceiveAProofProjection()throws Exception{try(var f=new LocalInviteAtomicIT.Fixture()){var sender=f.sender("replaced-auth-read");var old=route(f,sender);var allowed=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);var newer=allowed.registerSession(principal(old),f.boot,UUID.randomUUID(),1).toCompletableFuture().join();assertThat(newer.connectionGeneration()).isEqualTo(2);assertThat(f.sessions.closeSessionIfGeneration(old,1).toCompletableFuture().join()).isFalse();assertThatThrownBy(()->done(allowed.readCurrentSessionTracked(old,principal(old),1,Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);var denied=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->false);assertThatThrownBy(()->done(denied.readCurrentSessionTracked(newer,principal(newer),1,Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);}}
-    @Test void expiredBootAndUnconfiguredSecurityFailClosed()throws Exception{try(var f=new LocalInviteAtomicIT.Fixture()){var route=route(f,f.sender("lost-boot-auth"));assertThatThrownBy(()->f.sessions.readCurrentSessionTracked(route,principal(route),1,Duration.ofSeconds(2))).isInstanceOf(IllegalStateException.class);try(var c=f.connection();var q=c.prepareStatement("UPDATE gateway_lease SET expired_at=clock_timestamp() WHERE gateway_id=?")){q.setString(1,f.boot.gatewayId());q.executeUpdate();}var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);assertThatThrownBy(()->done(registry.readCurrentSessionTracked(route,principal(route),1,Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);}}
-    @Test void inviteResultReadRequiresCurrentSessionButNoLiveGroupOrParticipation()throws Exception{
-        try(var f=new LocalInviteAtomicIT.Fixture()){
-            var caller=f.sender("lookup-caller");var callee=f.sender("lookup-callee");var invite=f.invite(caller,callee.userId());var original=f.service().executeCallCommand(invite).toCompletableFuture().join();var route=route(f,caller);
-            done(f.groups.releaseTracked(f.token(original.callId())));
-            var registry=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->true);
-            assertThat(done(registry.readInviteResultTracked(route,principal(route),1,invite.requestId(),Duration.ofSeconds(2)))).contains(original);
-            assertThat(done(registry.readInviteResultTracked(route,principal(route),1,new RequestId(UUID.randomUUID()),Duration.ofSeconds(2)))).isEmpty();
-            var other=route(f,callee);assertThat(done(registry.readInviteResultTracked(other,principal(other),1,invite.requestId(),Duration.ofSeconds(2)))).isEmpty();
-            var newer=f.sessions.registerSession(principal(route),f.boot,UUID.randomUUID(),1).toCompletableFuture().join();
-            assertThatThrownBy(()->done(registry.readInviteResultTracked(route,principal(route),1,invite.requestId(),Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);
-            assertThat(done(registry.readInviteResultTracked(newer,principal(newer),1,invite.requestId(),Duration.ofSeconds(2)))).contains(original);
-            var denied=new SessionRegistryService(f.runtime.sql,"c001",1,(c,p)->false);
-            assertThatThrownBy(()->done(denied.readInviteResultTracked(newer,principal(newer),1,invite.requestId(),Duration.ofSeconds(2)))).hasCauseInstanceOf(AuthoritySql.FencedException.class);
-        }
-    }
 
+class SessionAuthReadIT {
+  static <T> T done(DbOperation<T> operation) {
+    try {
+      return operation.logical().toCompletableFuture().join();
+    } finally {
+      operation.physicalCompletion().toCompletableFuture().join();
+    }
+  }
+
+  static AuthPrincipal principal(SessionRepository.Route route) {
+    return new AuthPrincipal(
+        route.user(),
+        route.key(),
+        route.tokenExpiresAt(),
+        Instant.now().minusSeconds(1),
+        route.signingKeyId(),
+        route.securityEpoch());
+  }
+
+  static SessionRepository.Route route(LocalInviteAtomicIT.Fixture f, AuthenticatedSession sender)
+      throws Exception {
+    try (var c = f.connection()) {
+      return new SessionRepository().find(c, sender.key());
+    }
+  }
+
+  @Test
+  void freshSessionAuthorityReadWorksWithoutAnyCallParticipation() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var sender = f.sender("auth-read");
+      var route = route(f, sender);
+      var registry = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> true);
+      var view =
+          done(
+              registry.readCurrentSessionTracked(
+                  route, principal(route), 1, Duration.ofSeconds(2)));
+      assertThat(view.route()).isEqualTo(route);
+      assertThat(view.sourceCell()).isEqualTo("c001");
+      assertThat(view.proofUntil())
+          .isAfter(view.checkedAt())
+          .isBeforeOrEqualTo(view.checkedAt().plusSeconds(5));
+      try (var c = f.connection();
+          var q = c.createStatement();
+          var r = q.executeQuery("SELECT count(*) FROM home_participation")) {
+        r.next();
+        assertThat(r.getInt(1)).isZero();
+      }
+    }
+  }
+
+  @Test
+  void replacedGenerationAndRevokedNativePolicyCannotReceiveAProofProjection() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var sender = f.sender("replaced-auth-read");
+      var old = route(f, sender);
+      var allowed = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> true);
+      var newer =
+          allowed
+              .registerSession(principal(old), f.boot, UUID.randomUUID(), 1)
+              .toCompletableFuture()
+              .join();
+      assertThat(newer.connectionGeneration()).isEqualTo(2);
+      assertThat(f.sessions.closeSessionIfGeneration(old, 1).toCompletableFuture().join())
+          .isFalse();
+      assertThatThrownBy(
+              () ->
+                  done(
+                      allowed.readCurrentSessionTracked(
+                          old, principal(old), 1, Duration.ofSeconds(2))))
+          .hasCauseInstanceOf(AuthoritySql.FencedException.class);
+      var denied = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> false);
+      assertThatThrownBy(
+              () ->
+                  done(
+                      denied.readCurrentSessionTracked(
+                          newer, principal(newer), 1, Duration.ofSeconds(2))))
+          .hasCauseInstanceOf(AuthoritySql.FencedException.class);
+    }
+  }
+
+  @Test
+  void expiredBootAndUnconfiguredSecurityFailClosed() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var route = route(f, f.sender("lost-boot-auth"));
+      assertThatThrownBy(
+              () ->
+                  f.sessions.readCurrentSessionTracked(
+                      route, principal(route), 1, Duration.ofSeconds(2)))
+          .isInstanceOf(IllegalStateException.class);
+      try (var c = f.connection();
+          var q =
+              c.prepareStatement(
+                  "UPDATE gateway_lease SET expired_at=clock_timestamp() WHERE gateway_id=?")) {
+        q.setString(1, f.boot.gatewayId());
+        q.executeUpdate();
+      }
+      var registry = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> true);
+      assertThatThrownBy(
+              () ->
+                  done(
+                      registry.readCurrentSessionTracked(
+                          route, principal(route), 1, Duration.ofSeconds(2))))
+          .hasCauseInstanceOf(AuthoritySql.FencedException.class);
+    }
+  }
+
+  @Test
+  void inviteResultReadRequiresCurrentSessionButNoLiveGroupOrParticipation() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var caller = f.sender("lookup-caller");
+      var callee = f.sender("lookup-callee");
+      var invite = f.invite(caller, callee.userId());
+      var original = f.service().executeCallCommand(invite).toCompletableFuture().join();
+      var route = route(f, caller);
+      done(f.groups.releaseTracked(f.token(original.callId())));
+      var registry = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> true);
+      assertThat(
+              done(
+                  registry.readInviteResultTracked(
+                      route, principal(route), 1, invite.requestId(), Duration.ofSeconds(2))))
+          .contains(original);
+      assertThat(
+              done(
+                  registry.readInviteResultTracked(
+                      route,
+                      principal(route),
+                      1,
+                      new RequestId(UUID.randomUUID()),
+                      Duration.ofSeconds(2))))
+          .isEmpty();
+      var other = route(f, callee);
+      assertThat(
+              done(
+                  registry.readInviteResultTracked(
+                      other, principal(other), 1, invite.requestId(), Duration.ofSeconds(2))))
+          .isEmpty();
+      var newer =
+          f.sessions
+              .registerSession(principal(route), f.boot, UUID.randomUUID(), 1)
+              .toCompletableFuture()
+              .join();
+      assertThatThrownBy(
+              () ->
+                  done(
+                      registry.readInviteResultTracked(
+                          route, principal(route), 1, invite.requestId(), Duration.ofSeconds(2))))
+          .hasCauseInstanceOf(AuthoritySql.FencedException.class);
+      assertThat(
+              done(
+                  registry.readInviteResultTracked(
+                      newer, principal(newer), 1, invite.requestId(), Duration.ofSeconds(2))))
+          .contains(original);
+      var denied = new SessionRegistryService(f.runtime.sql, "c001", 1, (c, p) -> false);
+      assertThatThrownBy(
+              () ->
+                  done(
+                      denied.readInviteResultTracked(
+                          newer, principal(newer), 1, invite.requestId(), Duration.ofSeconds(2))))
+          .hasCauseInstanceOf(AuthoritySql.FencedException.class);
+    }
+  }
 }

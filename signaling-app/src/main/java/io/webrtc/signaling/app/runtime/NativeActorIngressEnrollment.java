@@ -10,7 +10,14 @@ import java.util.function.BiPredicate;
 import java.util.function.Function;
 
 /** Explicit internal listener, outbound transport and workload-authority enrollment. */
-public record NativeActorIngressEnrollment(String environment, int port, SslContext tls, RpcAdmission admission,
-        NativeSagaEffects.Network network, int relayCapacity, RelayBufferBudget relayMemory, GatewayRelayRpcClient gateways,
-        BiPredicate<CellRpcServer.Peer,NativeSessionHandler.GatewayIdentity> gatewayWorkloads,
-        Function<ControlEvent,CompletionStage<InternalReply>> delivery) {}
+public record NativeActorIngressEnrollment(
+    String environment,
+    int port,
+    SslContext tls,
+    RpcAdmission admission,
+    NativeSagaEffects.Network network,
+    int relayCapacity,
+    RelayBufferBudget relayMemory,
+    GatewayRelayRpcClient gateways,
+    BiPredicate<CellRpcServer.Peer, NativeSessionHandler.GatewayIdentity> gatewayWorkloads,
+    Function<ControlEvent, CompletionStage<InternalReply>> delivery) {}

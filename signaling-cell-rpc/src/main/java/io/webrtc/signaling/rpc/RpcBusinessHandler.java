@@ -1,112 +1,684 @@
 package io.webrtc.signaling.rpc;
+
+import com.fasterxml.jackson.core.*;
+import com.fasterxml.jackson.databind.*;
+import com.google.protobuf.ByteString;
+import io.webrtc.signaling.actors.user.UserCommand;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.protocol.internal.*;
 import io.webrtc.signaling.storage.*;
 import io.webrtc.signaling.storage.HomeParticipationService.*;
-import io.webrtc.signaling.actors.user.UserCommand;
-import com.fasterxml.jackson.databind.*;
-import com.fasterxml.jackson.core.*;
-import com.google.protobuf.ByteString;
-import java.nio.ByteBuffer;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Function;
-/** Authenticated RPC -> typed sharding facade. Effects recheck native authority; ingress never performs SQL. */
+
+/**
+ * Authenticated RPC -> typed sharding facade. Effects recheck native authority; ingress never
+ * performs SQL.
+ */
 public final class RpcBusinessHandler implements CellRpcServer.Backend {
-    public record WorkflowProofRequest(CallWorkflowService.Transition transition,String purpose,CallSnapshotRepository.Participant participant){public WorkflowProofRequest{Objects.requireNonNull(transition);if(!Set.of("SESSION","TARGET_ROUTE","WINNER","ACTIVE").contains(purpose))throw new IllegalArgumentException("Invalid home proof purpose");}}
-    public record HomeProofReply(String signed,Instant expiresAt,Instant participantUntil) {}
-    public record CommandProofRequest(CallCommand command,CallSnapshotRepository.Snapshot snapshot,AuthoritySql.GroupToken group,CallSnapshotRepository.Participant participant){public CommandProofRequest{Objects.requireNonNull(command);Objects.requireNonNull(snapshot);Objects.requireNonNull(group);Objects.requireNonNull(participant);if(!Set.of(SignalEnvelope.Type.NEGOTIATE_REQUEST,SignalEnvelope.Type.MEDIA_CONNECTED,SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES).contains(command.type()))throw new IllegalArgumentException("Unsupported active command proof");}}
-    public record UserPayload(UserCommand.Operation operation,String sessionProof,WorkflowProofRequest workflowProof,@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) CommandProofRequest commandProof){public UserPayload(UserCommand.Operation operation,String sessionProof){this(operation,sessionProof,null,null);}public UserPayload(UserCommand.Operation operation,String sessionProof,WorkflowProofRequest workflowProof){this(operation,sessionProof,workflowProof,null);}public UserPayload{Objects.requireNonNull(operation);if(sessionProof!=null&&sessionProof.length()>4096)throw new IllegalArgumentException("Oversized session proof");if(commandProof!=null&&(workflowProof!=null||!(operation instanceof UserCommand.QueryProof)))throw new IllegalArgumentException("Command proof requires native query");if(workflowProof!=null&&!(operation instanceof UserCommand.QueryProof))throw new IllegalArgumentException("Read proof requires native query");}}
-    public record CallPayload(CallCommand command,String proof){public CallPayload{Objects.requireNonNull(command);if(proof==null||proof.length()>8192)throw new IllegalArgumentException("Invalid command proof");}}
-    public record WorkflowPayload(CallWorkflowService.Transition transition) {}
-    public record SyncRead(AuthenticatedSession sender,CallId call,RequestId request,String proof,String intentHash) {}
-    public record RelayRequest(InternalCommand command,CellRpcServer.Peer peer,Duration budget) {}
-    @FunctionalInterface public interface SnapshotReads {
-        RpcOperation<CallSnapshotRepository.Snapshot> read(SyncRead request,Duration budget);
-        default RpcOperation<Optional<CallCommandService.Outcome>> result(CallCommand command,String proof,Duration budget){var failed=CompletableFuture.<Optional<CallCommandService.Outcome>>failedFuture(new IllegalStateException("Native result read required"));return new RpcOperation<>(failed,failed);}
+  public record WorkflowProofRequest(
+      CallWorkflowService.Transition transition,
+      String purpose,
+      CallSnapshotRepository.Participant participant) {
+    public WorkflowProofRequest {
+      Objects.requireNonNull(transition);
+      if (!Set.of("SESSION", "TARGET_ROUTE", "WINNER", "ACTIVE").contains(purpose))
+        throw new IllegalArgumentException("Invalid home proof purpose");
     }
-    private java.util.function.BooleanSupplier businessAdmission=()->false;
-    public RpcBusinessHandler businessAdmission(java.util.function.BooleanSupplier gate){businessAdmission=Objects.requireNonNull(gate);return this;}
-    private SnapshotReads nativeReads;
-    private NativeSetupCommandExecutor nativeSetup;
-    public RpcBusinessHandler nativeSetup(NativeSetupCommandExecutor executor){nativeSetup=Objects.requireNonNull(executor);return this;}
-    private NativeCriticalCommandExecutor nativeCritical;
-    public RpcBusinessHandler nativeCritical(NativeCriticalCommandExecutor executor){nativeCritical=Objects.requireNonNull(executor);return this;}
-    public RpcBusinessHandler nativeReads(SnapshotReads reads){this.nativeReads=Objects.requireNonNull(reads);return this;}
-    public boolean nativeReadsConfigured(){return nativeReads!=null;}
-    private volatile Function<RelayRequest,RpcOperation<InternalReply>> nativeRelay;
-    /** A production producer must validate native authorization and supply independent cleanup. */
-    public synchronized RpcBusinessHandler nativeRelay(Function<RelayRequest,RpcOperation<InternalReply>> producer){
-        Objects.requireNonNull(producer);if(nativeRelay!=null)throw new IllegalStateException("Native relay producer already installed");
-        nativeRelay=producer;return this;
+  }
+
+  public record HomeProofReply(String signed, Instant expiresAt, Instant participantUntil) {}
+
+  public record CommandProofRequest(
+      CallCommand command,
+      CallSnapshotRepository.Snapshot snapshot,
+      AuthoritySql.GroupToken group,
+      CallSnapshotRepository.Participant participant) {
+    public CommandProofRequest {
+      Objects.requireNonNull(command);
+      Objects.requireNonNull(snapshot);
+      Objects.requireNonNull(group);
+      Objects.requireNonNull(participant);
+      if (!Set.of(
+              SignalEnvelope.Type.NEGOTIATE_REQUEST,
+              SignalEnvelope.Type.MEDIA_CONNECTED,
+              SignalEnvelope.Type.OFFER,
+              SignalEnvelope.Type.ANSWER,
+              SignalEnvelope.Type.ICE_CANDIDATES,
+              SignalEnvelope.Type.END_OF_CANDIDATES)
+          .contains(command.type()))
+        throw new IllegalArgumentException("Unsupported active command proof");
     }
-    public interface ActorIngress {
-        default RpcOperation<io.webrtc.signaling.actors.call.CallActor.GrantReply> grantTracked(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){var stage=grant(r,action,destination,deadline,bytes);return new RpcOperation<>(stage,stage);}
-        default CompletionStage<io.webrtc.signaling.actors.call.CallActor.GrantReply> grant(Request r,AuthorizationIntent action,String destination,Instant deadline,int bytes){return CompletableFuture.failedFuture(new IllegalStateException("Native shard grant ingress required"));}
-        default RpcOperation<UserCommand.Result> userTracked(UserCommand.Operation operation,Instant deadline,int bytes){var stage=user(operation,deadline,bytes);return new RpcOperation<>(stage,stage);}
-        default RpcOperation<CallCommandService.Outcome> callTracked(CallCommand command,String proof,Instant deadline,int bytes){var stage=call(command,proof,deadline,bytes);return new RpcOperation<>(stage,stage);}
-        default RpcOperation<CallWorkflowService.Outcome> progressTracked(CallWorkflowService.Transition transition,Instant deadline,int bytes){var stage=progress(transition,deadline,bytes);return new RpcOperation<>(stage,stage);}
-        CompletionStage<UserCommand.Result> user(UserCommand.Operation operation,Instant deadline,int bytes);
-        CompletionStage<CallCommandService.Outcome> call(CallCommand command,String proof,Instant deadline,int bytes);
-        CompletionStage<CallWorkflowService.Outcome> progress(CallWorkflowService.Transition transition,Instant deadline,int bytes);
+  }
+
+  public record UserPayload(
+      UserCommand.Operation operation,
+      String sessionProof,
+      WorkflowProofRequest workflowProof,
+      @com.fasterxml.jackson.annotation.JsonInclude(
+              com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+          CommandProofRequest commandProof) {
+    public UserPayload(UserCommand.Operation operation, String sessionProof) {
+      this(operation, sessionProof, null, null);
     }
-    private static final ObjectMapper JSON=new ObjectMapper(JsonFactory.builder().streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(81920).maxNumberLength(64).build()).enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build()).findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private final NativeProofIssuer issuer;
-    private final String cell;private final ActorIngress actors;private final ProofBindings bindings;private final HomeAuthorizationProof proofs;private final Function<UserId,ProofBindings.TrustedHome> homes;private final Function<SyncRead,CompletionStage<CallSnapshotRepository.Snapshot>> reads;private final Function<RelayRequest,CompletionStage<InternalReply>> relay;private final Clock clock;
-    public RpcBusinessHandler(String cell,ActorIngress actors,ProofBindings bindings,HomeAuthorizationProof proofs,Function<UserId,ProofBindings.TrustedHome> homes,Function<SyncRead,CompletionStage<CallSnapshotRepository.Snapshot>> reads,Function<RelayRequest,CompletionStage<InternalReply>> relay,Clock clock){this(cell,actors,bindings,proofs,homes,reads,relay,clock,null);}
-    public RpcBusinessHandler(String cell,ActorIngress actors,ProofBindings bindings,HomeAuthorizationProof proofs,Function<UserId,ProofBindings.TrustedHome> homes,Function<SyncRead,CompletionStage<CallSnapshotRepository.Snapshot>> reads,Function<RelayRequest,CompletionStage<InternalReply>> relay,Clock clock,NativeProofIssuer issuer){this.issuer=issuer;this.cell=Objects.requireNonNull(cell);this.actors=Objects.requireNonNull(actors);this.bindings=Objects.requireNonNull(bindings);this.proofs=Objects.requireNonNull(proofs);this.homes=Objects.requireNonNull(homes);this.reads=Objects.requireNonNull(reads);this.relay=Objects.requireNonNull(relay);this.clock=Objects.requireNonNull(clock);}
-    public static byte[] encode(Object payload){try{byte[] value=JSON.writeValueAsBytes(payload);if(value.length>81920)throw new IllegalArgumentException("Oversized RPC payload");return value;}catch(java.io.IOException invalid){throw new IllegalArgumentException("Invalid RPC DTO",invalid);}}
-    private static <T>T decode(InternalCommand c,Class<T> type)throws java.io.IOException {if(c.getPayload().size()>81920)throw new IllegalArgumentException("Oversized RPC DTO");return JSON.readValue(c.getPayload().toByteArray(),type);}
-    @Override public CompletionStage<InternalReply> execute(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer peer,Duration budget){return executeTracked(op,c,peer,budget).logical();}
-    @Override public RpcOperation<InternalReply> executeTracked(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer peer,Duration budget){var physical=new java.util.concurrent.atomic.AtomicReference<CompletionStage<?>>(CompletableFuture.completedFuture(null));var result=dispatch(op,c,peer,budget,physical);return new RpcOperation<>(result,physical.get().thenCombine(result.handle((v,e)->null),(a,b)->null));}
-    private CompletionStage<InternalReply> dispatch(CellRpcServer.Operation op,InternalCommand c,CellRpcServer.Peer peer,Duration budget,java.util.concurrent.atomic.AtomicReference<CompletionStage<?>> physical){
-        try{if(peer==null||!cell.equals(c.getDestinationCell())||budget.isNegative()||budget.isZero()||c.getSerializedSize()>98304||c.getPayloadHash().size()!=32||c.getSchemaMajor()!=1||c.getSchemaMinor()<0||c.getSchemaMinor()>1)throw new IllegalArgumentException("Invalid business envelope");UUID operation=UUID.fromString(c.getOperationId());var call=new CallId(c.getCallId());if(!CommandScope.call(call).value().equals(c.getCommandScope())&&!CommandScope.invite().value().equals(c.getCommandScope()))throw new IllegalArgumentException("Invalid routed scope");Instant deadline=clock.instant().plus(budget);int bytes=c.getSerializedSize();
-            if(Set.of(CellRpcServer.Operation.RESERVE,CellRpcServer.Operation.CLAIM,CellRpcServer.Operation.RELEASE).contains(op)||op==CellRpcServer.Operation.EXECUTE&&Set.of("RenewReservation","ConfirmActivation").contains(c.getType())){
-                if(!peer.role().equals("actor"))return rejected(c,"UNAUTHORIZED");var payload=decode(c,UserPayload.class);Request request=request(payload.operation());var action=action(payload.operation());
-                boolean matches=switch(op){case RESERVE->(c.getType().equals("ReserveUser")&&payload.operation() instanceof UserCommand.Reserve||c.getType().equals("QueryParticipation")&&payload.operation() instanceof UserCommand.QueryProof);case CLAIM->c.getType().equals("ClaimAccept")&&payload.operation() instanceof UserCommand.Accept;case RELEASE->c.getType().equals("ReleaseIfCallVersion")&&payload.operation() instanceof UserCommand.Release;case EXECUTE->c.getType().equals("RenewReservation")&&payload.operation() instanceof UserCommand.Renew||c.getType().equals("ConfirmActivation")&&payload.operation() instanceof UserCommand.Activate;default->false;};
-                if(!matches||!call.equals(request.call())||!operation.equals(request.grant().operation())||!peer.cell().equals(request.grant().cell())||!bindings.homeVerifier(cell).verify(request,action)||!HexFormat.of().formatHex(c.getPayloadHash().toByteArray()).equals(HomeParticipationService.authorizationHash(request,action)))return rejected(c,"UNAUTHORIZED");
-                var signed=proofs.decode(request.grant().proof(),peer.cell(),clock.instant()).orElseThrow();var authority=c.getAuthority();if(!authority.getCellId().equals(signed.sourceCell())||authority.getStorageEpoch()!=signed.storageEpoch()||authority.getOwnershipHashVersion()!=signed.hashVersion()||authority.getGroupId()!=signed.group()||authority.getGroupEpoch()!=signed.groupEpoch()||authority.getLeaseSequence()!=signed.leaseSequence()||!uuid(authority.getOwnerIncarnation()).equals(signed.ownerIncarnation()))return rejected(c,"UNAUTHORIZED");
-                if(payload.operation() instanceof UserCommand.Accept accept&&!currentSessionProof(payload.sessionProof(),accept.route(),call,operation,signed.sourceAcceptIntentHash(),request.directoryEpoch()))return rejected(c,"UNAUTHORIZED");
-                return tracked(actors.userTracked(payload.operation(),deadline,bytes),physical).thenApply(result->{
-                    if(payload.workflowProof()!=null||payload.commandProof()!=null){if(issuer==null||result.code()!=UserCommand.Code.PROOF_READ||result.proofView()==null)return reply(c,false,"UNAVAILABLE",null);var desired=payload.workflowProof();try{String sealed;if(desired!=null)sealed=issuer.home(request,result.proofView(),desired.transition(),desired.purpose(),desired.participant());else {var cmd=payload.commandProof();sealed=issuer.homeCommand(request,result.proofView(),cmd.command(),cmd.snapshot(),cmd.group(),cmd.participant());}var decoded=proofs.decode(sealed,cell,clock.instant()).orElseThrow();return readReply(c,new HomeProofReply(sealed,decoded.expiresAt(),decoded.participantUntil()));}catch(RuntimeException fenced){return reply(c,false,"UNAUTHORIZED",null);}}
-                    if(result.code()==UserCommand.Code.PROOF_READ)return readReply(c,result);
-                    String code=result.code().name();boolean committed=Set.of("RESERVED","RENEWED","RELEASED","CLAIMED","CONFIRMED","ANSWERED_ELSEWHERE","TERMINAL").contains(code);return reply(c,committed,code,result);});
-            }
-            if(op==CellRpcServer.Operation.EXECUTE&&c.getType().equals("WorkflowStep")){
-                if(!peer.role().equals("actor")||!peer.cell().equals(cell)||!call.coordinatorCell().equals(cell))return rejected(c,"UNAUTHORIZED");var payload=decode(c,WorkflowPayload.class);var transition=payload.transition();if(!call.equals(transition.call())||!operation.equals(transition.operation())||!transition.group().cell().equals(cell)||transition.expectedVersion()!=c.getExpectedCallVersion()||!ProofBindings.workflowIntent(transition).equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray())))return rejected(c,"UNAUTHORIZED");return tracked(actors.progressTracked(transition,deadline,bytes),physical).thenApply(value->reply(c,!Set.of("UNKNOWN","UNAVAILABLE","FENCED","OVERLOADED","EXPIRED","INVALID").contains(value.code()),value.code(),value));
-            }
-            if(op==CellRpcServer.Operation.EXECUTE){var payload=decode(c,CallPayload.class);var command=payload.command();if(Set.of(SignalEnvelope.Type.OFFER,SignalEnvelope.Type.ANSWER,SignalEnvelope.Type.ICE_CANDIDATES,SignalEnvelope.Type.END_OF_CANDIDATES).contains(command.type()))return rejected(c,"UNAUTHORIZED");if(command.type()==SignalEnvelope.Type.INVITE&&!businessAdmission.getAsBoolean())return rejected(c,"OVERLOADED");var home=homes.apply(command.sender().userId());if(home==null||!peer.cell().equals(home.cell())||!call.coordinatorCell().equals(cell)||!call.equals(command.callId())||!operation.equals(command.requestId().value())||!c.getType().equals(command.type().name())||!c.getCommandScope().equals(command.scope().value())||!command.intentHash().equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray()))||!bindings.commandVerifier(cell,homes).verify(command,null,payload.proof())||!sameSender(c.getSender(),command.sender()))return rejected(c,"UNAUTHORIZED");if(command.type()==SignalEnvelope.Type.GET_COMMAND_RESULT){if(nativeReads==null)return rejected(c,"UNAVAILABLE");return tracked(nativeReads.result(command,payload.proof(),budget),physical).thenApply(value->readReply(c,value.orElse(null)));}
-                if(nativeSetup!=null&&Set.of(SignalEnvelope.Type.INVITE,SignalEnvelope.Type.ACCEPT).contains(command.type()))return tracked(nativeSetup.execute(command,payload.proof(),budget),physical).thenApply(value->reply(c,value.status().equals("FINAL"),value.code(),value));
-                if(nativeCritical!=null&&Set.of(SignalEnvelope.Type.NEGOTIATE_REQUEST,SignalEnvelope.Type.MEDIA_CONNECTED).contains(command.type()))return tracked(nativeCritical.execute(command,payload.proof(),budget),physical).thenApply(value->reply(c,value.status().equals("FINAL"),value.code(),value));
-                return tracked(actors.callTracked(command,payload.proof(),deadline,bytes),physical).thenApply(value->reply(c,value.status().equals("FINAL"),value.code(),value));}
-            if(op==CellRpcServer.Operation.SYNC){var read=decode(c,SyncRead.class);var command=new CallCommand(SignalEnvelope.Type.SYNC_CALL,read.sender(),read.request(),read.call(),CommandScope.call(read.call()),null,null,null,"{}",read.intentHash());var home=homes.apply(read.sender().userId());if(home==null||!peer.cell().equals(home.cell())||!call.equals(read.call())||!operation.equals(read.request().value())||!bindings.commandVerifier(cell,homes).verify(command,null,read.proof())||!sameSender(c.getSender(),read.sender()))return rejected(c,"UNAUTHORIZED");if(nativeReads!=null)return tracked(nativeReads.read(read,budget),physical).thenApply(snapshot->reply(c,false,"SNAPSHOT",snapshot));var stage=reads.apply(read);physical.set(stage);return stage.thenApply(snapshot->reply(c,false,"SNAPSHOT",snapshot));}
-            if(op==CellRpcServer.Operation.RELAY){
-                var producer=nativeRelay;if(producer==null)return rejected(c,"UNSUPPORTED_OPERATION");
-                var payload=decode(c,CallPayload.class);var command=payload.command();var home=homes.apply(command.sender().userId());
-                if(home==null||!Set.of("actor","gateway").contains(peer.role())||peer.workloadId().isBlank()||!peer.cell().equals(home.cell())||!RelaySessionAuthorizationProof.supports(command)
-                    ||!call.coordinatorCell().equals(cell)||!call.equals(command.callId())||!operation.equals(command.requestId().value())||!c.getType().equals(command.type().name())||!c.getCommandScope().equals(command.scope().value())
-                    ||!command.intentHash().equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray()))||!sameSender(c.getSender(),command.sender())||!bindings.commandVerifier(cell,homes).verify(command,null,payload.proof()))return rejected(c,"UNAUTHORIZED");
-                physical.set(new CompletableFuture<Void>());
-                try{
-                    var work=Objects.requireNonNull(producer.apply(new RelayRequest(c,peer,budget)));
-                    return tracked(work,physical);
-                }catch(Throwable unknown){return rejected(c,"OUTCOME_UNKNOWN");}
-            }
-            return rejected(c,"UNSUPPORTED_OPERATION");
-        }catch(io.webrtc.signaling.actors.admission.EntityAdmission.Overloaded overloaded){return rejected(c,"OVERLOADED");}catch(DbOverloadedException overloaded){return rejected(c,"OVERLOADED");}catch(Exception invalid){return rejected(c,"UNAUTHORIZED");}
+
+    public UserPayload(
+        UserCommand.Operation operation, String sessionProof, WorkflowProofRequest workflowProof) {
+      this(operation, sessionProof, workflowProof, null);
     }
-    private static <T> CompletionStage<T> tracked(RpcOperation<T> operation,java.util.concurrent.atomic.AtomicReference<CompletionStage<?>> physical){physical.set(operation.physicalCompletion());return operation.logical();}
-    private boolean currentSessionProof(String signed,SessionRepository.Route route,CallId call,UUID operation,String intent,long directoryEpoch){
-        var home=homes.apply(route.user());if(home==null||!cell.equals(home.cell())||home.directoryEpoch()!=directoryEpoch||intent==null)return false;
-        return proofs.sessionProofs().decode(signed,cell,clock.instant()).filter(p->p.destinationCell().equals(call.coordinatorCell())&&p.call().equals(call)&&p.operation().equals(operation)&&p.intentHash().equals(intent)&&p.nativeView().sourceStorageEpoch()==home.storageEpoch()&&p.nativeView().directoryEpoch()==directoryEpoch&&p.nativeView().route().user().equals(route.user())&&p.nativeView().route().key().equals(route.key())&&p.nativeView().route().incarnation().equals(route.incarnation())&&p.nativeView().route().connectionGeneration()==route.connectionGeneration()&&p.nativeView().route().connectionId().equals(route.connectionId())&&p.nativeView().route().gatewayId().equals(route.gatewayId())&&p.nativeView().route().bootId().equals(route.bootId())).isPresent();
+
+    public UserPayload {
+      Objects.requireNonNull(operation);
+      if (sessionProof != null && sessionProof.length() > 4096)
+        throw new IllegalArgumentException("Oversized session proof");
+      if (commandProof != null
+          && (workflowProof != null || !(operation instanceof UserCommand.QueryProof)))
+        throw new IllegalArgumentException("Command proof requires native query");
+      if (workflowProof != null && !(operation instanceof UserCommand.QueryProof))
+        throw new IllegalArgumentException("Read proof requires native query");
     }
-    private static boolean sameSender(SessionIdentity wire,AuthenticatedSession sender){return wire.getUserId().equals(sender.userId().value())&&wire.getIssuer().equals(sender.key().issuer())&&wire.getJti().equals(sender.key().jti())&&wire.getConnectionGeneration()==sender.connectionGeneration()&&uuid(wire.getIncarnation()).equals(sender.incarnation().value())&&uuid(wire.getConnectionId()).equals(sender.connectionId());}
-    static UUID uuid(ByteString bytes){if(bytes.size()!=16)throw new IllegalArgumentException("Invalid UUID wire field");var b=bytes.asReadOnlyByteBuffer();return new UUID(b.getLong(),b.getLong());}
-    public static Request request(UserCommand.Operation operation){return switch(operation){case UserCommand.QueryProof r->r.request();case UserCommand.Reserve r->r.request();case UserCommand.Renew r->r.request();case UserCommand.Release r->r.request();case UserCommand.Accept r->r.request();case UserCommand.Activate r->r.request();default->throw new IllegalArgumentException("Session registration requires its authenticated home ingress");};}
-    public static AuthorizationIntent action(UserCommand.Operation operation){return switch(operation){case UserCommand.QueryProof r->new AuthorizationIntent("QUERY",null,0,null,0,null,null);case UserCommand.Reserve r->AuthorizationIntent.reserve();case UserCommand.Renew r->new AuthorizationIntent("RENEW",r.reservation(),r.version(),null,0,null,null);case UserCommand.Release r->new AuthorizationIntent("RELEASE",r.reservation(),r.version(),null,0,null,null);case UserCommand.Accept r->new AuthorizationIntent("CLAIM",r.reservation(),0,null,0,null,r.route());case UserCommand.Activate r->new AuthorizationIntent("CONFIRM",r.reservation(),r.version(),r.activation(),r.callVersion(),r.winner(),null);default->throw new IllegalArgumentException("Invalid home operation");};}
-    private static CompletionStage<InternalReply> rejected(InternalCommand c,String code){return CompletableFuture.completedFuture(reply(c,false,code,null));}
-    private static InternalReply readReply(InternalCommand c,Object value){return InternalReply.newBuilder().setOperationId(c.getOperationId()).setCallId(c.getCallId()).setStatus("READ").setResult(ByteString.copyFrom(encode(value))).build();}
-    private static InternalReply reply(InternalCommand c,boolean committed,String code,Object value){var builder=InternalReply.newBuilder().setOperationId(c.getOperationId()).setCallId(c.getCallId()).setAckCommitted(committed).setStatus(committed?"COMMITTED":"PENDING");if(!committed&&!code.equals("SNAPSHOT"))builder.setErrorCode(code);if(value!=null)builder.setResult(ByteString.copyFrom(encode(value)));return builder.build();}
+  }
+
+  public record CallPayload(CallCommand command, String proof) {
+    public CallPayload {
+      Objects.requireNonNull(command);
+      if (proof == null || proof.length() > 8192)
+        throw new IllegalArgumentException("Invalid command proof");
+    }
+  }
+
+  public record WorkflowPayload(CallWorkflowService.Transition transition) {}
+
+  public record SyncRead(
+      AuthenticatedSession sender,
+      CallId call,
+      RequestId request,
+      String proof,
+      String intentHash) {}
+
+  public record RelayRequest(InternalCommand command, CellRpcServer.Peer peer, Duration budget) {}
+
+  @FunctionalInterface
+  public interface SnapshotReads {
+    RpcOperation<CallSnapshotRepository.Snapshot> read(SyncRead request, Duration budget);
+
+    default RpcOperation<Optional<CallCommandService.Outcome>> result(
+        CallCommand command, String proof, Duration budget) {
+      var failed =
+          CompletableFuture.<Optional<CallCommandService.Outcome>>failedFuture(
+              new IllegalStateException("Native result read required"));
+      return new RpcOperation<>(failed, failed);
+    }
+  }
+
+  private java.util.function.BooleanSupplier businessAdmission = () -> false;
+
+  public RpcBusinessHandler businessAdmission(java.util.function.BooleanSupplier gate) {
+    businessAdmission = Objects.requireNonNull(gate);
+    return this;
+  }
+
+  private SnapshotReads nativeReads;
+  private NativeSetupCommandExecutor nativeSetup;
+
+  public RpcBusinessHandler nativeSetup(NativeSetupCommandExecutor executor) {
+    nativeSetup = Objects.requireNonNull(executor);
+    return this;
+  }
+
+  private NativeCriticalCommandExecutor nativeCritical;
+
+  public RpcBusinessHandler nativeCritical(NativeCriticalCommandExecutor executor) {
+    nativeCritical = Objects.requireNonNull(executor);
+    return this;
+  }
+
+  public RpcBusinessHandler nativeReads(SnapshotReads reads) {
+    this.nativeReads = Objects.requireNonNull(reads);
+    return this;
+  }
+
+  public boolean nativeReadsConfigured() {
+    return nativeReads != null;
+  }
+
+  private volatile Function<RelayRequest, RpcOperation<InternalReply>> nativeRelay;
+
+  /** A production producer must validate native authorization and supply independent cleanup. */
+  public synchronized RpcBusinessHandler nativeRelay(
+      Function<RelayRequest, RpcOperation<InternalReply>> producer) {
+    Objects.requireNonNull(producer);
+    if (nativeRelay != null)
+      throw new IllegalStateException("Native relay producer already installed");
+    nativeRelay = producer;
+    return this;
+  }
+
+  public interface ActorIngress {
+    default RpcOperation<io.webrtc.signaling.actors.call.CallActor.GrantReply> grantTracked(
+        Request r, AuthorizationIntent action, String destination, Instant deadline, int bytes) {
+      var stage = grant(r, action, destination, deadline, bytes);
+      return new RpcOperation<>(stage, stage);
+    }
+
+    default CompletionStage<io.webrtc.signaling.actors.call.CallActor.GrantReply> grant(
+        Request r, AuthorizationIntent action, String destination, Instant deadline, int bytes) {
+      return CompletableFuture.failedFuture(
+          new IllegalStateException("Native shard grant ingress required"));
+    }
+
+    default RpcOperation<UserCommand.Result> userTracked(
+        UserCommand.Operation operation, Instant deadline, int bytes) {
+      var stage = user(operation, deadline, bytes);
+      return new RpcOperation<>(stage, stage);
+    }
+
+    default RpcOperation<CallCommandService.Outcome> callTracked(
+        CallCommand command, String proof, Instant deadline, int bytes) {
+      var stage = call(command, proof, deadline, bytes);
+      return new RpcOperation<>(stage, stage);
+    }
+
+    default RpcOperation<CallWorkflowService.Outcome> progressTracked(
+        CallWorkflowService.Transition transition, Instant deadline, int bytes) {
+      var stage = progress(transition, deadline, bytes);
+      return new RpcOperation<>(stage, stage);
+    }
+
+    CompletionStage<UserCommand.Result> user(
+        UserCommand.Operation operation, Instant deadline, int bytes);
+
+    CompletionStage<CallCommandService.Outcome> call(
+        CallCommand command, String proof, Instant deadline, int bytes);
+
+    CompletionStage<CallWorkflowService.Outcome> progress(
+        CallWorkflowService.Transition transition, Instant deadline, int bytes);
+  }
+
+  private static final ObjectMapper JSON =
+      new ObjectMapper(
+              JsonFactory.builder()
+                  .streamReadConstraints(
+                      StreamReadConstraints.builder()
+                          .maxNestingDepth(16)
+                          .maxStringLength(81920)
+                          .maxNumberLength(64)
+                          .build())
+                  .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+                  .build())
+          .findAndRegisterModules()
+          .enable(
+              DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
+              DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+  private final NativeProofIssuer issuer;
+  private final String cell;
+  private final ActorIngress actors;
+  private final ProofBindings bindings;
+  private final HomeAuthorizationProof proofs;
+  private final Function<UserId, ProofBindings.TrustedHome> homes;
+  private final Function<SyncRead, CompletionStage<CallSnapshotRepository.Snapshot>> reads;
+  private final Function<RelayRequest, CompletionStage<InternalReply>> relay;
+  private final Clock clock;
+
+  public RpcBusinessHandler(
+      String cell,
+      ActorIngress actors,
+      ProofBindings bindings,
+      HomeAuthorizationProof proofs,
+      Function<UserId, ProofBindings.TrustedHome> homes,
+      Function<SyncRead, CompletionStage<CallSnapshotRepository.Snapshot>> reads,
+      Function<RelayRequest, CompletionStage<InternalReply>> relay,
+      Clock clock) {
+    this(cell, actors, bindings, proofs, homes, reads, relay, clock, null);
+  }
+
+  public RpcBusinessHandler(
+      String cell,
+      ActorIngress actors,
+      ProofBindings bindings,
+      HomeAuthorizationProof proofs,
+      Function<UserId, ProofBindings.TrustedHome> homes,
+      Function<SyncRead, CompletionStage<CallSnapshotRepository.Snapshot>> reads,
+      Function<RelayRequest, CompletionStage<InternalReply>> relay,
+      Clock clock,
+      NativeProofIssuer issuer) {
+    this.issuer = issuer;
+    this.cell = Objects.requireNonNull(cell);
+    this.actors = Objects.requireNonNull(actors);
+    this.bindings = Objects.requireNonNull(bindings);
+    this.proofs = Objects.requireNonNull(proofs);
+    this.homes = Objects.requireNonNull(homes);
+    this.reads = Objects.requireNonNull(reads);
+    this.relay = Objects.requireNonNull(relay);
+    this.clock = Objects.requireNonNull(clock);
+  }
+
+  public static byte[] encode(Object payload) {
+    try {
+      byte[] value = JSON.writeValueAsBytes(payload);
+      if (value.length > 81920) throw new IllegalArgumentException("Oversized RPC payload");
+      return value;
+    } catch (java.io.IOException invalid) {
+      throw new IllegalArgumentException("Invalid RPC DTO", invalid);
+    }
+  }
+
+  private static <T> T decode(InternalCommand c, Class<T> type) throws java.io.IOException {
+    if (c.getPayload().size() > 81920) throw new IllegalArgumentException("Oversized RPC DTO");
+    return JSON.readValue(c.getPayload().toByteArray(), type);
+  }
+
+  @Override
+  public CompletionStage<InternalReply> execute(
+      CellRpcServer.Operation op, InternalCommand c, CellRpcServer.Peer peer, Duration budget) {
+    return executeTracked(op, c, peer, budget).logical();
+  }
+
+  @Override
+  public RpcOperation<InternalReply> executeTracked(
+      CellRpcServer.Operation op, InternalCommand c, CellRpcServer.Peer peer, Duration budget) {
+    var physical =
+        new java.util.concurrent.atomic.AtomicReference<CompletionStage<?>>(
+            CompletableFuture.completedFuture(null));
+    var result = dispatch(op, c, peer, budget, physical);
+    return new RpcOperation<>(
+        result, physical.get().thenCombine(result.handle((v, e) -> null), (a, b) -> null));
+  }
+
+  private CompletionStage<InternalReply> dispatch(
+      CellRpcServer.Operation op,
+      InternalCommand c,
+      CellRpcServer.Peer peer,
+      Duration budget,
+      java.util.concurrent.atomic.AtomicReference<CompletionStage<?>> physical) {
+    try {
+      if (peer == null
+          || !cell.equals(c.getDestinationCell())
+          || budget.isNegative()
+          || budget.isZero()
+          || c.getSerializedSize() > 98304
+          || c.getPayloadHash().size() != 32
+          || c.getSchemaMajor() != 1
+          || c.getSchemaMinor() < 0
+          || c.getSchemaMinor() > 1)
+        throw new IllegalArgumentException("Invalid business envelope");
+      UUID operation = UUID.fromString(c.getOperationId());
+      var call = new CallId(c.getCallId());
+      if (!CommandScope.call(call).value().equals(c.getCommandScope())
+          && !CommandScope.invite().value().equals(c.getCommandScope()))
+        throw new IllegalArgumentException("Invalid routed scope");
+      Instant deadline = clock.instant().plus(budget);
+      int bytes = c.getSerializedSize();
+      if (Set.of(
+                  CellRpcServer.Operation.RESERVE,
+                  CellRpcServer.Operation.CLAIM,
+                  CellRpcServer.Operation.RELEASE)
+              .contains(op)
+          || op == CellRpcServer.Operation.EXECUTE
+              && Set.of("RenewReservation", "ConfirmActivation").contains(c.getType())) {
+        if (!peer.role().equals("actor")) return rejected(c, "UNAUTHORIZED");
+        var payload = decode(c, UserPayload.class);
+        Request request = request(payload.operation());
+        var action = action(payload.operation());
+        boolean matches =
+            switch (op) {
+              case RESERVE ->
+                  (c.getType().equals("ReserveUser")
+                          && payload.operation() instanceof UserCommand.Reserve
+                      || c.getType().equals("QueryParticipation")
+                          && payload.operation() instanceof UserCommand.QueryProof);
+              case CLAIM ->
+                  c.getType().equals("ClaimAccept")
+                      && payload.operation() instanceof UserCommand.Accept;
+              case RELEASE ->
+                  c.getType().equals("ReleaseIfCallVersion")
+                      && payload.operation() instanceof UserCommand.Release;
+              case EXECUTE ->
+                  c.getType().equals("RenewReservation")
+                          && payload.operation() instanceof UserCommand.Renew
+                      || c.getType().equals("ConfirmActivation")
+                          && payload.operation() instanceof UserCommand.Activate;
+              default -> false;
+            };
+        if (!matches
+            || !call.equals(request.call())
+            || !operation.equals(request.grant().operation())
+            || !peer.cell().equals(request.grant().cell())
+            || !bindings.homeVerifier(cell).verify(request, action)
+            || !HexFormat.of()
+                .formatHex(c.getPayloadHash().toByteArray())
+                .equals(HomeParticipationService.authorizationHash(request, action)))
+          return rejected(c, "UNAUTHORIZED");
+        var signed =
+            proofs.decode(request.grant().proof(), peer.cell(), clock.instant()).orElseThrow();
+        var authority = c.getAuthority();
+        if (!authority.getCellId().equals(signed.sourceCell())
+            || authority.getStorageEpoch() != signed.storageEpoch()
+            || authority.getOwnershipHashVersion() != signed.hashVersion()
+            || authority.getGroupId() != signed.group()
+            || authority.getGroupEpoch() != signed.groupEpoch()
+            || authority.getLeaseSequence() != signed.leaseSequence()
+            || !uuid(authority.getOwnerIncarnation()).equals(signed.ownerIncarnation()))
+          return rejected(c, "UNAUTHORIZED");
+        if (payload.operation() instanceof UserCommand.Accept accept
+            && !currentSessionProof(
+                payload.sessionProof(),
+                accept.route(),
+                call,
+                operation,
+                signed.sourceAcceptIntentHash(),
+                request.directoryEpoch())) return rejected(c, "UNAUTHORIZED");
+        return tracked(actors.userTracked(payload.operation(), deadline, bytes), physical)
+            .thenApply(
+                result -> {
+                  if (payload.workflowProof() != null || payload.commandProof() != null) {
+                    if (issuer == null
+                        || result.code() != UserCommand.Code.PROOF_READ
+                        || result.proofView() == null) return reply(c, false, "UNAVAILABLE", null);
+                    var desired = payload.workflowProof();
+                    try {
+                      String sealed;
+                      if (desired != null)
+                        sealed =
+                            issuer.home(
+                                request,
+                                result.proofView(),
+                                desired.transition(),
+                                desired.purpose(),
+                                desired.participant());
+                      else {
+                        var cmd = payload.commandProof();
+                        sealed =
+                            issuer.homeCommand(
+                                request,
+                                result.proofView(),
+                                cmd.command(),
+                                cmd.snapshot(),
+                                cmd.group(),
+                                cmd.participant());
+                      }
+                      var decoded = proofs.decode(sealed, cell, clock.instant()).orElseThrow();
+                      return readReply(
+                          c,
+                          new HomeProofReply(
+                              sealed, decoded.expiresAt(), decoded.participantUntil()));
+                    } catch (RuntimeException fenced) {
+                      return reply(c, false, "UNAUTHORIZED", null);
+                    }
+                  }
+                  if (result.code() == UserCommand.Code.PROOF_READ) return readReply(c, result);
+                  String code = result.code().name();
+                  boolean committed =
+                      Set.of(
+                              "RESERVED",
+                              "RENEWED",
+                              "RELEASED",
+                              "CLAIMED",
+                              "CONFIRMED",
+                              "ANSWERED_ELSEWHERE",
+                              "TERMINAL")
+                          .contains(code);
+                  return reply(c, committed, code, result);
+                });
+      }
+      if (op == CellRpcServer.Operation.EXECUTE && c.getType().equals("WorkflowStep")) {
+        if (!peer.role().equals("actor")
+            || !peer.cell().equals(cell)
+            || !call.coordinatorCell().equals(cell)) return rejected(c, "UNAUTHORIZED");
+        var payload = decode(c, WorkflowPayload.class);
+        var transition = payload.transition();
+        if (!call.equals(transition.call())
+            || !operation.equals(transition.operation())
+            || !transition.group().cell().equals(cell)
+            || transition.expectedVersion() != c.getExpectedCallVersion()
+            || !ProofBindings.workflowIntent(transition)
+                .equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray())))
+          return rejected(c, "UNAUTHORIZED");
+        return tracked(actors.progressTracked(transition, deadline, bytes), physical)
+            .thenApply(
+                value ->
+                    reply(
+                        c,
+                        !Set.of(
+                                "UNKNOWN",
+                                "UNAVAILABLE",
+                                "FENCED",
+                                "OVERLOADED",
+                                "EXPIRED",
+                                "INVALID")
+                            .contains(value.code()),
+                        value.code(),
+                        value));
+      }
+      if (op == CellRpcServer.Operation.EXECUTE) {
+        var payload = decode(c, CallPayload.class);
+        var command = payload.command();
+        if (Set.of(
+                SignalEnvelope.Type.OFFER,
+                SignalEnvelope.Type.ANSWER,
+                SignalEnvelope.Type.ICE_CANDIDATES,
+                SignalEnvelope.Type.END_OF_CANDIDATES)
+            .contains(command.type())) return rejected(c, "UNAUTHORIZED");
+        if (command.type() == SignalEnvelope.Type.INVITE && !businessAdmission.getAsBoolean())
+          return rejected(c, "OVERLOADED");
+        var home = homes.apply(command.sender().userId());
+        if (home == null
+            || !peer.cell().equals(home.cell())
+            || !call.coordinatorCell().equals(cell)
+            || !call.equals(command.callId())
+            || !operation.equals(command.requestId().value())
+            || !c.getType().equals(command.type().name())
+            || !c.getCommandScope().equals(command.scope().value())
+            || !command
+                .intentHash()
+                .equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray()))
+            || !bindings.commandVerifier(cell, homes).verify(command, null, payload.proof())
+            || !sameSender(c.getSender(), command.sender())) return rejected(c, "UNAUTHORIZED");
+        if (command.type() == SignalEnvelope.Type.GET_COMMAND_RESULT) {
+          if (nativeReads == null) return rejected(c, "UNAVAILABLE");
+          return tracked(nativeReads.result(command, payload.proof(), budget), physical)
+              .thenApply(value -> readReply(c, value.orElse(null)));
+        }
+        if (nativeSetup != null
+            && Set.of(SignalEnvelope.Type.INVITE, SignalEnvelope.Type.ACCEPT)
+                .contains(command.type()))
+          return tracked(nativeSetup.execute(command, payload.proof(), budget), physical)
+              .thenApply(value -> reply(c, value.status().equals("FINAL"), value.code(), value));
+        if (nativeCritical != null
+            && Set.of(SignalEnvelope.Type.NEGOTIATE_REQUEST, SignalEnvelope.Type.MEDIA_CONNECTED)
+                .contains(command.type()))
+          return tracked(nativeCritical.execute(command, payload.proof(), budget), physical)
+              .thenApply(value -> reply(c, value.status().equals("FINAL"), value.code(), value));
+        return tracked(actors.callTracked(command, payload.proof(), deadline, bytes), physical)
+            .thenApply(value -> reply(c, value.status().equals("FINAL"), value.code(), value));
+      }
+      if (op == CellRpcServer.Operation.SYNC) {
+        var read = decode(c, SyncRead.class);
+        var command =
+            new CallCommand(
+                SignalEnvelope.Type.SYNC_CALL,
+                read.sender(),
+                read.request(),
+                read.call(),
+                CommandScope.call(read.call()),
+                null,
+                null,
+                null,
+                "{}",
+                read.intentHash());
+        var home = homes.apply(read.sender().userId());
+        if (home == null
+            || !peer.cell().equals(home.cell())
+            || !call.equals(read.call())
+            || !operation.equals(read.request().value())
+            || !bindings.commandVerifier(cell, homes).verify(command, null, read.proof())
+            || !sameSender(c.getSender(), read.sender())) return rejected(c, "UNAUTHORIZED");
+        if (nativeReads != null)
+          return tracked(nativeReads.read(read, budget), physical)
+              .thenApply(snapshot -> reply(c, false, "SNAPSHOT", snapshot));
+        var stage = reads.apply(read);
+        physical.set(stage);
+        return stage.thenApply(snapshot -> reply(c, false, "SNAPSHOT", snapshot));
+      }
+      if (op == CellRpcServer.Operation.RELAY) {
+        var producer = nativeRelay;
+        if (producer == null) return rejected(c, "UNSUPPORTED_OPERATION");
+        var payload = decode(c, CallPayload.class);
+        var command = payload.command();
+        var home = homes.apply(command.sender().userId());
+        if (home == null
+            || !Set.of("actor", "gateway").contains(peer.role())
+            || peer.workloadId().isBlank()
+            || !peer.cell().equals(home.cell())
+            || !RelaySessionAuthorizationProof.supports(command)
+            || !call.coordinatorCell().equals(cell)
+            || !call.equals(command.callId())
+            || !operation.equals(command.requestId().value())
+            || !c.getType().equals(command.type().name())
+            || !c.getCommandScope().equals(command.scope().value())
+            || !command
+                .intentHash()
+                .equals(HexFormat.of().formatHex(c.getPayloadHash().toByteArray()))
+            || !sameSender(c.getSender(), command.sender())
+            || !bindings.commandVerifier(cell, homes).verify(command, null, payload.proof()))
+          return rejected(c, "UNAUTHORIZED");
+        physical.set(new CompletableFuture<Void>());
+        try {
+          var work = Objects.requireNonNull(producer.apply(new RelayRequest(c, peer, budget)));
+          return tracked(work, physical);
+        } catch (Throwable unknown) {
+          return rejected(c, "OUTCOME_UNKNOWN");
+        }
+      }
+      return rejected(c, "UNSUPPORTED_OPERATION");
+    } catch (io.webrtc.signaling.actors.admission.EntityAdmission.Overloaded overloaded) {
+      return rejected(c, "OVERLOADED");
+    } catch (DbOverloadedException overloaded) {
+      return rejected(c, "OVERLOADED");
+    } catch (Exception invalid) {
+      return rejected(c, "UNAUTHORIZED");
+    }
+  }
+
+  private static <T> CompletionStage<T> tracked(
+      RpcOperation<T> operation,
+      java.util.concurrent.atomic.AtomicReference<CompletionStage<?>> physical) {
+    physical.set(operation.physicalCompletion());
+    return operation.logical();
+  }
+
+  private boolean currentSessionProof(
+      String signed,
+      SessionRepository.Route route,
+      CallId call,
+      UUID operation,
+      String intent,
+      long directoryEpoch) {
+    var home = homes.apply(route.user());
+    if (home == null
+        || !cell.equals(home.cell())
+        || home.directoryEpoch() != directoryEpoch
+        || intent == null) return false;
+    return proofs
+        .sessionProofs()
+        .decode(signed, cell, clock.instant())
+        .filter(
+            p ->
+                p.destinationCell().equals(call.coordinatorCell())
+                    && p.call().equals(call)
+                    && p.operation().equals(operation)
+                    && p.intentHash().equals(intent)
+                    && p.nativeView().sourceStorageEpoch() == home.storageEpoch()
+                    && p.nativeView().directoryEpoch() == directoryEpoch
+                    && p.nativeView().route().user().equals(route.user())
+                    && p.nativeView().route().key().equals(route.key())
+                    && p.nativeView().route().incarnation().equals(route.incarnation())
+                    && p.nativeView().route().connectionGeneration() == route.connectionGeneration()
+                    && p.nativeView().route().connectionId().equals(route.connectionId())
+                    && p.nativeView().route().gatewayId().equals(route.gatewayId())
+                    && p.nativeView().route().bootId().equals(route.bootId()))
+        .isPresent();
+  }
+
+  private static boolean sameSender(SessionIdentity wire, AuthenticatedSession sender) {
+    return wire.getUserId().equals(sender.userId().value())
+        && wire.getIssuer().equals(sender.key().issuer())
+        && wire.getJti().equals(sender.key().jti())
+        && wire.getConnectionGeneration() == sender.connectionGeneration()
+        && uuid(wire.getIncarnation()).equals(sender.incarnation().value())
+        && uuid(wire.getConnectionId()).equals(sender.connectionId());
+  }
+
+  static UUID uuid(ByteString bytes) {
+    if (bytes.size() != 16) throw new IllegalArgumentException("Invalid UUID wire field");
+    var b = bytes.asReadOnlyByteBuffer();
+    return new UUID(b.getLong(), b.getLong());
+  }
+
+  public static Request request(UserCommand.Operation operation) {
+    return switch (operation) {
+      case UserCommand.QueryProof r -> r.request();
+      case UserCommand.Reserve r -> r.request();
+      case UserCommand.Renew r -> r.request();
+      case UserCommand.Release r -> r.request();
+      case UserCommand.Accept r -> r.request();
+      case UserCommand.Activate r -> r.request();
+      default ->
+          throw new IllegalArgumentException(
+              "Session registration requires its authenticated home ingress");
+    };
+  }
+
+  public static AuthorizationIntent action(UserCommand.Operation operation) {
+    return switch (operation) {
+      case UserCommand.QueryProof r ->
+          new AuthorizationIntent("QUERY", null, 0, null, 0, null, null);
+      case UserCommand.Reserve r -> AuthorizationIntent.reserve();
+      case UserCommand.Renew r ->
+          new AuthorizationIntent("RENEW", r.reservation(), r.version(), null, 0, null, null);
+      case UserCommand.Release r ->
+          new AuthorizationIntent("RELEASE", r.reservation(), r.version(), null, 0, null, null);
+      case UserCommand.Accept r ->
+          new AuthorizationIntent("CLAIM", r.reservation(), 0, null, 0, null, r.route());
+      case UserCommand.Activate r ->
+          new AuthorizationIntent(
+              "CONFIRM",
+              r.reservation(),
+              r.version(),
+              r.activation(),
+              r.callVersion(),
+              r.winner(),
+              null);
+      default -> throw new IllegalArgumentException("Invalid home operation");
+    };
+  }
+
+  private static CompletionStage<InternalReply> rejected(InternalCommand c, String code) {
+    return CompletableFuture.completedFuture(reply(c, false, code, null));
+  }
+
+  private static InternalReply readReply(InternalCommand c, Object value) {
+    return InternalReply.newBuilder()
+        .setOperationId(c.getOperationId())
+        .setCallId(c.getCallId())
+        .setStatus("READ")
+        .setResult(ByteString.copyFrom(encode(value)))
+        .build();
+  }
+
+  private static InternalReply reply(
+      InternalCommand c, boolean committed, String code, Object value) {
+    var builder =
+        InternalReply.newBuilder()
+            .setOperationId(c.getOperationId())
+            .setCallId(c.getCallId())
+            .setAckCommitted(committed)
+            .setStatus(committed ? "COMMITTED" : "PENDING");
+    if (!committed && !code.equals("SNAPSHOT")) builder.setErrorCode(code);
+    if (value != null) builder.setResult(ByteString.copyFrom(encode(value)));
+    return builder.build();
+  }
 }

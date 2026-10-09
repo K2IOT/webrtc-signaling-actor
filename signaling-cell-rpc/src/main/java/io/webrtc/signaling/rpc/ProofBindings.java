@@ -1,48 +1,309 @@
 package io.webrtc.signaling.rpc;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.storage.*;
 import io.webrtc.signaling.storage.CallSnapshotRepository.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.security.MessageDigest;
 import java.time.*;
 import java.util.*;
 import java.util.function.Function;
-/** Independent cryptographic checks for native writers. Every proof binds the intent and complete identity. */
+
+/**
+ * Independent cryptographic checks for native writers. Every proof binds the intent and complete
+ * identity.
+ */
 public final class ProofBindings {
-    public record TrustedHome(String cell,long directoryEpoch,long storageEpoch){public TrustedHome{Objects.requireNonNull(cell);if(directoryEpoch<1||storageEpoch<1)throw new IllegalArgumentException("Invalid trusted home");}}
-    private static final ObjectMapper JSON=new ObjectMapper(com.fasterxml.jackson.core.JsonFactory.builder().enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).streamReadConstraints(com.fasterxml.jackson.core.StreamReadConstraints.builder().maxNestingDepth(16).maxStringLength(8192).build()).build()).findAndRegisterModules().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-    private final HomeAuthorizationProof proofs;private final Clock clock;
-    public ProofBindings(HomeAuthorizationProof proofs,Clock clock){this.proofs=Objects.requireNonNull(proofs);this.clock=Objects.requireNonNull(clock);}
-    public static String homeIntent(HomeParticipationService.Request r){return HomeParticipationService.authorizationHash(r,HomeParticipationService.AuthorizationIntent.reserve());}
-    public static String workflowIntent(CallWorkflowService.Transition t){var value=new TreeMap<String,Object>();value.put("callId",t.call().value());value.put("step",t.step().name());value.put("winner",t.winner());value.put("offered",t.offered());value.put("activation",t.activationId());value.put("reason",t.reason());return hash(value);}
-    private static String hash(Object value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(JSON.writeValueAsBytes(value)));}catch(Exception invalid){throw new IllegalArgumentException("Cannot normalize proof intent",invalid);}}
-    public HomeParticipationService.GrantVerifier homeVerifier(String localCell){return new HomeParticipationService.GrantVerifier(){@Override public boolean verify(HomeParticipationService.Request r){return verify(r,HomeParticipationService.AuthorizationIntent.reserve());}@Override public boolean verify(HomeParticipationService.Request r,HomeParticipationService.AuthorizationIntent action){var g=r.grant();return proofs.decode(g.proof(),g.cell(),clock.instant()).filter(p->p.purpose().equals("COORDINATOR_GRANT")&&p.sourceCell().equals(g.cell())&&p.destinationCell().equals(localCell)&&p.call().equals(r.call())&&p.user().equals(r.user())&&p.operation().equals(g.operation())&&p.intentHash().equals(HomeParticipationService.authorizationHash(r,action))&&p.directoryEpoch()==r.directoryEpoch()&&p.storageEpoch()==g.storageEpoch()&&p.sourceStorageEpoch()==g.storageEpoch()&&p.hashVersion()==g.hashVersion()&&p.group()==g.group()&&p.groupEpoch()==g.groupEpoch()&&p.callVersion()==g.authorizedCallVersion()&&p.leaseSequence()==g.sequence()&&p.issuedAt().equals(g.issuedAt())&&p.expiresAt().equals(g.expiresAt())).isPresent();}};}
-    public CallCommandService.ProofVerifier commandVerifier(String coordinator,Function<UserId,TrustedHome> homes){return (command,snapshot,signed)->{TrustedHome home=homes.apply(command.sender().userId());if(home==null)return false;signed=sessionPart(signed);if(command.callId()!=null&&command.callId().coordinatorCell().equals(coordinator)&&(proofs.sessionProofs().verify(signed,command,home,clock.instant())||proofs.relaySessionProofs().verify(signed,command,home,clock.instant())))return true;return proofs.decode(signed,home.cell(),clock.instant()).filter(p->p.purpose().equals("SESSION")&&p.destinationCell().equals(coordinator)&&sameHome(p,home)&&p.user().equals(command.sender().userId())&&Objects.equals(p.session(),command.sender().key())&&Objects.equals(p.incarnation(),command.sender().incarnation())&&p.generation()==command.sender().connectionGeneration()&&p.operation().equals(command.requestId().value())&&p.intentHash().equals(command.intentHash())&&(command.callId()==null||p.call().equals(command.callId()))&&(snapshot==null||p.call().equals(snapshot.callId())&&p.callVersion()==snapshot.version())).isPresent();};}
-    private static String sessionPart(String signed){try{if(signed!=null&&signed.startsWith("{")){if(signed.length()>8192)return null;var node=JSON.readTree(signed);if(!node.isObject()||node.size()!=3||!node.has("session")||!node.has("callerActive")||!node.has("winnerActive"))return null;return node.get("session").asText();}return signed;}catch(Exception invalid){return null;}}
-    public CallCommandService.NegotiationVerifier negotiationVerifier(String coordinator,Function<UserId,TrustedHome> homes){return (connection,command,snapshot,authority)->{
-        try{if(snapshot==null||snapshot.winner()==null||snapshot.activationId()==null||authority.proof()==null||authority.proof().length()>8192)return null;
-            var bundle=JSON.readValue(authority.proof(),CriticalCommandProof.class);if(!commandVerifier(coordinator,homes).verify(command,snapshot,bundle.session()))return null;
-            var caller=read(bundle.callerActive(),snapshot.caller(),homes).orElseThrow();var winner=read(bundle.winnerActive(),snapshot.winner(),homes).orElseThrow();var token=authority.group();Instant now=clock.instant();
-            for(var p:List.of(caller,winner))if(!p.purpose().equals("ACTIVE")||!sameHome(p,homes.apply(p.user()))||!p.destinationCell().equals(coordinator)||!p.call().equals(snapshot.callId())||!p.operation().equals(command.requestId().value())||!p.intentHash().equals(command.intentHash())||p.callVersion()!=snapshot.version()||p.negotiationId()!=snapshot.negotiationId()||!snapshot.activationId().equals(p.activationId())||p.storageEpoch()!=token.storageEpoch()||p.hashVersion()!=token.hashVersion()||p.group()!=token.group()||p.groupEpoch()!=token.epoch()||!p.ownerIncarnation().equals(token.incarnation())||p.reservationId()==null||p.reservationVersion()<1||p.connectionId()==null||p.participantUntil()==null||!p.participantUntil().isAfter(now.plusSeconds(5)))return null;
-            var own=command.sender().userId().equals(snapshot.caller().user())?caller:winner;if(!sameParticipant(own,new Participant(command.sender().userId(),command.sender().key(),command.sender().incarnation(),command.sender().connectionGeneration()))||!command.sender().connectionId().equals(own.connectionId()))return null;
-            var peer=own==caller?winner:caller;var recipient=new AuthenticatedSession(peer.user(),peer.session(),peer.incarnation(),peer.generation(),peer.connectionId());
-            return new CallCommandService.NegotiationEvidence(recipient,min(caller.expiresAt(),winner.expiresAt()),min(caller.participantUntil(),winner.participantUntil()));
-        }catch(Exception invalid){return null;}
-    };}
-    private static Instant min(Instant a,Instant b){return a.isBefore(b)?a:b;}
-    public CallWorkflowService.ProofVerifier workflowVerifier(String coordinator,Function<UserId,TrustedHome> homes){return (transition,snapshot)->{
-        try{var bundle=JSON.readTree(transition.proof());if(!bundle.isArray()||bundle.size()!=2)return false;var caller=read(bundle.get(0).asText(),snapshot.caller(),homes);Participant other=transition.winner();TrustedHome targetHome=homes.apply(snapshot.callee());if(targetHome==null||caller.isEmpty())return false;var callee=proofs.decode(bundle.get(1).asText(),targetHome.cell(),clock.instant());if(callee.isEmpty())return false;var a=caller.get();var b=callee.get();String intent=workflowIntent(transition);
-            for(var p:List.of(a,b)){if(!sameHome(p,p==a?homes.apply(snapshot.caller().user()):targetHome)||!p.destinationCell().equals(coordinator)||!p.call().equals(transition.call())||p.callVersion()!=transition.expectedVersion()||!p.operation().equals(transition.operation())||!p.intentHash().equals(intent)||p.storageEpoch()!=transition.group().storageEpoch()||p.groupEpoch()!=transition.group().epoch()||p.group()!=transition.group().group()||p.hashVersion()!=transition.group().hashVersion()||!p.ownerIncarnation().equals(transition.group().incarnation())||!p.expiresAt().isAfter(clock.instant())||transition.proofExpiresAt().isAfter(p.expiresAt())||p.reservationId()==null||p.reservationVersion()<1||p.participantUntil()==null||!p.participantUntil().isAfter(clock.instant().plusSeconds(5)))return false;}
-            if(!b.user().equals(snapshot.callee()))return false;
-            return switch(transition.step()){
-                case RING->a.purpose().equals("SESSION")&&b.purpose().equals("TARGET_ROUTE");
-                case ACCEPT,ACTIVATE->a.purpose().equals("SESSION")&&b.purpose().equals("WINNER")&&sameParticipant(b,other);
-                case READY,ESTABLISH->a.purpose().equals("ACTIVE")&&b.purpose().equals("ACTIVE")&&sameParticipant(b,other)&&Objects.equals(a.activationId(),transition.activationId())&&Objects.equals(b.activationId(),transition.activationId())&&transition.participantUntil()!=null&&!transition.participantUntil().isAfter(a.participantUntil())&&!transition.participantUntil().isAfter(b.participantUntil());
-                case TERMINATE->false; // System expiry uses its separate native timer transaction; user termination uses scoped commands.
-            };
-        }catch(Exception invalid){return false;}
-    };}
-    private Optional<HomeAuthorizationProof.Claims> read(String signed,Participant participant,Function<UserId,TrustedHome> homes){var home=homes.apply(participant.user());return home==null?Optional.empty():proofs.decode(signed,home.cell(),clock.instant()).filter(p->sameParticipant(p,participant));}
-    private static boolean sameParticipant(HomeAuthorizationProof.Claims p,Participant participant){return participant!=null&&p.user().equals(participant.user())&&Objects.equals(p.session(),participant.key())&&Objects.equals(p.incarnation(),participant.incarnation())&&p.generation()==participant.generation();}
-    private static boolean sameHome(HomeAuthorizationProof.Claims p,TrustedHome home){return home!=null&&p.sourceCell().equals(home.cell())&&p.directoryEpoch()==home.directoryEpoch()&&p.sourceStorageEpoch()==home.storageEpoch();}
+  public record TrustedHome(String cell, long directoryEpoch, long storageEpoch) {
+    public TrustedHome {
+      Objects.requireNonNull(cell);
+      if (directoryEpoch < 1 || storageEpoch < 1)
+        throw new IllegalArgumentException("Invalid trusted home");
+    }
+  }
+
+  private static final ObjectMapper JSON =
+      new ObjectMapper(
+              com.fasterxml.jackson.core.JsonFactory.builder()
+                  .enable(com.fasterxml.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+                  .streamReadConstraints(
+                      com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                          .maxNestingDepth(16)
+                          .maxStringLength(8192)
+                          .build())
+                  .build())
+          .findAndRegisterModules()
+          .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+  private final HomeAuthorizationProof proofs;
+  private final Clock clock;
+
+  public ProofBindings(HomeAuthorizationProof proofs, Clock clock) {
+    this.proofs = Objects.requireNonNull(proofs);
+    this.clock = Objects.requireNonNull(clock);
+  }
+
+  public static String homeIntent(HomeParticipationService.Request r) {
+    return HomeParticipationService.authorizationHash(
+        r, HomeParticipationService.AuthorizationIntent.reserve());
+  }
+
+  public static String workflowIntent(CallWorkflowService.Transition t) {
+    var value = new TreeMap<String, Object>();
+    value.put("callId", t.call().value());
+    value.put("step", t.step().name());
+    value.put("winner", t.winner());
+    value.put("offered", t.offered());
+    value.put("activation", t.activationId());
+    value.put("reason", t.reason());
+    return hash(value);
+  }
+
+  private static String hash(Object value) {
+    try {
+      return HexFormat.of()
+          .formatHex(MessageDigest.getInstance("SHA-256").digest(JSON.writeValueAsBytes(value)));
+    } catch (Exception invalid) {
+      throw new IllegalArgumentException("Cannot normalize proof intent", invalid);
+    }
+  }
+
+  public HomeParticipationService.GrantVerifier homeVerifier(String localCell) {
+    return new HomeParticipationService.GrantVerifier() {
+      @Override
+      public boolean verify(HomeParticipationService.Request r) {
+        return verify(r, HomeParticipationService.AuthorizationIntent.reserve());
+      }
+
+      @Override
+      public boolean verify(
+          HomeParticipationService.Request r, HomeParticipationService.AuthorizationIntent action) {
+        var g = r.grant();
+        return proofs
+            .decode(g.proof(), g.cell(), clock.instant())
+            .filter(
+                p ->
+                    p.purpose().equals("COORDINATOR_GRANT")
+                        && p.sourceCell().equals(g.cell())
+                        && p.destinationCell().equals(localCell)
+                        && p.call().equals(r.call())
+                        && p.user().equals(r.user())
+                        && p.operation().equals(g.operation())
+                        && p.intentHash()
+                            .equals(HomeParticipationService.authorizationHash(r, action))
+                        && p.directoryEpoch() == r.directoryEpoch()
+                        && p.storageEpoch() == g.storageEpoch()
+                        && p.sourceStorageEpoch() == g.storageEpoch()
+                        && p.hashVersion() == g.hashVersion()
+                        && p.group() == g.group()
+                        && p.groupEpoch() == g.groupEpoch()
+                        && p.callVersion() == g.authorizedCallVersion()
+                        && p.leaseSequence() == g.sequence()
+                        && p.issuedAt().equals(g.issuedAt())
+                        && p.expiresAt().equals(g.expiresAt()))
+            .isPresent();
+      }
+    };
+  }
+
+  public CallCommandService.ProofVerifier commandVerifier(
+      String coordinator, Function<UserId, TrustedHome> homes) {
+    return (command, snapshot, signed) -> {
+      TrustedHome home = homes.apply(command.sender().userId());
+      if (home == null) return false;
+      signed = sessionPart(signed);
+      if (command.callId() != null
+          && command.callId().coordinatorCell().equals(coordinator)
+          && (proofs.sessionProofs().verify(signed, command, home, clock.instant())
+              || proofs.relaySessionProofs().verify(signed, command, home, clock.instant())))
+        return true;
+      return proofs
+          .decode(signed, home.cell(), clock.instant())
+          .filter(
+              p ->
+                  p.purpose().equals("SESSION")
+                      && p.destinationCell().equals(coordinator)
+                      && sameHome(p, home)
+                      && p.user().equals(command.sender().userId())
+                      && Objects.equals(p.session(), command.sender().key())
+                      && Objects.equals(p.incarnation(), command.sender().incarnation())
+                      && p.generation() == command.sender().connectionGeneration()
+                      && p.operation().equals(command.requestId().value())
+                      && p.intentHash().equals(command.intentHash())
+                      && (command.callId() == null || p.call().equals(command.callId()))
+                      && (snapshot == null
+                          || p.call().equals(snapshot.callId())
+                              && p.callVersion() == snapshot.version()))
+          .isPresent();
+    };
+  }
+
+  private static String sessionPart(String signed) {
+    try {
+      if (signed != null && signed.startsWith("{")) {
+        if (signed.length() > 8192) return null;
+        var node = JSON.readTree(signed);
+        if (!node.isObject()
+            || node.size() != 3
+            || !node.has("session")
+            || !node.has("callerActive")
+            || !node.has("winnerActive")) return null;
+        return node.get("session").asText();
+      }
+      return signed;
+    } catch (Exception invalid) {
+      return null;
+    }
+  }
+
+  public CallCommandService.NegotiationVerifier negotiationVerifier(
+      String coordinator, Function<UserId, TrustedHome> homes) {
+    return (connection, command, snapshot, authority) -> {
+      try {
+        if (snapshot == null
+            || snapshot.winner() == null
+            || snapshot.activationId() == null
+            || authority.proof() == null
+            || authority.proof().length() > 8192) return null;
+        var bundle = JSON.readValue(authority.proof(), CriticalCommandProof.class);
+        if (!commandVerifier(coordinator, homes).verify(command, snapshot, bundle.session()))
+          return null;
+        var caller = read(bundle.callerActive(), snapshot.caller(), homes).orElseThrow();
+        var winner = read(bundle.winnerActive(), snapshot.winner(), homes).orElseThrow();
+        var token = authority.group();
+        Instant now = clock.instant();
+        for (var p : List.of(caller, winner))
+          if (!p.purpose().equals("ACTIVE")
+              || !sameHome(p, homes.apply(p.user()))
+              || !p.destinationCell().equals(coordinator)
+              || !p.call().equals(snapshot.callId())
+              || !p.operation().equals(command.requestId().value())
+              || !p.intentHash().equals(command.intentHash())
+              || p.callVersion() != snapshot.version()
+              || p.negotiationId() != snapshot.negotiationId()
+              || !snapshot.activationId().equals(p.activationId())
+              || p.storageEpoch() != token.storageEpoch()
+              || p.hashVersion() != token.hashVersion()
+              || p.group() != token.group()
+              || p.groupEpoch() != token.epoch()
+              || !p.ownerIncarnation().equals(token.incarnation())
+              || p.reservationId() == null
+              || p.reservationVersion() < 1
+              || p.connectionId() == null
+              || p.participantUntil() == null
+              || !p.participantUntil().isAfter(now.plusSeconds(5))) return null;
+        var own = command.sender().userId().equals(snapshot.caller().user()) ? caller : winner;
+        if (!sameParticipant(
+                own,
+                new Participant(
+                    command.sender().userId(),
+                    command.sender().key(),
+                    command.sender().incarnation(),
+                    command.sender().connectionGeneration()))
+            || !command.sender().connectionId().equals(own.connectionId())) return null;
+        var peer = own == caller ? winner : caller;
+        var recipient =
+            new AuthenticatedSession(
+                peer.user(),
+                peer.session(),
+                peer.incarnation(),
+                peer.generation(),
+                peer.connectionId());
+        return new CallCommandService.NegotiationEvidence(
+            recipient,
+            min(caller.expiresAt(), winner.expiresAt()),
+            min(caller.participantUntil(), winner.participantUntil()));
+      } catch (Exception invalid) {
+        return null;
+      }
+    };
+  }
+
+  private static Instant min(Instant a, Instant b) {
+    return a.isBefore(b) ? a : b;
+  }
+
+  public CallWorkflowService.ProofVerifier workflowVerifier(
+      String coordinator, Function<UserId, TrustedHome> homes) {
+    return (transition, snapshot) -> {
+      try {
+        var bundle = JSON.readTree(transition.proof());
+        if (!bundle.isArray() || bundle.size() != 2) return false;
+        var caller = read(bundle.get(0).asText(), snapshot.caller(), homes);
+        Participant other = transition.winner();
+        TrustedHome targetHome = homes.apply(snapshot.callee());
+        if (targetHome == null || caller.isEmpty()) return false;
+        var callee = proofs.decode(bundle.get(1).asText(), targetHome.cell(), clock.instant());
+        if (callee.isEmpty()) return false;
+        var a = caller.get();
+        var b = callee.get();
+        String intent = workflowIntent(transition);
+        for (var p : List.of(a, b)) {
+          if (!sameHome(p, p == a ? homes.apply(snapshot.caller().user()) : targetHome)
+              || !p.destinationCell().equals(coordinator)
+              || !p.call().equals(transition.call())
+              || p.callVersion() != transition.expectedVersion()
+              || !p.operation().equals(transition.operation())
+              || !p.intentHash().equals(intent)
+              || p.storageEpoch() != transition.group().storageEpoch()
+              || p.groupEpoch() != transition.group().epoch()
+              || p.group() != transition.group().group()
+              || p.hashVersion() != transition.group().hashVersion()
+              || !p.ownerIncarnation().equals(transition.group().incarnation())
+              || !p.expiresAt().isAfter(clock.instant())
+              || transition.proofExpiresAt().isAfter(p.expiresAt())
+              || p.reservationId() == null
+              || p.reservationVersion() < 1
+              || p.participantUntil() == null
+              || !p.participantUntil().isAfter(clock.instant().plusSeconds(5))) return false;
+        }
+        if (!b.user().equals(snapshot.callee())) return false;
+        return switch (transition.step()) {
+          case RING -> a.purpose().equals("SESSION") && b.purpose().equals("TARGET_ROUTE");
+          case ACCEPT, ACTIVATE ->
+              a.purpose().equals("SESSION")
+                  && b.purpose().equals("WINNER")
+                  && sameParticipant(b, other);
+          case READY, ESTABLISH ->
+              a.purpose().equals("ACTIVE")
+                  && b.purpose().equals("ACTIVE")
+                  && sameParticipant(b, other)
+                  && Objects.equals(a.activationId(), transition.activationId())
+                  && Objects.equals(b.activationId(), transition.activationId())
+                  && transition.participantUntil() != null
+                  && !transition.participantUntil().isAfter(a.participantUntil())
+                  && !transition.participantUntil().isAfter(b.participantUntil());
+          case TERMINATE ->
+              false; // System expiry uses its separate native timer transaction; user termination
+            // uses scoped commands.
+        };
+      } catch (Exception invalid) {
+        return false;
+      }
+    };
+  }
+
+  private Optional<HomeAuthorizationProof.Claims> read(
+      String signed, Participant participant, Function<UserId, TrustedHome> homes) {
+    var home = homes.apply(participant.user());
+    return home == null
+        ? Optional.empty()
+        : proofs
+            .decode(signed, home.cell(), clock.instant())
+            .filter(p -> sameParticipant(p, participant));
+  }
+
+  private static boolean sameParticipant(HomeAuthorizationProof.Claims p, Participant participant) {
+    return participant != null
+        && p.user().equals(participant.user())
+        && Objects.equals(p.session(), participant.key())
+        && Objects.equals(p.incarnation(), participant.incarnation())
+        && p.generation() == participant.generation();
+  }
+
+  private static boolean sameHome(HomeAuthorizationProof.Claims p, TrustedHome home) {
+    return home != null
+        && p.sourceCell().equals(home.cell())
+        && p.directoryEpoch() == home.directoryEpoch()
+        && p.sourceStorageEpoch() == home.storageEpoch();
+  }
 }
