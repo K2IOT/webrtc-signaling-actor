@@ -425,6 +425,9 @@ class NativeActorCompositionIT {
               .isEqualTo(new com.fasterxml.jackson.databind.ObjectMapper().readTree(payload));
           assertThat(delivered.path("sessionIncarnation").asText())
               .isEqualTo(destination.incarnation().value().toString());
+          assertThat(recipientGateway.empty(destination))
+              .describedAs("Exactly one frame for %s after same-identity retries", type)
+              .isTrue();
           if (type == SignalEnvelope.Type.OFFER) {
             assertThat(publicRelay(relayClient, originalRelay, proofs, registry, senderRoute))
                 .isEqualTo(receipt);
