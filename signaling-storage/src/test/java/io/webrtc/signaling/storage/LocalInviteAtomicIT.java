@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 class LocalInviteAtomicIT {
   static final class Fixture implements AutoCloseable {
     final String url;
+    final String username;
+    final String password;
     final DbTestRuntime runtime;
     final SessionRegistryService sessions;
     final GatewayLeaseRepository.Boot boot;
@@ -23,16 +25,22 @@ class LocalInviteAtomicIT {
     final Map<Integer, AuthoritySql.GroupToken> tokens = new HashMap<>();
 
     Fixture() throws Exception {
+      this(PgFixture.PG.getJdbcUrl(), PgFixture.PG.getUsername(), PgFixture.PG.getPassword());
+    }
+
+    Fixture(String jdbcUrl, String username, String password) throws Exception {
       String schema = "local_invite_" + UUID.randomUUID().toString().replace("-", "");
-      url = PgFixture.PG.getJdbcUrl() + "&currentSchema=" + schema;
+      this.username = username;
+      this.password = password;
+      url = jdbcUrl + (jdbcUrl.contains("?") ? "&" : "?") + "currentSchema=" + schema;
       Flyway.configure()
-          .dataSource(url, PgFixture.PG.getUsername(), PgFixture.PG.getPassword())
+          .dataSource(url, username, password)
           .schemas(schema)
           .defaultSchema(schema)
           .locations("classpath:db/migration")
           .load()
           .migrate();
-      runtime = new DbTestRuntime(url, PgFixture.PG.getUsername(), PgFixture.PG.getPassword());
+      runtime = new DbTestRuntime(url, username, password);
       try (var c = connection();
           var s = c.createStatement()) {
         s.execute(
@@ -49,8 +57,7 @@ class LocalInviteAtomicIT {
     }
 
     Connection connection() throws SQLException {
-      return DriverManager.getConnection(
-          url, PgFixture.PG.getUsername(), PgFixture.PG.getPassword());
+      return DriverManager.getConnection(url, username, password);
     }
 
     AuthenticatedSession sender(String name) {

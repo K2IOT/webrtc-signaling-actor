@@ -42,11 +42,12 @@ class MultiNodeShardingIT {
     return ConfigFactory.parseString(
             """
         pekko.remote.artery.transport=tcp
+        pekko.remote.artery.advanced.test-mode=on
         pekko.remote.artery.canonical.hostname="127.0.0.1"
         pekko.remote.artery.canonical.port=0
         pekko.cluster.roles=["signaling-actor","az-%s"]
         signaling.cluster-fingerprint="%s"
-        pekko.loglevel=WARNING
+        pekko.loglevel=INFO
         pekko.cluster.jmx.multi-mbeans-in-same-jvm=on
         pekko.actor.serialization-bindings {
           "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT$PingUser"=jackson-cbor
@@ -247,6 +248,159 @@ class MultiNodeShardingIT {
     for (var n : nodes) register(n);
     assertThat(pingCall(nodes.getLast(), call).epoch()).isGreaterThan(recovered.epoch());
     assertThat(ungatedChildren.get()).isZero();
+  }
+
+  static void transportFault(ActorSystem<?> source, ActorSystem<?> target, boolean blackhole)
+      throws Exception {
+    assertThat(source.settings().config().getBoolean("pekko.remote.artery.advanced.test-mode"))
+        .isTrue();
+    var direction =
+        (org.apache.pekko.remote.transport.ThrottlerTransportAdapter.Direction)
+            Class.forName(
+                    "org.apache.pekko.remote.transport.ThrottlerTransportAdapter$Direction$Both$")
+                .getField("MODULE$")
+                .get(null);
+    var mode =
+        (org.apache.pekko.remote.transport.ThrottlerTransportAdapter.ThrottleMode)
+            Class.forName(
+                    "org.apache.pekko.remote.transport.ThrottlerTransportAdapter$"
+                        + (blackhole ? "Blackhole$" : "Unthrottled$"))
+                .getField("MODULE$")
+                .get(null);
+    var command =
+        new org.apache.pekko.remote.transport.ThrottlerTransportAdapter.SetThrottle(
+            Cluster.get(target).selfMember().address(), direction, mode);
+    var remote =
+        (org.apache.pekko.remote.RARP) org.apache.pekko.remote.RARP.get(Adapter.toClassic(source));
+    assertThat(
+            scala.jdk.javaapi.FutureConverters.asJava(
+                    remote.provider().transport().managementCommand(command))
+                .toCompletableFuture()
+                .get(5, TimeUnit.SECONDS))
+        .isEqualTo(true);
+  }
+
+  @Test
+  void actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot()
+      throws Exception {
+    ungatedChildren.set(0);
+    var call = new CallId("c001.e1.00000000-0000-0000-0000-000000000001");
+    var before = pingCall(nodes.getLast(), call);
+    var isolated =
+        nodes.stream().filter(n -> node(n).equals(before.node())).findFirst().orElseThrow();
+    var oldUid = Cluster.get(isolated).selfMember().uniqueAddress();
+    var old =
+        PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(isolated), 685).orElseThrow();
+    // Always put a live equal-by-path system before the stopped one: a value-based
+    // list removal must fail this regression, regardless of shard allocation order.
+    nodes.sort(Comparator.comparingInt(n -> n == isolated ? 1 : 0));
+    assertThat(nodes.getFirst()).isNotSameAs(isolated);
+    var survivors = nodes.stream().filter(n -> n != isolated).toList();
+    long faultAt = System.nanoTime();
+    for (var other : survivors) {
+      transportFault(isolated, other, true);
+      transportFault(other, isolated, true);
+    }
+    org.awaitility.Awaitility.await()
+        .atMost(Duration.ofSeconds(60))
+        .until(() -> isolated.getWhenTerminated().toCompletableFuture().isDone());
+    for (var other : survivors) transportFault(other, isolated, false);
+    // Typed ActorSystems with the same name compare equal via their local /user path.
+    // Remove the exact stopped instance, never an equal surviving member.
+    nodes.removeIf(n -> n == isolated);
+    assertThat(nodes.stream().noneMatch(n -> n == isolated)).isTrue();
+    for (var survivor : survivors) assertThat(nodes.stream().anyMatch(n -> n == survivor)).isTrue();
+    // Establish replacement authority before the old address rejoins. Membership Up
+    // alone does not prove that the coordinator has retired its previous shard home.
+    var takeover = pingCall(survivors.getFirst(), call);
+    assertThat(takeover.epoch()).isGreaterThan(before.epoch());
+    var rejoined =
+        ActorSystem.<Void>create(
+            Behaviors.empty(),
+            SYSTEM,
+            config("a", FINGERPRINT)
+                .withValue(
+                    "pekko.remote.artery.canonical.port",
+                    ConfigValueFactory.fromAnyRef(oldUid.address().port().get())));
+    PostgresShardLeaseProvider.install(
+        Adapter.toClassic(rejoined), repository, "c001", 1, UUID.randomUUID(), () -> true);
+    nodes.add(rejoined);
+    Cluster.get(rejoined)
+        .manager()
+        .tell(new JoinSeedNodes(List.of(Cluster.get(survivors.getFirst()).selfMember().address())));
+    org.awaitility.Awaitility.await()
+        .atMost(Duration.ofSeconds(25))
+        .until(() -> Cluster.get(rejoined).selfMember().status().equals(MemberStatus.up()));
+    org.awaitility.Awaitility.await()
+        .atMost(Duration.ofSeconds(25))
+        .until(
+            () ->
+                nodes.stream()
+                    .allMatch(
+                        n -> {
+                          var seen = Cluster.get(n).state().getMembers();
+                          int up = 0;
+                          for (var member : seen) {
+                            if (member.uniqueAddress().equals(oldUid)) return false;
+                            if (member.status().equals(MemberStatus.up())) up++;
+                          }
+                          return up == 4;
+                        }));
+    register(rejoined);
+    assertThat(Cluster.get(rejoined).selfMember().address()).isEqualTo(oldUid.address());
+    assertThat(Cluster.get(rejoined).selfMember().uniqueAddress()).isNotEqualTo(oldUid);
+    var after = pingCall(rejoined, call);
+    assertThat(after.epoch()).isEqualTo(takeover.epoch());
+    var owner = nodes.stream().filter(n -> node(n).equals(after.node())).findFirst().orElseThrow();
+    var replacement =
+        PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(owner), 685)
+            .orElseThrow()
+            .token();
+    assertThat(
+            repository
+                .releaseTracked(old.token())
+                .logical()
+                .toCompletableFuture()
+                .get(2, TimeUnit.SECONDS))
+        .isTrue();
+    assertThat(
+            repository
+                .reconcile(685, replacement.node(), replacement.incarnation())
+                .toCompletableFuture()
+                .get(2, TimeUnit.SECONDS)
+                .orElseThrow()
+                .token())
+        .isEqualTo(replacement);
+    assertThat(pingCall(rejoined, call).epoch()).isEqualTo(after.epoch());
+    assertThat(ungatedChildren.get()).isZero();
+    var path = java.nio.file.Path.of("target/fault-receipts/artery-partition-rejoin.json");
+    java.nio.file.Files.createDirectories(path.getParent());
+    java.nio.file.Files.writeString(
+        path,
+        new com.fasterxml.jackson.databind.ObjectMapper()
+                .writeValueAsString(
+                    Map.of(
+                        "testOnly",
+                        true,
+                        "scope",
+                        "LOCAL_PEKKO_CLUSTER",
+                        "scenario",
+                        "artery-partition-rejoin",
+                        "observations",
+                        Map.of(
+                            "oldUid",
+                            oldUid.toString(),
+                            "newUid",
+                            Cluster.get(rejoined).selfMember().uniqueAddress().toString(),
+                            "faultAtNanos",
+                            faultAt,
+                            "recoveredAtNanos",
+                            System.nanoTime(),
+                            "oldEpoch",
+                            before.epoch(),
+                            "newEpoch",
+                            after.epoch())))
+            + "\n");
   }
 
   @Test

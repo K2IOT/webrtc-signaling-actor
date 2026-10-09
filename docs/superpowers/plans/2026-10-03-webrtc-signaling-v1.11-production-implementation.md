@@ -525,12 +525,19 @@ runbooks/
 ### Task 22: Build the Correctness, Property, Race, and Fault-Injection Qualification Suite
 
 **Files:**
-- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/it/InvariantPropertyTest.java`
-- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/it/CrashScheduleIT.java`
-- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/it/PartitionAndPauseIT.java`
-- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/it/DatabaseFailoverIT.java`
-- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/it/RevocationSecurityIT.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/InvariantPropertyTest.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/CrashScheduleIT.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/PartitionAndPauseIT.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/DatabaseFailoverIT.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/RevocationSecurityIT.java`
 - Create: `qualification/scenarios/fault-matrix.yaml`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/ActorProcessFaultIT.java`
+- Create: `signaling-integration-tests/src/test/java/io/webrtc/signaling/storage/DatabaseReplicationIT.java`
+- Modify: `signaling-actors/src/test/java/io/webrtc/signaling/actors/cluster/MultiNodeShardingIT.java`
+- Modify: `signaling-storage/src/test/java/io/webrtc/signaling/storage/LocalInviteAtomicIT.java`
+- Create: `qualification/scenarios/fault_suite.py`, `qualification/scenarios/tests/test_fault_suite.py`, `qualification/scenarios/README.md`
+
+**Execution clarification (2026-10-09):** named native SQL tests declare the storage package and now use its matching source directory. The supplementary tests execute actual local JVM, Artery and synchronous PostgreSQL faults. Method-level local evidence and original fault receipts are separate from external three-AZ qualification; Tasks 23–24 retain production workload and deployed-candidate gates. See [suite contract](../../../qualification/scenarios/README.md).
 
 **Interfaces:**
 - Consumes: all runtime modules and deployment test environment.

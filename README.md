@@ -33,3 +33,7 @@ The frozen previous-release protobuf fixture exercises adjacent internal minor v
 See [execution status](docs/superpowers/execution/2026-10-03-webrtc-signaling-v1.11-production.md), [plan](docs/superpowers/plans/2026-10-03-webrtc-signaling-v1.11-production-implementation.md) and [spec](docs/superpowers/specs/2026-10-03-webrtc-signaling-10m-design-v1.11-production.md).
 
 The identity deployment contract is implemented as required, fail-closed configuration; the identity platform must still supply its concrete values before release. No issuer, audience, JWT lifetime, revocation bound or calling policy has been fabricated. Release status remains **NOT_QUALIFIED**; there is no production or 10M capacity claim.
+
+## Task 22 local correctness and faults
+
+The [local invariant/fault suite](qualification/scenarios/README.md) binds method-level test results and actual actor JVM, Artery partition/rejoin and synchronous PostgreSQL fault receipts to the original source and run. It emits LOCAL TEST ONLY evidence; external three-AZ, production identity/source enrollment, staged capacity and deployed-candidate release gates remain NOT_QUALIFIED under Tasks 23–24.
