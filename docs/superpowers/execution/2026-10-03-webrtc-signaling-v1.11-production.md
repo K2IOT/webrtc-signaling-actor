@@ -22,7 +22,7 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 19 | Complete local verification | Privacy-safe logs/traces, enum metrics, four recovery SLIs, validated dashboards / Prometheus rules |
 | 20 | Complete deployment contracts | Rendered Helm object semantics / unsafe overrides / lint; no deployed HA qualification |
 | 21 | Complete local lifecycle/restore verification | Ordered physical drain, actual Pekko shutdown graph, N/N-1 feature gates and native recovery epoch repair |
-| 22 | Complete local correctness/fault suite | `5990a5c`; selected630/full758 native tests PASS, Python78 PASS; original source-bound local evidence and fresh review retained below |
+| 22 | Complete local correctness/fault suite including concurrent rejoin | `92114fe`; full759 tests/166reports PASS, Python78 PASS; six fault receipts and review fixes retained below |
 | 23–24 | In progress / NOT_QUALIFIED | Distributed workload/security execution, production enrollment and measured same-candidate qualification remain open |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
@@ -731,3 +731,18 @@ Task16 ICE behavior is covered by the existing full-suite contracts and actual
 Chrome interop, without claiming renewed production client-matrix qualification.
 The reviewer's pending-full-success condition was resolved by the original final
 collector PASS, not inferred from its static approval.
+
+
+## Task 22 concurrent restart/recovery closure — 2026-10-09
+
+This supersedes the earlier deferred concurrent same-address restart ruling and its premature completion claim. Historical 5990a5c evidence is preserved unchanged.
+
+Source checkpoints: `150cba1` adds both six-member partition/rejoin schedules with native quorum assertions and bounded same-call UNKNOWN reads; `6ddf1c6` repairs the composition fixture gateway renewal and original-ID retry lifecycle; `92114fe` closes the reviewer-reported duplicate-ANSWER assertion gap for every recipient.
+
+Full clean verification on **clean `92114fe0b8ab63f3b614adc685ab5951958c6832`** finished 20:08:21+07 in 16m37s: **759 tests/166 original XML reports**, zero failures/errors/skips. Collector **LOCAL_SUITE_PASSED**, unchanged fingerprint, **six fresh fault receipts**. Python qualification 78 tests PASS. Matrix25 records:22 local PASS,7 external NOT_RUN obligations. [Retained original evidence](../../../qualification/evidence/local-task22-92114fe/README.md) includes all raw hashes, review/rulings and prior failed/stopped runs.
+
+The concurrent receipt proves same address/new UID restart before replacement epoch: epoch 7 → 8 after 3 read queries/2 UNKNOWNs, stale pulse fenced, exact replacement token preserved. The native quorum is retained with 6 members/5 survivors. Cached-home at-most-once read loss is reconciled within one fault-relative 60s local deadline, not reclassified as uninterrupted delivery or production business/RTO qualification.
+
+The 150cba1 full gate failed an original composition fixture whose gateway 15s lease was never renewed during cluster startup. Real tracked periodic renewal keeps that native test tenure live, without extending TTL. Subsequent focused UNKNOWN outcomes were addressed with bounded same-operation ACCEPT/relay retry, current proofs, physical completion in finally and no extra recipient frames. One Important review finding (unchecked duplicate ANSWER) was corrected; focused and full gates passed. The 6ddf1c6 full run was deliberately stopped for that review correction and remains non-PASS evidence.
+
+Reviewer declined production business hydration/participant/deadline recovery, ≤30s RTO, one-AZ/four-survivor availability, P2/N-1 capacity, deployed transport/discovery/three-AZ, production retry ownership and independently recertifying unchanged COMMIT/ICE/revocation contracts. Executor rulings and costs are retained in the bundle review. Tasks 23–24 remain open and production **NOT_QUALIFIED**. No production runtime safety rule was weakened; documentation commits do not change the verified code SHA.

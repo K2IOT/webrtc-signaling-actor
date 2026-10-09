@@ -541,18 +541,18 @@ runbooks/
 
 **Historical checkpoint — local suite (2026-10-09).** Implementation commit `5990a5c`; selected clean reactor 630 tests PASS; full clean reactor 758 tests/166 original XML reports PASS, zero failures/errors/skips; Python regression 78 tests PASS. Fresh final review found no blocking findings. [Original local evidence](../../../qualification/evidence/local-task22-5990a5c/README.md) maps all 24 fault records: 21 local PASS, seven external obligations NOT_RUN. Production remains NOT_QUALIFIED. Immediate concurrent same-address restart/recovery availability is deferred explicitly; the rejoin schedule proves stale-tenure safety after native replacement takeover.
 
-**Reopened:** the user confirmed concurrent same-address restart/recovery belongs to Task 22. The historical completion above and its immutable evidence do not cover this schedule. Add native six-member partition/rejoin without prerequisite takeover, bounded same-call reconciliation after UNKNOWN, stale pulse fencing and exact replacement-token protection; complete again only after fresh full verification and review.
+**Complete — concurrent gap closed (2026-10-09):** the user confirmed concurrent same-address restart/recovery belongs to Task 22, superseding the historical deferral above. Verified clean source `92114fe`: full `clean verify` **759 tests/166 reports**, zero failures/errors/skips, six fault receipts; Python 78 PASS. Native six-member partition/rejoin now restarts the same address/fresh UID before takeover, reconciles bounded same-call UNKNOWN reads, fences stale pulse and preserves the exact replacement token. One Important review coverage gap was fixed and verified; no remaining identified findings. [Original current evidence](../../../qualification/evidence/local-task22-92114fe/README.md) maps 25 records: 22 local PASS, seven external NOT_RUN obligations. Local60s acceptance is not production RTO; Tasks 23–24 remain open/NOT_QUALIFIED.
 
 **Interfaces:**
 - Consumes: all runtime modules and deployment test environment.
 - Produces: machine-readable invariant/fault evidence used by Task 24.
 
 - [x] **Step 1: Write failing model/property tests** covering every state transition plus randomized duplicate/reordered/lost commands, stale generations, stale actors, reciprocal calls, winner races, delayed releases, unknown outcomes, and absorbing terminal states.
-- [ ] **Step 2: Add failing fault schedules** at before/after DB COMMIT/ACK/outbox, process pause past lease expiry, coordinator loss, shard host loss, old-node rejoin, partial partition, clock uncertainty, revocation lag, and PostgreSQL failover.
-- [ ] **Step 3: Run** `./mvnw -pl signaling-integration-tests -am verify` **Expected:** failures identify each not-yet-satisfied fault contract before fixes; once runtime tasks are complete, zero invariant violations.
-- [ ] **Step 4: Fix only implementation defects revealed by the suite, preserving spec safety rules**; never relax fencing, TTL, durability, queue bounds, or authorization to make a test pass.
-- [ ] **Step 5: Run** `./mvnw verify` **Expected:** all unit/integration/property/fault tests PASS.
-- [ ] **Step 6: Commit** `test: add signaling safety and fault qualification suite`.
+- [x] **Step 2: Add failing fault schedules** at before/after DB COMMIT/ACK/outbox, process pause past lease expiry, coordinator loss, shard host loss, old-node rejoin, partial partition, clock uncertainty, revocation lag, and PostgreSQL failover.
+- [x] **Step 3: Run** `./mvnw -pl signaling-integration-tests -am verify` **Expected:** failures identify each not-yet-satisfied fault contract before fixes; once runtime tasks are complete, zero invariant violations.
+- [x] **Step 4: Fix only implementation defects revealed by the suite, preserving spec safety rules**; never relax fencing, TTL, durability, queue bounds, or authorization to make a test pass.
+- [x] **Step 5: Run** `./mvnw verify` **Expected:** all unit/integration/property/fault tests PASS.
+- [x] **Step 6: Commit** `test: add signaling safety and fault qualification suite`.
 
 ### Task 23: Build Distributed Load Generation and P0/P1/P2/N-1 Scenarios
 

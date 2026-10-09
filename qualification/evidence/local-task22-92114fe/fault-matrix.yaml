@@ -1,0 +1,418 @@
+# LOCAL TEST ONLY: method-level receipts never certify external three-AZ drills.
+matrixVersion: 2
+status: LOCAL_EXECUTION_REQUIRED
+faults:
+- id: generated-invariant-schedules
+  scope: LOCAL_NATIVE_POSTGRES
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.InvariantPropertyTest
+    methods:
+    - duplicateReorderedAndLostRepliesKeepOneCallAndAnAbsorbingTerminalSnapshot
+    - delayedOldGenerationCloseAndReadCannotAffectAnyNewNativeRoute
+    - everyNativeLifecyclePhaseSurvivesGeneratedDuplicateLossAndStaleReordering
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.UserReservationRaceIT
+    methods:
+    - releaseBeforeReserveCreatesAbsorbingTombstoneAndNewEpochCannotReopen
+    - reservationRetryAndPulseReplayNeverExtendOriginalGrant
+    - reciprocalInvitesCannotCreateTwoLiveReservations
+    - expiryAllowsNewCallButNeverOldCallResurrection
+    - oneHundredConcurrentAcceptsAcrossFiveDevicesCommitOneImmutableWinner
+    - missingProofAndExpiredGrantFailClosed
+    - acceptAndCancellationRacePreservesClaimHistoryAndNeverReopens
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.ReattachMediaIT
+    methods:
+    - onlyBothCurrentMatchingRoundMediaConnectedObservationsEstablishTheCall
+    - resumeCommitsNewBindingWithoutResettingEstablishedMediaAndOldDisconnectCannotCloseIt
+    - coldHydrationInvalidatesIncompleteVolatileRoundButKeepsItsDurableIdentities
+    - establishmentWorkflowCannotBypassBothMatchingMediaObservations
+    - nativeRouteLossGraceNeverExtendsAndExpiredResumeCannotReviveTheCall
+    - durableMediaWindowSurvivesColdLoadAndClientReportsCannotExtendIt
+  invariant: Generated duplicates, reorder and lost replies plus native reciprocal/winner races, release tombstones,
+    media transitions and terminal absorption.
+- id: commit-before-wal
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: no result or outbox acknowledgment before durable transaction completion
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.CrashScheduleIT
+    methods:
+    - failureBeforeCommitRollsBackCallResultsBothHomesAndOutboxBeforeSameIdentityRetry
+    - lostResponseAfterActualCommitReplaysOriginalCallAndImmutableResultWithoutDuplicateOutbox
+    - productionBackendColdHydrationInvalidatesLostVolatileRoundWithoutResettingDeadline
+- id: committed-ack-lost
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: reconcile the same scoped operation; no duplicate call or winner
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.CrashScheduleIT
+    methods:
+    - failureBeforeCommitRollsBackCallResultsBothHomesAndOutboxBeforeSameIdentityRetry
+    - lostResponseAfterActualCommitReplaysOriginalCallAndImmutableResultWithoutDuplicateOutbox
+    - productionBackendColdHydrationInvalidatesLostVolatileRoundWithoutResettingDeadline
+- id: outbox-hint-lost
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: bounded native polling recovers hints and application receipt stays distinct from socket write
+  localChecks:
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.MaintenanceWorkersIT
+    methods:
+    - lostHintIsScannedAndSocketWriteDoesNotCompleteApplicationDelivery
+    - logicalDeliveryTimeoutKeepsWorkerCreditUntilPhysicalCleanup
+    - stableUpperBoundPaginationDefersConcurrentInsertsToTheNextSweep
+    - finalResultRetentionPreservesTwentyFourHoursAndLiveCallOrigin
+    - authenticatedRevocationHighWaterCannotRegressSkipOrRefreshFromDuplicate
+    - unauthenticatedRevocationProgressCannotMintFreshness
+    - privacyDeletionRetainsOpaqueReplayMarkerAndNativeSafetyRecords
+    - saturatedMaintenanceDoesNotConsumeSafetyRenewalCapacity
+    - routeLossEvidenceComesFromNativeHistoryAndKeepsOriginalObservationTime
+    - keyRetirementDeniesExistingNativeAuthorizationAndProgressIsReadFromPrimary
+- id: stale-phase-after-pause
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: expired native phase/media/grace cannot mint fresh acquisitions or renewals
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.PartitionAndPauseIT
+    methods:
+    - nativeExpiredPhaseCannotMintFreshAcquisitionOrRenewalGrantAfterLongPause
+    - freshAcquisitionProofExpiresNoLaterThanTheOriginalNativePhaseDeadline
+- id: phase-deadline-proof-expiry
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: acquisition proof expiry never crosses the original native phase deadline
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.PartitionAndPauseIT
+    methods:
+    - nativeExpiredPhaseCannotMintFreshAcquisitionOrRenewalGrantAfterLongPause
+    - freshAcquisitionProofExpiresNoLaterThanTheOriginalNativePhaseDeadline
+- id: physical-before-logical
+  scope: LOCAL_RUNTIME
+  invariant: collector/RPC count and bytes remain retained through cleanup and logical/CPU continuation
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.it.BackpressureIT
+    methods:
+    - bulkSaturationPreservesTerminationAndCreditsOutliveLogicalTimeout
+    - entityBytesRejectOneLargeFrameEvenWhenCountHasRoom
+    - oneSlowConsumerCannotBorrowOtherChannelsAndControlIsNeverAcknowledgedWhenDropped
+    - relayCannotConsumeReservedControlDeliveryCredits
+    - physicalReceiptSurvivesLogicalUnknownAndEntityTermination
+    - sevenIngressProducersTogetherCannotOverflowOneEntityMailboxOrByteBudget
+    - cleanupBeforeReplyCannotRetireCollectorCreditWhileLogicalWorkIsStillPending
+    - collectorRetainsCreditUntilSynchronousProofContinuationActuallyReturns
+- id: late-cleanup-after-entity-stop
+  scope: LOCAL_RUNTIME
+  invariant: actual cleanup owns retirement; lost receipts never mint completion
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.it.BackpressureIT
+    methods:
+    - bulkSaturationPreservesTerminationAndCreditsOutliveLogicalTimeout
+    - entityBytesRejectOneLargeFrameEvenWhenCountHasRoom
+    - oneSlowConsumerCannotBorrowOtherChannelsAndControlIsNeverAcknowledgedWhenDropped
+    - relayCannotConsumeReservedControlDeliveryCredits
+    - physicalReceiptSurvivesLogicalUnknownAndEntityTermination
+    - sevenIngressProducersTogetherCannotOverflowOneEntityMailboxOrByteBudget
+    - cleanupBeforeReplyCannotRetireCollectorCreditWhileLogicalWorkIsStillPending
+    - collectorRetainsCreditUntilSynchronousProofContinuationActuallyReturns
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT
+    methods:
+    - acquireCommitPrecedesGateAndDuplicateAcquireRetainsEpoch
+    - orderedPulseReplayAndOutOfOrderCycleNeverExtendOrReset
+    - takeoverFencesOldTokenAndLateReleaseDoesNotModifyNewOwner
+    - monotonicExpiryAndClockFailureCloseGateAndNotifyOnce
+    - lostPostCommitAcquisitionAckNeverLateEnablesChildrenAndOrphanIsReleased
+    - namespaceRejectsUserLeasesUnknownTypesAndNoncanonicalShardNames
+    - unknownPulseAckImmediatelyClosesGateAndLateAckCannotReviveTenure
+    - unhealthyClockPreventsAcquisitionAndClosesExistingGate
+    - publicPekkoProviderLoadsAdapterAndRequiresInstalledDependencies
+    - drainWaitsForPositiveNativeReleasePhysicalCleanupAndPermanentlyStopsAcquisition
+    - duplicateFrameworkReleaseRetainsPendingReplyAndOriginalPhysicalReceipt
+    - reconciliationReadRetainsPhysicalCreditBeforeMatchedReleaseAndDrain
+    - sheddingNewAcquisitionKeepsHeldRootPulsesUntilFrameworkHandoff
+- id: coordinator-host-loss
+  scope: LOCAL_PEKKO_CLUSTER
+  invariant: exact native root grant before new entity placement; old tenure callbacks cannot invalidate new tenure
+  localChecks:
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.cluster.MultiNodeShardingIT
+    methods:
+    - fourNodeRuntimeGatesColdChildrenKeepsWarmTenureAndRecoversAfterCoordinatorHandoff
+    - incompatibleFingerprintCannotJoinTheCell
+- id: full-host-restart
+  scope: LOCAL_PEKKO_CLUSTER
+  invariant: cold hydration preserves original deadlines and invalidates incomplete volatile negotiation
+  localChecks:
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.cluster.MultiNodeShardingIT
+    methods:
+    - fourNodeRuntimeGatesColdChildrenKeepsWarmTenureAndRecoversAfterCoordinatorHandoff
+    - incompatibleFingerprintCannotJoinTheCell
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.call.CallRecoveryIT
+    methods:
+    - durableTransitionsReplayOriginalOutcomeRejectStaleVersionAndPreserveWinnerInTerminalHistory
+    - proofExpiryAndPrimaryGroupTakeoverFenceCachedActors
+    - lostWakeHintIsRepairedAndCompleteHealthyIndexCycleHasMeasuredFiveSecondBound
+    - expiredCallerReservationSafelyTerminalizesSilentWorkflowOnHydration
+    - cancelAndAcceptRaceUsesPrimaryVersionAndWinnerNeverChangesAfterTerminalization
+    - primaryRejectsShortRootEvenWhenProcessGateAndProofStillLookLive
+    - entityExceptionThenActorHostTerminationRecoversPrimaryStateWithoutClientTraffic
+- id: partial-partition-and-old-node-rejoin
+  scope: EXTERNAL_THREE_AZ
+  invariant: native cell/bucket/group/call fences reject every stale mutation despite surviving actor location
+  requiredEvidence:
+  - faultTimeline
+  - authenticatedMembership
+  - nativeEpochs
+  - physicalCleanup
+  - convergenceHistogram
+  localContractNote: Local actual Artery partition is a separate fault; production three-AZ topology remains NOT_RUN.
+- id: primary-clock-uncertainty
+  scope: LOCAL_AND_EXTERNAL
+  invariant: uncertain clock shuts mutation/grant admission without extending lease or phase deadlines
+  localChecks:
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT
+    methods:
+    - bindsNativeSessionRouteAndHomeFreshnessToOriginalDurableSource
+    - cachedHealthySourceCannotBypassClockInvalidation
+    - futureExpiredAndIncompleteSourceCannotAuthorizeAnyPolicy
+    - scopedJtiRevocationDoesNotTurnHomeFreshnessIntoIdentityAuthorization
+    - signingKeyRetirementDeniesStillCurrentNativeRoute
+    - wrongNativeCellCannotReuseAnotherCellsFreshProgress
+    - freshSourceCannotAuthorizeExpiredPrincipalOrNativeRoute
+    - legacyRouteWithoutSigningKeyCannotBypassRetirementPolicy
+  - module: signaling-auth
+    class: io.webrtc.signaling.auth.ClockSafetyMonitorConcurrencyTest
+    methods:
+    - pendingSignatureCannotBlockCachedSafetyOrOverwriteNewerLoss
+  - module: signaling-auth
+    class: io.webrtc.signaling.auth.ClockSafetyMonitorTest
+    methods:
+    - requiresPinnedSourceAndFreshSignedBoundWithConservativeExpiryFromRequestStart
+    - replayCannotExtendTimeTrustAndWrongKeyOrStorageAndProcessBindingAreRejected
+    - wallStepOrHostPauseInvalidatesCachedTrustUntilAFreshHigherSequenceReport
+    - staleResponseExcessiveUncertaintyRateOrLostContinuityCannotAuthorizeShortGrants
+- id: revocation-lag-and-key-retirement
+  scope: LOCAL_AND_EXTERNAL
+  invariant: fresh ordered high-water required; duplicate old page does not refresh security freshness
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.RevocationSecurityIT
+    methods:
+    - nativeSourceStepsAcceptOnlyRemainingBoundedPollBudget
+    - missingUntrustedLaggedAndFutureSourceCannotAuthorizeAnyNativeSessionRead
+    - replayedOldSourcePageCannotRefreshAuthorizationAndCursorGapsCannotAdvance
+    - committedRevocationClosesTheNativeRouteAndBlocksRefreshReadAndReregistration
+    - signingKeyRetirementBlocksExistingNativeProofsEvenWithFreshSourceProgress
+    - transientNativeAuthContentionIsOverloadWhileAReplacedRouteRemainsUnauthorized
+    - authenticatedPartialCatchUpInvalidatesRevokedRoutesWithoutAdvertisingCurrentSourceFreshness
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.MaintenanceWorkersIT
+    methods:
+    - lostHintIsScannedAndSocketWriteDoesNotCompleteApplicationDelivery
+    - logicalDeliveryTimeoutKeepsWorkerCreditUntilPhysicalCleanup
+    - stableUpperBoundPaginationDefersConcurrentInsertsToTheNextSweep
+    - finalResultRetentionPreservesTwentyFourHoursAndLiveCallOrigin
+    - authenticatedRevocationHighWaterCannotRegressSkipOrRefreshFromDuplicate
+    - unauthenticatedRevocationProgressCannotMintFreshness
+    - privacyDeletionRetainsOpaqueReplayMarkerAndNativeSafetyRecords
+    - saturatedMaintenanceDoesNotConsumeSafetyRenewalCapacity
+    - routeLossEvidenceComesFromNativeHistoryAndKeepsOriginalObservationTime
+    - keyRetirementDeniesExistingNativeAuthorizationAndProgressIsReadFromPrimary
+- id: admitted-storage-epoch-transition
+  scope: LOCAL_NATIVE_POSTGRES
+  invariant: independently configured routing epoch; signed HA permit and native100 transition preserve unexpired
+    reservations, winner and calls while rejecting old roots
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.DatabaseFailoverIT
+    methods:
+    - nativeStorageEpochTransitionRetainsCallRoutingIdentityAndFencesEveryOldRoot
+    - newCallsUseTheConfiguredRoutingEpochRatherThanThePromotedStorageEpoch
+    - verifiedPromotionAdoptsOnlyUnexpiredReservationsAndRetainsWinnerAndReplayExpiry
+    - gatewayAllocatesConfiguredRoutingEpochEvenWhenItsNativeHomeStorageHasAdvanced
+    - admittedPromotionCommitsNewEpochWithoutAbortingCallsAndRejectsUntrustedReplay
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.call.CallActorStateMachineTest
+    methods:
+    - legalLifecycleAndTerminalAbsorptionFollowSpec
+    - actorCannotAcknowledgeFromLocalStateBeforeCommittedProofAndPhysicalWorkIsSerialized
+    - closedGroupGatePreventsAnyNewMutationEvenWithPreviouslyHydratedState
+    - unknownCompletionAndLateOldIncarnationCannotEnableReplacement
+    - restoresDurableTimerWithoutClientTraffic
+    - unknownEntityRetiresOnlyAfterPhysicalCleanupSoRecoveryCanRecreateIt
+    - shardStopDrainsPhysicalWorkThenTerminatesWithoutRequestingAnotherPassivation
+    - homeGrantIsQueuedThroughActorAndOldOwnershipCannotProduceSuccessfulProof
+    - knownWarmHydrationOverloadRetriesAfterCleanupWithoutDiscardingTheActor
+    - promotedNativeRootHydratesOldRoutingIdentityAndProcessesExistingCall
+- id: auth-contention-and-result-recovery
+  scope: LOCAL_NATIVE_POSTGRES_AND_MTLS
+  invariant: transient guarded contention is overload, stale route stays unauthorized, original scoped result reads
+    need no live root
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.RevocationSecurityIT
+    methods:
+    - nativeSourceStepsAcceptOnlyRemainingBoundedPollBudget
+    - missingUntrustedLaggedAndFutureSourceCannotAuthorizeAnyNativeSessionRead
+    - replayedOldSourcePageCannotRefreshAuthorizationAndCursorGapsCannotAdvance
+    - committedRevocationClosesTheNativeRouteAndBlocksRefreshReadAndReregistration
+    - signingKeyRetirementBlocksExistingNativeProofsEvenWithFreshSourceProgress
+    - transientNativeAuthContentionIsOverloadWhileAReplacedRouteRemainsUnauthorized
+    - authenticatedPartialCatchUpInvalidatesRevokedRoutesWithoutAdvertisingCurrentSourceFreshness
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.NativeGatewayCommandIT
+    methods:
+    - gatewayObtainsNativeAuthProofAndOriginalInviteReplaysAfterGroupRelease
+    - nativeRemotePreparationStaysPendingWithoutManufacturingCommitAcknowledgment
+- id: postgres-primary-failure
+  scope: EXTERNAL_THREE_AZ
+  invariant: every acknowledged WAL record survives; old primary physically fenced before new authority traffic
+  requiredEvidence:
+  - oldWriterIdentity
+  - acknowledgedWalHighWater
+  - promotedTimeline
+  - crossAzSyncStandby
+  - physicalFenceReceipt
+  - nativeOperationReconciliation
+- id: one-az-loss
+  scope: EXTERNAL_THREE_AZ
+  invariant: static surviving DB/actor/gateway/directory/network capacity meets the qualified degraded envelope
+  requiredEvidence:
+  - hardwareInventory
+  - faultTimeline
+  - rawControlHistograms
+  - recoverySlis
+  - activeCallPreservation
+  - mediaInterruption
+- id: mixed-version-and-forced-rollback
+  scope: LOCAL_AND_EXTERNAL
+  invariant: feature admission waits for authenticated supported peers; incompatible native work prevents rollback
+  localChecks:
+  - module: signaling-app
+    class: io.webrtc.signaling.app.CompatibilityWindowTest
+    methods:
+    - compatiblePreviousMinorCanJoinButNewFeaturesWaitForEveryAuthenticatedUpPeer
+    - rollbackRequiresDisabledFeatureAdmissionAndNoIncompatibleDurableOrPhysicalWork
+  - module: signaling-app
+    class: io.webrtc.signaling.app.PekkoShutdownLifecycleTest
+    methods:
+    - realFrameworkShutdownRetainsDatabaseUntilNativeReleaseAndFinalCleanup
+  - module: signaling-app
+    class: io.webrtc.signaling.app.ShutdownCoordinatorTest
+    methods:
+    - databaseClosesOnlyAfterPhysicalSettlementAndLeaseReleaseAndClusterLeave
+    - timeoutNeverTreatsUnknownCleanupAsFinishedOrClosesPoolAfterLateRelease
+    - gatewayTurnsReadinessOffFirstAndReconnectsInBoundedBatchesBeforeSettlement
+    - releaseFailureKeepsDatabaseOpenAndReportsFailure
+    - shutdownBudgetCannotConsumeActorSbrHeadroomOrExceedGatewayFiveMinutes
+- id: restore-history-loss
+  scope: LOCAL_AND_EXTERNAL
+  invariant: epoch above outside-backup high-water; recovered live work aborted; security/privacy replay before
+    reactivation
+  requiredEvidence:
+  - backupIdentity
+  - walRestoreTarget
+  - externalEpochHighWater
+  - physicalFenceReceipt
+  - deletionReplayReceipt
+  - securityHighWater
+  localChecks:
+  - module: signaling-storage
+    class: io.webrtc.signaling.storage.RecoveryEpochIT
+    methods:
+    - restoredEpochMustExceedExternalPreDisasterHighWaterAndInvalidatesEveryOldAuthority
+    - missingUntrustedOrExpiredRecoveryPermitCannotAdvanceNativeEpoch
+    - replayCompletionNeedsExactNativeSecurityCursorAndCompletedPrivacyRequests
+- id: synchronous-standby-loss-local
+  scope: LOCAL_RUNTIME
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.DatabaseReplicationIT
+    methods:
+    - synchronousStandbyLossNeverAcknowledgesControlAndOriginalUnknownResultReconciles
+  localReceipts:
+  - module: signaling-integration-tests
+    scenario: sync-standby-loss
+  invariant: No successful acknowledgement while synchronous COMMIT is blocked; original scoped result reconciles
+    after restoration.
+- id: postgres-primary-failure-local
+  scope: LOCAL_RUNTIME
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.DatabaseReplicationIT
+    methods:
+    - physicallyFencedPrimaryPromotionPreservesAcknowledgedCallResultAndOutboxWal
+  localReceipts:
+  - module: signaling-integration-tests
+    scenario: postgres-primary-failure-local
+  invariant: Physical old-writer fence precedes promotion; replayed WAL retains acknowledged call, outbox and original
+    command result.
+- id: actor-jvm-pause
+  scope: LOCAL_RUNTIME
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.ActorProcessFaultIT
+    methods:
+    - pausedActorJvmCannotMutateOrReleaseAfterFifteenSecondNativeTakeover
+  localReceipts:
+  - module: signaling-integration-tests
+    scenario: actor-jvm-pause
+  invariant: Real SIGSTOP exceeds native root expiry; resumed process cannot mutate or release a newer tenure.
+- id: actor-jvm-kill
+  scope: LOCAL_RUNTIME
+  localChecks:
+  - module: signaling-integration-tests
+    class: io.webrtc.signaling.storage.ActorProcessFaultIT
+    methods:
+    - killedActorJvmRecoversSilentCommittedCallWithOriginalDeadline
+  localReceipts:
+  - module: signaling-integration-tests
+    scenario: actor-jvm-kill
+  invariant: Actual actor JVM kill recovers committed silent work with unchanged original deadlines.
+- id: artery-partition-rejoin
+  scope: LOCAL_PEKKO_CLUSTER
+  localChecks:
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.cluster.MultiNodeShardingIT
+    methods:
+    - actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot
+  localReceipts:
+  - module: signaling-actors
+    scenario: artery-partition-rejoin
+  invariant: Actual bidirectional transport blackhole downs minority; survivor acquires a higher root before same-address
+    fresh-UID rejoin; stale release is an idempotent no-op preserving the exact replacement token.
+- id: artery-concurrent-rejoin
+  scope: LOCAL_PEKKO_CLUSTER
+  localChecks:
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.cluster.MultiNodeShardingIT
+    methods:
+    - actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot
+  localReceipts:
+  - module: signaling-actors
+    scenario: artery-concurrent-rejoin
+  invariant: Six-member native quorum; restart same address with fresh UID without waiting for replacement acquisition.
+    Same-call bounded reconciliation reads converge after at-most-once loss; stale pulse is fenced and stale release
+    preserves the exact replacement token. Each query has at most 2s and the local correctness schedule has one 60s bound;
+    this is not production recovery-time qualification.
+productionQualification: NOT_QUALIFIED
+externalCandidateBinding:
+- gitCommit
+- imageDigests
+- configurationFingerprint
+- compatibilityFingerprint
+- cellTopology
+localRunBinding:
+- gitCommit
+- sourceFingerprint
+- java
+- command
+- startedAt
+- finishedAt
+- matrixSha256

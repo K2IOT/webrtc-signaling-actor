@@ -1,6 +1,6 @@
 # Same-candidate release evidence
 
-The separately named [local Task 22 bundle](local-task22-5990a5c/README.md) is **LOCAL TEST ONLY**, not a production candidate directory or trusted release manifest. Its original correctness/fault reports feed later qualification work; its status remains NOT_QUALIFIED.
+The latest [local Task 22 concurrent recovery bundle](local-task22-92114fe/README.md) supersedes the scope of the immutable [historical bundle](local-task22-5990a5c/README.md). Both are **LOCAL TEST ONLY**. They provide original correctness/fault reports for later qualification work; production remains NOT_QUALIFIED.
 
 A directory named `YYYYMMDD-HHMM-git7-imageDigest12` identifies an immutable candidate.
 The image component is the first12 hex characters of the actor OCI **manifest digest**,

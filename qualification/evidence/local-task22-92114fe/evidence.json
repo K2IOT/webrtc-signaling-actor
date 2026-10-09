@@ -1,0 +1,2391 @@
+{
+  "schemaVersion": 1,
+  "testOnly": true,
+  "status": "LOCAL_SUITE_PASSED",
+  "productionQualification": "NOT_QUALIFIED",
+  "totals": {
+    "tests": 759,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "faults": [
+    {
+      "id": "generated-invariant-schedules",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.InvariantPropertyTest",
+          "method": "duplicateReorderedAndLostRepliesKeepOneCallAndAnAbsorbingTerminalSnapshot",
+          "report": "signaling-integration-tests/target/surefire-reports/TEST-io.webrtc.signaling.storage.InvariantPropertyTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.InvariantPropertyTest",
+          "method": "delayedOldGenerationCloseAndReadCannotAffectAnyNewNativeRoute",
+          "report": "signaling-integration-tests/target/surefire-reports/TEST-io.webrtc.signaling.storage.InvariantPropertyTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.InvariantPropertyTest",
+          "method": "everyNativeLifecyclePhaseSurvivesGeneratedDuplicateLossAndStaleReordering",
+          "report": "signaling-integration-tests/target/surefire-reports/TEST-io.webrtc.signaling.storage.InvariantPropertyTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "releaseBeforeReserveCreatesAbsorbingTombstoneAndNewEpochCannotReopen",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "reservationRetryAndPulseReplayNeverExtendOriginalGrant",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "reciprocalInvitesCannotCreateTwoLiveReservations",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "expiryAllowsNewCallButNeverOldCallResurrection",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "oneHundredConcurrentAcceptsAcrossFiveDevicesCommitOneImmutableWinner",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "missingProofAndExpiredGrantFailClosed",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.UserReservationRaceIT",
+          "method": "acceptAndCancellationRacePreservesClaimHistoryAndNeverReopens",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "onlyBothCurrentMatchingRoundMediaConnectedObservationsEstablishTheCall",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "resumeCommitsNewBindingWithoutResettingEstablishedMediaAndOldDisconnectCannotCloseIt",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "coldHydrationInvalidatesIncompleteVolatileRoundButKeepsItsDurableIdentities",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "establishmentWorkflowCannotBypassBothMatchingMediaObservations",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "nativeRouteLossGraceNeverExtendsAndExpiredResumeCannotReviveTheCall",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.ReattachMediaIT",
+          "method": "durableMediaWindowSurvivesColdLoadAndClientReportsCannotExtendIt",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "commit-before-wal",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "failureBeforeCommitRollsBackCallResultsBothHomesAndOutboxBeforeSameIdentityRetry",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "lostResponseAfterActualCommitReplaysOriginalCallAndImmutableResultWithoutDuplicateOutbox",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "productionBackendColdHydrationInvalidatesLostVolatileRoundWithoutResettingDeadline",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "committed-ack-lost",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "failureBeforeCommitRollsBackCallResultsBothHomesAndOutboxBeforeSameIdentityRetry",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "lostResponseAfterActualCommitReplaysOriginalCallAndImmutableResultWithoutDuplicateOutbox",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.CrashScheduleIT",
+          "method": "productionBackendColdHydrationInvalidatesLostVolatileRoundWithoutResettingDeadline",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "outbox-hint-lost",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "lostHintIsScannedAndSocketWriteDoesNotCompleteApplicationDelivery",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "logicalDeliveryTimeoutKeepsWorkerCreditUntilPhysicalCleanup",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "stableUpperBoundPaginationDefersConcurrentInsertsToTheNextSweep",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "finalResultRetentionPreservesTwentyFourHoursAndLiveCallOrigin",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "authenticatedRevocationHighWaterCannotRegressSkipOrRefreshFromDuplicate",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "unauthenticatedRevocationProgressCannotMintFreshness",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "privacyDeletionRetainsOpaqueReplayMarkerAndNativeSafetyRecords",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "saturatedMaintenanceDoesNotConsumeSafetyRenewalCapacity",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "routeLossEvidenceComesFromNativeHistoryAndKeepsOriginalObservationTime",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "keyRetirementDeniesExistingNativeAuthorizationAndProgressIsReadFromPrimary",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "stale-phase-after-pause",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.PartitionAndPauseIT",
+          "method": "nativeExpiredPhaseCannotMintFreshAcquisitionOrRenewalGrantAfterLongPause",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PartitionAndPauseIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.PartitionAndPauseIT",
+          "method": "freshAcquisitionProofExpiresNoLaterThanTheOriginalNativePhaseDeadline",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PartitionAndPauseIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "phase-deadline-proof-expiry",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.PartitionAndPauseIT",
+          "method": "nativeExpiredPhaseCannotMintFreshAcquisitionOrRenewalGrantAfterLongPause",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PartitionAndPauseIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.PartitionAndPauseIT",
+          "method": "freshAcquisitionProofExpiresNoLaterThanTheOriginalNativePhaseDeadline",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PartitionAndPauseIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "physical-before-logical",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "bulkSaturationPreservesTerminationAndCreditsOutliveLogicalTimeout",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "entityBytesRejectOneLargeFrameEvenWhenCountHasRoom",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "oneSlowConsumerCannotBorrowOtherChannelsAndControlIsNeverAcknowledgedWhenDropped",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "relayCannotConsumeReservedControlDeliveryCredits",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "physicalReceiptSurvivesLogicalUnknownAndEntityTermination",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "sevenIngressProducersTogetherCannotOverflowOneEntityMailboxOrByteBudget",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "cleanupBeforeReplyCannotRetireCollectorCreditWhileLogicalWorkIsStillPending",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "collectorRetainsCreditUntilSynchronousProofContinuationActuallyReturns",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "late-cleanup-after-entity-stop",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "bulkSaturationPreservesTerminationAndCreditsOutliveLogicalTimeout",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "entityBytesRejectOneLargeFrameEvenWhenCountHasRoom",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "oneSlowConsumerCannotBorrowOtherChannelsAndControlIsNeverAcknowledgedWhenDropped",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "relayCannotConsumeReservedControlDeliveryCredits",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "physicalReceiptSurvivesLogicalUnknownAndEntityTermination",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "sevenIngressProducersTogetherCannotOverflowOneEntityMailboxOrByteBudget",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "cleanupBeforeReplyCannotRetireCollectorCreditWhileLogicalWorkIsStillPending",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.it.BackpressureIT",
+          "method": "collectorRetainsCreditUntilSynchronousProofContinuationActuallyReturns",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "acquireCommitPrecedesGateAndDuplicateAcquireRetainsEpoch",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "orderedPulseReplayAndOutOfOrderCycleNeverExtendOrReset",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "takeoverFencesOldTokenAndLateReleaseDoesNotModifyNewOwner",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "monotonicExpiryAndClockFailureCloseGateAndNotifyOnce",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "lostPostCommitAcquisitionAckNeverLateEnablesChildrenAndOrphanIsReleased",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "namespaceRejectsUserLeasesUnknownTypesAndNoncanonicalShardNames",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "unknownPulseAckImmediatelyClosesGateAndLateAckCannotReviveTenure",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "unhealthyClockPreventsAcquisitionAndClosesExistingGate",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "publicPekkoProviderLoadsAdapterAndRequiresInstalledDependencies",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "drainWaitsForPositiveNativeReleasePhysicalCleanupAndPermanentlyStopsAcquisition",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "duplicateFrameworkReleaseRetainsPendingReplyAndOriginalPhysicalReceipt",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "reconciliationReadRetainsPhysicalCreditBeforeMatchedReleaseAndDrain",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT",
+          "method": "sheddingNewAcquisitionKeepsHeldRootPulsesUntilFrameworkHandoff",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "coordinator-host-loss",
+      "scope": "LOCAL_PEKKO_CLUSTER",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "fourNodeRuntimeGatesColdChildrenKeepsWarmTenureAndRecoversAfterCoordinatorHandoff",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "incompatibleFingerprintCannotJoinTheCell",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "full-host-restart",
+      "scope": "LOCAL_PEKKO_CLUSTER",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "fourNodeRuntimeGatesColdChildrenKeepsWarmTenureAndRecoversAfterCoordinatorHandoff",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "incompatibleFingerprintCannotJoinTheCell",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "durableTransitionsReplayOriginalOutcomeRejectStaleVersionAndPreserveWinnerInTerminalHistory",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "proofExpiryAndPrimaryGroupTakeoverFenceCachedActors",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "lostWakeHintIsRepairedAndCompleteHealthyIndexCycleHasMeasuredFiveSecondBound",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "expiredCallerReservationSafelyTerminalizesSilentWorkflowOnHydration",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "cancelAndAcceptRaceUsesPrimaryVersionAndWinnerNeverChangesAfterTerminalization",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "primaryRejectsShortRootEvenWhenProcessGateAndProofStillLookLive",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallRecoveryIT",
+          "method": "entityExceptionThenActorHostTerminationRecoversPrimaryStateWithoutClientTraffic",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "partial-partition-and-old-node-rejoin",
+      "scope": "EXTERNAL_THREE_AZ",
+      "localStatus": "NOT_APPLICABLE",
+      "externalStatus": "NOT_RUN",
+      "checks": [],
+      "receipts": [],
+      "requiredExternalEvidence": [
+        "faultTimeline",
+        "authenticatedMembership",
+        "nativeEpochs",
+        "physicalCleanup",
+        "convergenceHistogram"
+      ]
+    },
+    {
+      "id": "primary-clock-uncertainty",
+      "scope": "LOCAL_AND_EXTERNAL",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_RUN",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "bindsNativeSessionRouteAndHomeFreshnessToOriginalDurableSource",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "cachedHealthySourceCannotBypassClockInvalidation",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "futureExpiredAndIncompleteSourceCannotAuthorizeAnyPolicy",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "scopedJtiRevocationDoesNotTurnHomeFreshnessIntoIdentityAuthorization",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "signingKeyRetirementDeniesStillCurrentNativeRoute",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "wrongNativeCellCannotReuseAnotherCellsFreshProgress",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "freshSourceCannotAuthorizeExpiredPrincipalOrNativeRoute",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT",
+          "method": "legacyRouteWithoutSigningKeyCannotBypassRetirementPolicy",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.auth.ClockSafetyMonitorConcurrencyTest",
+          "method": "pendingSignatureCannotBlockCachedSafetyOrOverwriteNewerLoss",
+          "report": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorConcurrencyTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.auth.ClockSafetyMonitorTest",
+          "method": "requiresPinnedSourceAndFreshSignedBoundWithConservativeExpiryFromRequestStart",
+          "report": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.auth.ClockSafetyMonitorTest",
+          "method": "replayCannotExtendTimeTrustAndWrongKeyOrStorageAndProcessBindingAreRejected",
+          "report": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.auth.ClockSafetyMonitorTest",
+          "method": "wallStepOrHostPauseInvalidatesCachedTrustUntilAFreshHigherSequenceReport",
+          "report": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.auth.ClockSafetyMonitorTest",
+          "method": "staleResponseExcessiveUncertaintyRateOrLostContinuityCannotAuthorizeShortGrants",
+          "report": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorTest.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "revocation-lag-and-key-retirement",
+      "scope": "LOCAL_AND_EXTERNAL",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_RUN",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "nativeSourceStepsAcceptOnlyRemainingBoundedPollBudget",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "missingUntrustedLaggedAndFutureSourceCannotAuthorizeAnyNativeSessionRead",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "replayedOldSourcePageCannotRefreshAuthorizationAndCursorGapsCannotAdvance",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "committedRevocationClosesTheNativeRouteAndBlocksRefreshReadAndReregistration",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "signingKeyRetirementBlocksExistingNativeProofsEvenWithFreshSourceProgress",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "transientNativeAuthContentionIsOverloadWhileAReplacedRouteRemainsUnauthorized",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "authenticatedPartialCatchUpInvalidatesRevokedRoutesWithoutAdvertisingCurrentSourceFreshness",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "lostHintIsScannedAndSocketWriteDoesNotCompleteApplicationDelivery",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "logicalDeliveryTimeoutKeepsWorkerCreditUntilPhysicalCleanup",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "stableUpperBoundPaginationDefersConcurrentInsertsToTheNextSweep",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "finalResultRetentionPreservesTwentyFourHoursAndLiveCallOrigin",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "authenticatedRevocationHighWaterCannotRegressSkipOrRefreshFromDuplicate",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "unauthenticatedRevocationProgressCannotMintFreshness",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "privacyDeletionRetainsOpaqueReplayMarkerAndNativeSafetyRecords",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "saturatedMaintenanceDoesNotConsumeSafetyRenewalCapacity",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "routeLossEvidenceComesFromNativeHistoryAndKeepsOriginalObservationTime",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.MaintenanceWorkersIT",
+          "method": "keyRetirementDeniesExistingNativeAuthorizationAndProgressIsReadFromPrimary",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "admitted-storage-epoch-transition",
+      "scope": "LOCAL_NATIVE_POSTGRES",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseFailoverIT",
+          "method": "nativeStorageEpochTransitionRetainsCallRoutingIdentityAndFencesEveryOldRoot",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseFailoverIT",
+          "method": "newCallsUseTheConfiguredRoutingEpochRatherThanThePromotedStorageEpoch",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseFailoverIT",
+          "method": "verifiedPromotionAdoptsOnlyUnexpiredReservationsAndRetainsWinnerAndReplayExpiry",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseFailoverIT",
+          "method": "gatewayAllocatesConfiguredRoutingEpochEvenWhenItsNativeHomeStorageHasAdvanced",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseFailoverIT",
+          "method": "admittedPromotionCommitsNewEpochWithoutAbortingCallsAndRejectsUntrustedReplay",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "legalLifecycleAndTerminalAbsorptionFollowSpec",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "actorCannotAcknowledgeFromLocalStateBeforeCommittedProofAndPhysicalWorkIsSerialized",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "closedGroupGatePreventsAnyNewMutationEvenWithPreviouslyHydratedState",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "unknownCompletionAndLateOldIncarnationCannotEnableReplacement",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "restoresDurableTimerWithoutClientTraffic",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "unknownEntityRetiresOnlyAfterPhysicalCleanupSoRecoveryCanRecreateIt",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "shardStopDrainsPhysicalWorkThenTerminatesWithoutRequestingAnotherPassivation",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "homeGrantIsQueuedThroughActorAndOldOwnershipCannotProduceSuccessfulProof",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "knownWarmHydrationOverloadRetriesAfterCleanupWithoutDiscardingTheActor",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.actors.call.CallActorStateMachineTest",
+          "method": "promotedNativeRootHydratesOldRoutingIdentityAndProcessesExistingCall",
+          "report": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "auth-contention-and-result-recovery",
+      "scope": "LOCAL_NATIVE_POSTGRES_AND_MTLS",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "nativeSourceStepsAcceptOnlyRemainingBoundedPollBudget",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "missingUntrustedLaggedAndFutureSourceCannotAuthorizeAnyNativeSessionRead",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "replayedOldSourcePageCannotRefreshAuthorizationAndCursorGapsCannotAdvance",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "committedRevocationClosesTheNativeRouteAndBlocksRefreshReadAndReregistration",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "signingKeyRetirementBlocksExistingNativeProofsEvenWithFreshSourceProgress",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "transientNativeAuthContentionIsOverloadWhileAReplacedRouteRemainsUnauthorized",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RevocationSecurityIT",
+          "method": "authenticatedPartialCatchUpInvalidatesRevokedRoutesWithoutAdvertisingCurrentSourceFreshness",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeGatewayCommandIT",
+          "method": "gatewayObtainsNativeAuthProofAndOriginalInviteReplaysAfterGroupRelease",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeGatewayCommandIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.NativeGatewayCommandIT",
+          "method": "nativeRemotePreparationStaysPendingWithoutManufacturingCommitAcknowledgment",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeGatewayCommandIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "postgres-primary-failure",
+      "scope": "EXTERNAL_THREE_AZ",
+      "localStatus": "NOT_APPLICABLE",
+      "externalStatus": "NOT_RUN",
+      "checks": [],
+      "receipts": [],
+      "requiredExternalEvidence": [
+        "oldWriterIdentity",
+        "acknowledgedWalHighWater",
+        "promotedTimeline",
+        "crossAzSyncStandby",
+        "physicalFenceReceipt",
+        "nativeOperationReconciliation"
+      ]
+    },
+    {
+      "id": "one-az-loss",
+      "scope": "EXTERNAL_THREE_AZ",
+      "localStatus": "NOT_APPLICABLE",
+      "externalStatus": "NOT_RUN",
+      "checks": [],
+      "receipts": [],
+      "requiredExternalEvidence": [
+        "hardwareInventory",
+        "faultTimeline",
+        "rawControlHistograms",
+        "recoverySlis",
+        "activeCallPreservation",
+        "mediaInterruption"
+      ]
+    },
+    {
+      "id": "mixed-version-and-forced-rollback",
+      "scope": "LOCAL_AND_EXTERNAL",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_RUN",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.app.CompatibilityWindowTest",
+          "method": "compatiblePreviousMinorCanJoinButNewFeaturesWaitForEveryAuthenticatedUpPeer",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.CompatibilityWindowTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.CompatibilityWindowTest",
+          "method": "rollbackRequiresDisabledFeatureAdmissionAndNoIncompatibleDurableOrPhysicalWork",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.CompatibilityWindowTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.PekkoShutdownLifecycleTest",
+          "method": "realFrameworkShutdownRetainsDatabaseUntilNativeReleaseAndFinalCleanup",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.PekkoShutdownLifecycleTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.ShutdownCoordinatorTest",
+          "method": "databaseClosesOnlyAfterPhysicalSettlementAndLeaseReleaseAndClusterLeave",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.ShutdownCoordinatorTest",
+          "method": "timeoutNeverTreatsUnknownCleanupAsFinishedOrClosesPoolAfterLateRelease",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.ShutdownCoordinatorTest",
+          "method": "gatewayTurnsReadinessOffFirstAndReconnectsInBoundedBatchesBeforeSettlement",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.ShutdownCoordinatorTest",
+          "method": "releaseFailureKeepsDatabaseOpenAndReportsFailure",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.app.ShutdownCoordinatorTest",
+          "method": "shutdownBudgetCannotConsumeActorSbrHeadroomOrExceedGatewayFiveMinutes",
+          "report": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "restore-history-loss",
+      "scope": "LOCAL_AND_EXTERNAL",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_RUN",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.RecoveryEpochIT",
+          "method": "restoredEpochMustExceedExternalPreDisasterHighWaterAndInvalidatesEveryOldAuthority",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RecoveryEpochIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RecoveryEpochIT",
+          "method": "missingUntrustedOrExpiredRecoveryPermitCannotAdvanceNativeEpoch",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RecoveryEpochIT.xml"
+        },
+        {
+          "class": "io.webrtc.signaling.storage.RecoveryEpochIT",
+          "method": "replayCompletionNeedsExactNativeSecurityCursorAndCompletedPrivacyRequests",
+          "report": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RecoveryEpochIT.xml"
+        }
+      ],
+      "receipts": [],
+      "requiredExternalEvidence": [
+        "backupIdentity",
+        "walRestoreTarget",
+        "externalEpochHighWater",
+        "physicalFenceReceipt",
+        "deletionReplayReceipt",
+        "securityHighWater"
+      ]
+    },
+    {
+      "id": "synchronous-standby-loss-local",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseReplicationIT",
+          "method": "synchronousStandbyLossNeverAcknowledgesControlAndOriginalUnknownResultReconciles",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseReplicationIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-integration-tests/target/fault-receipts/sync-standby-loss.json",
+          "sha256": "52fc9c9c490cf66ebf53fb0af6ccd58493631a2ab2e713b231e177ee69d6b2f6"
+        }
+      ],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "postgres-primary-failure-local",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.DatabaseReplicationIT",
+          "method": "physicallyFencedPrimaryPromotionPreservesAcknowledgedCallResultAndOutboxWal",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseReplicationIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-integration-tests/target/fault-receipts/postgres-primary-failure-local.json",
+          "sha256": "5498defdbfdf0c9756b0046f0052e6d8ded7dee05253b14797f04f07df986daa"
+        }
+      ],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "actor-jvm-pause",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.ActorProcessFaultIT",
+          "method": "pausedActorJvmCannotMutateOrReleaseAfterFifteenSecondNativeTakeover",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ActorProcessFaultIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-integration-tests/target/fault-receipts/actor-jvm-pause.json",
+          "sha256": "1cc3731399d52bddee10f24913b56c6b702e212ca0938ee70fdfbb459512f80a"
+        }
+      ],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "actor-jvm-kill",
+      "scope": "LOCAL_RUNTIME",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.storage.ActorProcessFaultIT",
+          "method": "killedActorJvmRecoversSilentCommittedCallWithOriginalDeadline",
+          "report": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ActorProcessFaultIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-integration-tests/target/fault-receipts/actor-jvm-kill.json",
+          "sha256": "8788a54cf3f72becdd5ef5a17eba6429a705974e7abf725f229d8696a1ac6f53"
+        }
+      ],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "artery-partition-rejoin",
+      "scope": "LOCAL_PEKKO_CLUSTER",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-actors/target/fault-receipts/artery-partition-rejoin.json",
+          "sha256": "d37929612f674b7050279bedc63d11c9ede0fc9131c1ef65012b6d937387eef8"
+        }
+      ],
+      "requiredExternalEvidence": []
+    },
+    {
+      "id": "artery-concurrent-rejoin",
+      "scope": "LOCAL_PEKKO_CLUSTER",
+      "localStatus": "PASS",
+      "externalStatus": "NOT_APPLICABLE",
+      "checks": [
+        {
+          "class": "io.webrtc.signaling.actors.cluster.MultiNodeShardingIT",
+          "method": "actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot",
+          "report": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml"
+        }
+      ],
+      "receipts": [
+        {
+          "path": "signaling-actors/target/fault-receipts/artery-concurrent-rejoin.json",
+          "sha256": "fe3241762a5a540c73c7cd11bcef110cfec56533b02f319027acdcbe817ec1f9"
+        }
+      ],
+      "requiredExternalEvidence": []
+    }
+  ],
+  "reports": [
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.call.CallActorStateMachineTest.xml",
+      "sha256": "96d31e922325a08fa3c8746fa39fe9c0ce16b9386ee2ba59d6c29380cfc7d306",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.ApplicationSerializerTest.xml",
+      "sha256": "e8e109b3354d19ae3d47cd6108fae738d03c0576d81f3450065120d705354cbc",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.ClusterReadinessDrainTest.xml",
+      "sha256": "876dcccab38eecc194dfe140014e43300eef7c1712cd42e81a091bbb0c3f9a5c",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.ClusterReadinessSourceTest.xml",
+      "sha256": "06275958dc5369758f9cb9a38228406a440703946ea2802612ba44e2273ed1c5",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.LocalCellReadinessTest.xml",
+      "sha256": "9e50ac0ae5815f450d17fff93f33355c23af437560a940617a45fdf5ac289013",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.NativeEnvelopeAdmissionTest.xml",
+      "sha256": "d507fbafafd4ae0b2697e77892a81136fd4b05bcc3d8c49926a0d4c05e6c02fe",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.cluster.ShardingConfigurationTest.xml",
+      "sha256": "652310a89c9c09af886ce0c4a338a757f139f1a567b645dbd72d780c131a346d",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.relay.NegotiationRelayTest.xml",
+      "sha256": "15f9302e70b9e31f8b1558573d1757370c0f3403fd6e6c90964ab1b07c2b20f1",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.relay.RelayAuthorizationCacheTest.xml",
+      "sha256": "74b4c72d1945c4ee1d5b528caa4eabde3f3c1ebd5b6555d8b7161b225190e0da",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.relay.RelayLifecycleTest.xml",
+      "sha256": "8adbecab71e57cc903a917c256c50961e7a1fc41ab9b2d2f9171229f0be75eaf",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.relay.TrickleIceContractTest.xml",
+      "sha256": "a03c07fcbb84085fc43f7c6edcd3636b2a7ec93a383dead29252c04140ed444e",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/surefire-reports/TEST-io.webrtc.signaling.actors.user.UserActorTest.xml",
+      "sha256": "84fba6ef76a02e42c9230f3a75b01c7922e69103474fc16c2fe10ebf06dab3ee",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.call.CallRecoveryIT.xml",
+      "sha256": "765740cab56533f25c709529b5d3f8936d9fd0b42c16fd2e34cd9f7f216d4c94",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.cluster.MultiNodeShardingIT.xml",
+      "sha256": "3675b3cce3281aa300ca8578df78d9c7106bf60d1681417397ca5b448c4073d7",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.lease.PostgresShardLeaseContractIT.xml",
+      "sha256": "944f4031d21c25957b4f22e5eec694d09405ae6f00614801b260083e0c5209bf",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-actors/target/failsafe-reports/TEST-io.webrtc.signaling.actors.user.PostgresUserBackendIT.xml",
+      "sha256": "e5e680686ca4a0868882804c0049e4c390310b9f8a2d8aae51369864dd64b17b",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.CompatibilityWindowTest.xml",
+      "sha256": "2dca6ec1bbfc2821e506ca707974e5f2912b48bb6cc419080bd07c9febefacc1",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.NativeControlMissingEnrollmentTest.xml",
+      "sha256": "101f77a4c92eb5bf7887d01205af4ce919c328a4f388cf548109c2b8aa2072d8",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.NativeRuntimeStartupTest.xml",
+      "sha256": "c016f112a85e684f4e9080ab44154c8891d67b938f60517923129a8d72c4174a",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.PekkoShutdownLifecycleTest.xml",
+      "sha256": "4bc125f4d1ec0cab2fd0e3a705ab6e47eba08d7041b5247a409680b8038dfd69",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.RuntimeSecretStartupTest.xml",
+      "sha256": "8f7e59cb508c407bb530fbfd070158eb6d4752800232de69afef4d0acd94c707",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.SafeStartupFailureTest.xml",
+      "sha256": "17d8ccaa1e3e694a0bd04afd3511a971e5f299558fe618c111e3bf20384f2a31",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.ShutdownCoordinatorTest.xml",
+      "sha256": "fb78badad170dad7692302624e1a19bcfa3c5412e1b78995aeea3e2bd058449c",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.config.RuntimeSecretEnvironmentTest.xml",
+      "sha256": "c8e94fabe1c2cbb3c0b79ae6f7e93c893fee055a677c78b87fa9c87f92cb9f50",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.config.SignalingPropertiesTest.xml",
+      "sha256": "37e551702c06adddd203f9906b3905e90fee835c29c63945c4680879882d9d2b",
+      "tests": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.MountedNativeContractTest.xml",
+      "sha256": "1219240b6236ab191b023928c21cc99c66dc2b6695e21a2ad6809b0e6fbb6113",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.NativeActorSourceEnrollmentTest.xml",
+      "sha256": "ed167e1f78e254b9472553dab245ef23de30e80ac350ce89038dd21d6b7e3465",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.NativeCachedSecurityTest.xml",
+      "sha256": "1b7715833efe8cb7399d47aa9fe9cd8126bb7046d94353f1ceddfa4c425a6b73",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.NativeCallingPolicyTest.xml",
+      "sha256": "dd4b98a11bb623324408f520b70cf145920223bdbf46fec5a0490b7d7ac88d45",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.NativeClockSourcePhysicalTest.xml",
+      "sha256": "0954547092984dbf3822a8d871c9216ebcd94ffdc7b20c08993d80118e086f9d",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.NativeWorkerSchedulerTest.xml",
+      "sha256": "4abbc42a71ea29ab865e14f371586c5635bea34e1061225e1c2ade8eec10ad76",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-app/target/surefire-reports/TEST-io.webrtc.signaling.app.runtime.PrivateHealthServerTest.xml",
+      "sha256": "8419ef5c7ba3fa20f5a439cf4417116c28bf64f3895b6f8e95e85fe6a221d957",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.AuthorizationRevocationTest.xml",
+      "sha256": "8f4c4c32d85481e0887d149545f9852a30e6c0b0f2c26838f08195fd8e858e8d",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.BoundedTokenVerifierTest.xml",
+      "sha256": "e9e5d46aeb18d143a32b08c83749c61b46787d0560d0c1864a44defab50060bf",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorConcurrencyTest.xml",
+      "sha256": "760131eb457d129f3b79e6374f8ff0b07e774fda94d3d1d37b48fad8e09db458",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.ClockSafetyMonitorTest.xml",
+      "sha256": "5c38b4f942cfca169877e6adbbf3073664a2487f4d0f8b7bf47d04fb4dcdaa6a",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-auth/target/surefire-reports/TEST-io.webrtc.signaling.auth.Rs256TokenVerifierTest.xml",
+      "sha256": "05b320aa6e2089545fbd0120735927d5d0e98e0deb6e7fbfe2235d82bde912c0",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.CriticalCommandProofTest.xml",
+      "sha256": "d3ad7289f5f16c158ba63a50bf56071a774ca002c2de023b56fedb3c4ca13e49",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.HomeProofRoutingTest.xml",
+      "sha256": "046979cb17458711c50b6fc57062b984fb13e6e1fc2fb657cac4748916c6b3ef",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeProofIssuerTest.xml",
+      "sha256": "bf253ed3317878c6f313dd606d483439054c6aaa629e37dc2842a94665ac890c",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeProofPhysicalCompletionTest.xml",
+      "sha256": "9c746684ddced96061f152e07b270bd32cfde8ce7b55a6213c5b1f998dd47fb2",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeReadRetryTest.xml",
+      "sha256": "0ac6146dc0643c8cbed8c5cd3551bfd7b6edd819a7f0c04cdc8b38b443c761ea",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeRelayPhysicalTest.xml",
+      "sha256": "8e30a180aeadf6fcd8e8a5b4ddd9be8e82317c7798f627c6b87588e7f6e811dc",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeRelayProducerTest.xml",
+      "sha256": "97d022c2f5cdc447afa569831f6845f9a2b0e442718b503c142fc1608b4a4dd9",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeRelayRoundCacheTest.xml",
+      "sha256": "19bf2611cc4b86a1d66128fa6308a9fa5a6195c56f0fbe8839d239e7920a3307",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeSagaEffectsTest.xml",
+      "sha256": "de60bdab5907253bc91716613fdbfca0e863c1645a35a05e9c06c8c149b160ae",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeSagaIdentityTest.xml",
+      "sha256": "7336d858cafbab8f55fee1ec2f529edfcf97fd16e0eb2c3931d48d362fe12b10",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.NativeSessionHandlerTest.xml",
+      "sha256": "a4fdf9cfc03676539b4165676f81a70a2b04683d090b765cc4f97cd1ae8a6c4e",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.PortableProofExpiryTest.xml",
+      "sha256": "babbdbd3ea4be20fbc7d204f287cf4034ae7e6e3765dab2a104ba5cee66a3f78",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.ProofBindingsTest.xml",
+      "sha256": "3fa8eb9c66e36603b1ff9d90d3dcd310e5ffe47b2be6e9f0431df3c555c05538",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RelaySessionAuthorizationProofTest.xml",
+      "sha256": "c7a2334d5c8f07941a5c1ecbd0690f8d1aa8fa89ce50a8fdb31a8b60c2c529d8",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RpcActorBridgeTest.xml",
+      "sha256": "7789929dab6298fb522092c97b7f76c4605bf15f1d11d40880f673a5b249d751",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RpcAdmissionDrainTest.xml",
+      "sha256": "f1a049a588c1c9d4dc66ab6d3235ba86d748d69d97b7b9e53f6d1a85c66ae892",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RpcOperationIsolationTest.xml",
+      "sha256": "4cd9484cfee8839126b9e172103466bb30a219cc6eb48bd35aa5607b3bca0d45",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RpcRetryBackoffTest.xml",
+      "sha256": "70da4d38beeb74c4e23c62e5a1c7fa0acb03c7ec22f8296b29da7c361ca7c304",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.RpcTransportDrainTest.xml",
+      "sha256": "1fa64f80549849d83d1617440350885021935ec7481e89c3625b8b3c4b4b95ae",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/surefire-reports/TEST-io.webrtc.signaling.rpc.SessionAuthorizationProofTest.xml",
+      "sha256": "c186caed39625c7ace8a69554f2dbf758ab17d49eb5eb176bd9ede0cffbeb28d",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.CellRpcConstructionDeadlineIT.xml",
+      "sha256": "348f587f4a79388802e58a31e38dafe86eaf4e766d71ec9aa48dc249894bcd8e",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.CellRpcPhysicalCompletionIT.xml",
+      "sha256": "a270b37524ea9ae25d9165973cfa53762fdf138dde2367c93e6a84604d6db1f8",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.CrossCellSagaIT.xml",
+      "sha256": "65417faff689641c95e64d0a3b829fd3f1229c9cb4dea418aad28b1eef774d63",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.GatewayRelayRpcClientIT.xml",
+      "sha256": "c8f0391dcca540acb14a64c34b0d133e6ec0d5f9435ced9172a3fec2ad8fab69",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.GatewayRelayRpcIT.xml",
+      "sha256": "b4bac4fd0630bacadbaab8c8c5fabef21870049b1cdaed2d597d5dbae578cf85",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.GatewayRpcTlsIT.xml",
+      "sha256": "cbebafe0308764589bf6e1b46383fc6eb26c4fcc15d98f055bbf68daf087d2a5",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.rpc.HomeActivationIT.xml",
+      "sha256": "7bdbc0deaf0805a713ff27d994da912aff0d202ca1ece39e305e9716194eb242",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActiveCommandProofIT.xml",
+      "sha256": "4c41938a53092e35d9bf84c9ea62ef4024b38ebf3aa4fc377b7fcbb8b9a94e54",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeClaimConsentIT.xml",
+      "sha256": "05b5b0b8d9034e7348516d8b0ca4dce6e73b1395e73cb227322f61274e402c7e",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeCrossCellTransportIT.xml",
+      "sha256": "78a8d693451bdc9a7a028494ff32984e670ecc44fea25f6cf00f4cd48b5380d4",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeProofSagaIT.xml",
+      "sha256": "276e6c8796d3dad8fa8ac412e5e13d73653731f69697bbb9a770265e2f82699f",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeSessionTransportIT.xml",
+      "sha256": "e25e3f1aa5d91f1e5b35ee2be341f5b35bee0924ee3ff4ce7e9987ddbf0504f0",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeSetupCommandIT.xml",
+      "sha256": "41acfb09fbc335d4f02689b96afc1fae7cc9f543f299c8333e8ed3a66b3f3249",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-cell-rpc/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeTerminalReadIT.xml",
+      "sha256": "e951f0c5603098541b08c0a29a3f321dc34a8baa5f7ca5a46ef68a223825e47b",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-control-api/target/surefire-reports/TEST-io.webrtc.signaling.control.BootstrapAuthorizationRaceTest.xml",
+      "sha256": "6bde2edeea9c6ce2c81d1313f00475c35523e92d24403acee483c953942f4bfd",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-control-api/target/surefire-reports/TEST-io.webrtc.signaling.control.BootstrapWireCounterTest.xml",
+      "sha256": "cedce13346cf88e9777899cbf6e7732820bd5fcb68ca77a383cc7ca878e3c765",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-control-api/target/surefire-reports/TEST-io.webrtc.signaling.control.DirectoryBootstrapTest.xml",
+      "sha256": "087e39c32c031f5ab79907a6c620406df81099cb58a8fb2f343d98caa514a285",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-control-api/target/failsafe-reports/TEST-io.webrtc.signaling.control.PostgresDirectoryIT.xml",
+      "sha256": "f97d837ab839556930454baec8b5d2abfb6984b5005841660409cbf933540ebf",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.DecoderRejectionTest.xml",
+      "sha256": "17b39c0cbda5a7ad7a18b371668e928532f30729012c9ab049830893c7e2f0fc",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.EdgeAdmissionTest.xml",
+      "sha256": "131c9e69f9c35cd6dbd3f4249654e36511e09de2bf66a9bbf8eff114ef99bf65",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.FrameRejectionTest.xml",
+      "sha256": "f72352a4810e351fcdb47f582caa54dbca9a90cfdfb639c3acc43b980ff0435a",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.GatewayBootControllerTest.xml",
+      "sha256": "141d3cef4b703edd33f672c3a1c7cafa8c0b865565aba5be66af895a730dbcde",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.GatewayRelayStreamTest.xml",
+      "sha256": "4f78d408277470af1809afcca18a3eab6c5525dd8a256d12164d30e6f965b712",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeAuthRejectionTest.xml",
+      "sha256": "d7ff4a32c1568209785fdcea13e55f1ff97949887354b4d317cef51c74b326b1",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeCallSnapshotTest.xml",
+      "sha256": "5238fafcace2b4bb6689ebb3f6f513099d7b428c4f73b678c0f2e68a39ad9345",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeGatewayRelayProofReuseTest.xml",
+      "sha256": "c4056ac49077c33e4324bacccc00434007de0bc2ec8c979e96c591c92eba061f",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeGatewayRelayReceiptTest.xml",
+      "sha256": "c10ffa1616d4d050aba7f2412e55d0fce4db3c27c37948cbe8891312b423fe35",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeGatewayRelayRoutingTest.xml",
+      "sha256": "075e445905cf838771e2d86e553b93deee789a9b3f1203b940c856bb262acd0b",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.NativeRelaySessionProofCacheTest.xml",
+      "sha256": "f4b182c3aad9f353af301654aeea85e960608c43aeec15e0b3e558711838305c",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.OutboundAdmissionHandlerTest.xml",
+      "sha256": "9b802eeda98a9358cf8fc03e0bd18bb2b03bbf8cadee7e7375856121de858dfe",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/surefire-reports/TEST-io.webrtc.signaling.gateway.OutboundRelayReceiptTest.xml",
+      "sha256": "78cb707b04080c98739515433e66423fbcb3b7225bc3f807cbf0f93838b28e8e",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/failsafe-reports/TEST-io.webrtc.signaling.gateway.GatewayIdleSecurityIT.xml",
+      "sha256": "ff8a76713a4809ebc7b2c8b65e80be0835526600759e666b5a80fe98261efb71",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/failsafe-reports/TEST-io.webrtc.signaling.gateway.GatewayProtocolIT.xml",
+      "sha256": "cb986574642ca13402a19948f4e14d27e40b81181a22c51c61032c884cff6be9",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-gateway/target/failsafe-reports/TEST-io.webrtc.signaling.gateway.GatewayTlsIT.xml",
+      "sha256": "a27c95058f941fa173a2e8728143fda14a43a0a857c8ebbe2a1c8aefe7520a09",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/surefire-reports/TEST-io.webrtc.signaling.storage.InvariantPropertyTest.xml",
+      "sha256": "51653b4c1cb6785875c99e9dcf0f7cd0194a13b2e1e6768539677f385172391d",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.BackpressureIT.xml",
+      "sha256": "bdcf8a556ba1d2510e9efa40911b52e5649dcda9a020a15078a2ef4710f85c4a",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.ReconnectMediaRecoveryIT.xml",
+      "sha256": "973b6c458835f8eaf37063fda98c145185de46b106a71e23f8082280549b2bc5",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.it.WebRtcInteropIT.xml",
+      "sha256": "e225c9816cfdfcfa2902eb7c06905e6b20f0cf7c879adcf72734742ebd4cc8fd",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ActorProcessFaultIT.xml",
+      "sha256": "30084db4f8626a96681827d006550989f06274a2e7d5488542dc254cbeb0d7c9",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CrashScheduleIT.xml",
+      "sha256": "4bd3635895a3f29074005bad8548f7267bb88eb9b9fa270336e618e1e442a18a",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseFailoverIT.xml",
+      "sha256": "6a75723bba42ace2584f9a693908e5dc52120ba0a1a06448a5dabcba107ef0bf",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.DatabaseReplicationIT.xml",
+      "sha256": "8cac22e895a7677598266dca9be55192d0e0b6a7e1ca3208654c914079b2ca25",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorCompositionIT.xml",
+      "sha256": "be31e1c056c29c29ff47a591efa6f7d5aa4fe9a6074522f850ff14672b3b68e0",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorIncompleteStartupIT.xml",
+      "sha256": "34d27bdcbe7480ef735087ab607932aeaefb38c328150a8c5d31f36c9dee9fa8",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorProcessIT.xml",
+      "sha256": "9aabcff00a64b7fbfb4d0bccb1d832bdda0defed94a71fb54315d8345e4e966f",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorStartupFailureIT.xml",
+      "sha256": "d82c3fe59ba22474d5641839d263e24fc4a041d88770cdbdeb6d9942e340c612",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeCachedRevocationSourceIT.xml",
+      "sha256": "944e29d11f9b09e4f9f72eb6a805099afa4c3ac6def0852d97f5d8a21f14cc6e",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeCallingPolicyIT.xml",
+      "sha256": "8aa1ec346c8bff764212e0b119cd00eb9973f79d1afad08e62525f4616cecc2f",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeCellHealthSourceIT.xml",
+      "sha256": "24c4de699395900fdf9fa566e5fdf6711dc64b2b44b38f16fc048c074b0cff88",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeCellRpcMainIT.xml",
+      "sha256": "f3021f3301cbd97ed2a92d718d5dff8bbc5fc2e26567276f4f0fb0f7d3d5f20f",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeClockSourceIT.xml",
+      "sha256": "df1546ee5012859e12836da42d9db3fc7430c210cb62c57d8015c84244df8988",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeControlDatabaseFactoryIT.xml",
+      "sha256": "9b60a0bd9496e666f3379b5f2e7d204e742a1ef18c793358af804213695e89a4",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeControlMainIT.xml",
+      "sha256": "eefab1cc7c30f066e7e6513c004c3e407edb5ee5356c212a06bb7f54993a0d0f",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeControlStartupFailureIT.xml",
+      "sha256": "5de6e7818d2b26a1e7163c55298aad2de81e82cbf0ffb483d94167c8c7aaaac5",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeGatewayCommandIT.xml",
+      "sha256": "e2c0681b625fc61b0d250b648935c9462026cf697590155a8c1d9eae7cebc199",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeGatewayLifecycleIT.xml",
+      "sha256": "a9d65ae303e7059afc9d9a1f9caf136fa7a036d05833a40bf3027d17c47d0993",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeGatewayStartupFailureIT.xml",
+      "sha256": "d8bfbb81d640f6e7f11a5a6edc868b4c7eb304ad746382174811360498e88a54",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeRevocationSourceIT.xml",
+      "sha256": "605dfb7cb6b188c1ceaba97cd3b5dd34987d887e5f374719aa5aac3db545235e",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeRuntimeDrainIT.xml",
+      "sha256": "8c46709cf652f5c4a286a77be19b26db44e89c142838653c4cc8f75d1a3b11a5",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PartitionAndPauseIT.xml",
+      "sha256": "98b6c5c509c18bf78429e2a5c4a44d1754d2bae610f2b7351c330d0e4fb65edf",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-integration-tests/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RevocationSecurityIT.xml",
+      "sha256": "5c6512ca946447c7aa328e7b0146bc605680b74ed1d20e963456bd255b2805ed",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ActiveTracePoolTest.xml",
+      "sha256": "06c24685eec1cfb60cea06dfa14978dd77548b6aa8fb1bbb9c505a2bfbcfb619",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.CallEventCursorTest.xml",
+      "sha256": "eab0113906d79df2973621e7124af63a8509462bb67aa018d83f3e8eea9ea08e",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.CallScheduleTest.xml",
+      "sha256": "69d63dd077027c971f3ac7158e0e838621f9617cdd64251c3a85c831c0066816",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.GeneratorResourcesTest.xml",
+      "sha256": "b9d9acb95b58e32bc3ec4e71a5ca4e8576b17bb4681bc918e620d96dc9a19e08",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.InviteOutcomeTest.xml",
+      "sha256": "4c0457b3688c8c6c4033d6d702459aeea8a8fdd51cff32dc3d7ff6d1e1f06ba1",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.LoadGeneratorContractTest.xml",
+      "sha256": "7c25956805fd49f77855ea6abe81ca0bea63fc68a20a1bcb800b5c4b2d20e46d",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.LoadGeneratorTlsTest.xml",
+      "sha256": "b4dbe219a5722d8efb0f00ea1a639032307a8d0a10a25325538feac183c55afe",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.NegotiationTraceTest.xml",
+      "sha256": "151ac1696c4d51bbb47e1c7d99c35e3e4f6ea490c7d09e1dec6f49ee27351b64",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ReconnectBackoffTest.xml",
+      "sha256": "ce0995a24764cd2062292cddd51101eb0bc76ba75fa934db260e6c51de98253e",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ReconnectFlowTest.xml",
+      "sha256": "045bfba534b46b96344478bc4065a3840104f2ba6fa0cedf3a803409b267a42a",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioCapabilitiesTest.xml",
+      "sha256": "0a36501a6be71a745e692a0cee902a061bd55c5ee31e4ac4711fff330a75b579",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioInputTest.xml",
+      "sha256": "49e1395f7b015a220f78645ced0987aad44b7d4e8622ca65841749c5cd919139",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioPopulationTest.xml",
+      "sha256": "d5b74914e0424a69535f7b86cf723a85d92d77a2a3cbf42b46a614d8a89ec9fb",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioRelayOrderingTest.xml",
+      "sha256": "56bf60496c36e5654fe43a42fe3729d11468ad82f7c0e1d15bd3aed045e5510f",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioRunnerOfferWssTest.xml",
+      "sha256": "3366e5a1c2e22f78133db2bbeda2517cf7ef37515d56911c012d948cb4a683f0",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioRunnerSkewWssTest.xml",
+      "sha256": "9d0413b5377f63c94300862e126301e3ba666d67cb5735a21747eb887fe4a4b4",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.ScenarioRunnerWssTest.xml",
+      "sha256": "5076a59e97091ea64cffd70f7b4db54cfeccd6cd7eefce7390c31a64a96f1f60",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.SecurityClosureWssTest.xml",
+      "sha256": "24629c01a72fb6aa3bee8ca9b89113be5743362a525539cff79241c03c18b700",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.SecurityWireProbeWssTest.xml",
+      "sha256": "85a1f8eac71e60d33a7558c4658e200480219b3aa0050097e53f5567229b66f2",
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.SecurityWorkloadTest.xml",
+      "sha256": "5079d37491d7c36da8f21aff7a4622527c6927ec97e8bfe3275677662ad337df",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.SkewTargetSelectorTest.xml",
+      "sha256": "8723967b9208ad184937728bf40553def10236f4c0656ac0cd4c2b3310a33a49",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.SnapshotOfferTest.xml",
+      "sha256": "ffc6d9d5aafd9e27c0fd8b79bbd25661f6290a317761164c1635e512b8035c65",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-loadgen/target/surefire-reports/TEST-io.webrtc.signaling.loadgen.StaleGenerationProbeTest.xml",
+      "sha256": "c7ab7381d111b302c1a27b220759ed4577325bb73009e83852db1f782f939d05",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-observability/target/surefire-reports/TEST-io.webrtc.signaling.observability.TelemetryContractTest.xml",
+      "sha256": "d1c3de51aaaa77a66ed5997f6a31d88322ed62804c958fac27aad4efb7954f1a",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-protocol/target/surefire-reports/TEST-io.webrtc.signaling.protocol.CompatibilityTest.xml",
+      "sha256": "93878fa4d3e6a85367bdbb387e4b75334b551f5d0e2820c033c769fc2a0988cd",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-protocol/target/surefire-reports/TEST-io.webrtc.signaling.protocol.ProtocolContractTest.xml",
+      "sha256": "ab6fd03c5e704f3340b4f2119c733f796dfa547e8aaa29b53d3d686cf0480bff",
+      "tests": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/surefire-reports/TEST-io.webrtc.signaling.storage.DbBoundaryTest.xml",
+      "sha256": "568e60737f0c3aca3aef7701578e8e0df7f19ff86c1f89d23dd12b689ecc7c2b",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/surefire-reports/TEST-io.webrtc.signaling.storage.worker.RevocationSourceVerifierTest.xml",
+      "sha256": "4a47189d5c8979e46f8a09debfacf0e0df5262505004cb908de3e8683fa2cff6",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.AcceptCompletionIT.xml",
+      "sha256": "6901aac69ba39a4a2913114324111fa2724418b608989665afaaf1251504db1e",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.AuthoritySqlIT.xml",
+      "sha256": "32c0d2a5fa59a7d7793112febc7b2bbedb50fd1d945e27b7b076d2740fd986d2",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CallCommandIT.xml",
+      "sha256": "363c777fd20d29555e75ec3dea4cdb610fb5d311c94b82013fc66d248bf5781d",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.CoordinatorGrantIT.xml",
+      "sha256": "2dcc1b9d6bcf3ff6e0cf42335215684deb424ccc8a6054dbb7e50045a214302b",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.HomeProofReadIT.xml",
+      "sha256": "e069913270b62f7403016888046bfa1c5532326833c644e017808a6caaa74c69",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.LocalInviteAtomicIT.xml",
+      "sha256": "ab0fd808030956e521423b7882b2c1741818cf9519f2b70b75e020f658352761",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.MaintenanceWorkersIT.xml",
+      "sha256": "3a69b19c8d8e836fb61221f0facce04957a3ca33ac63aadba078d7a77d5bb3e5",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeActorSecurityPoliciesIT.xml",
+      "sha256": "5f559ebc75fda455fc492a3fc8d57cc1bd59989060df985dd95a0b11fa0cb741",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeBusinessAdmissionIT.xml",
+      "sha256": "7d1260b72037ef9c12596df115a3efd1530ae899b043f6927f896378bda49011",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NativeHomeClaimSecurityIT.xml",
+      "sha256": "e7247deab219ba4637273cd5e2e9567ad25b27746b9d739afd7c91899e265a2f",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.NegotiationGrantIT.xml",
+      "sha256": "35df3399947615330a835379dd7f706a8069645c1fdf897882001f77e00501ed",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PortableHomeGrantIT.xml",
+      "sha256": "bf477beb02355b2c40079167d3f7dc4dd9c964745117f54e612d214ac2dfd534",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.PrimaryCellFactsIT.xml",
+      "sha256": "00cfe776fad1f2ce666a5cf4bb09ab08902b20de226414c3e3a8a73af1635a47",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.ReattachMediaIT.xml",
+      "sha256": "ef6242f81762f75e0e7bc66de8c9daa98a9e24a77d3f73c0b1daab8152e8128c",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.RecoveryEpochIT.xml",
+      "sha256": "5c034917c8bf5cba426debed21f285101d10e76af54603255e247d32822cac20",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.SchemaInvariantIT.xml",
+      "sha256": "affccc017564b7fe491f1ccec82990e44f8103998e020308ef82e21b4cfecb43",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.SessionAuthReadIT.xml",
+      "sha256": "b2890c31cfe3f0d4e79226542d12446dda8e6aafd0a350156ecf7fa7179cded1",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.SessionRegistryIT.xml",
+      "sha256": "cf29362530ed87c4c441d66ef50e3c3a18b0f64714f48134a3b947ed50e38dbb",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.SessionStorageFenceIT.xml",
+      "sha256": "9babd1a0b89d879e6dd372490228c23d74ed260182d6509afb33729e0c680744",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "signaling-storage/target/failsafe-reports/TEST-io.webrtc.signaling.storage.UserReservationRaceIT.xml",
+      "sha256": "e17cc36e38a60c5bd40f99ca64c2e8011c864588bf7d49d93472afb03b4877c6",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "source": {
+    "gitCommit": "92114fe0b8ab63f3b614adc685ab5951958c6832",
+    "sourceFingerprint": "1fbddb99154b75bb834e58a37f6020cdec7e91ea6af048fa84e9d84b17b816d2",
+    "dirty": false
+  },
+  "runSha256": "62212b8cd71919fdf6df159cfda4933f489272ab348aad1efec4be5b4fa24e9b",
+  "matrixSha256": "f5765b7c4707d32037496b679c81bdc36aba4cf7b270de0ee49bd92ec554499b",
+  "mavenLogSha256": "36304b3e8e54b20978f00415893a58dbda74115eae1a99cb0fd8be37feee3da8"
+}
