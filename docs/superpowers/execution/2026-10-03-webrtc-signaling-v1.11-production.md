@@ -22,7 +22,8 @@ Spec: full 1,762-line v1.11 document, synchronized from origin at `a3301a8` and 
 | 19 | Complete local verification | Privacy-safe logs/traces, enum metrics, four recovery SLIs, validated dashboards / Prometheus rules |
 | 20 | Complete deployment contracts | Rendered Helm object semantics / unsafe overrides / lint; no deployed HA qualification |
 | 21 | Complete local lifecycle/restore verification | Ordered physical drain, actual Pekko shutdown graph, N/N-1 feature gates and native recovery epoch repair |
-| 22–24 | In progress / NOT_QUALIFIED | Native gateway factories/safety/shutdown added; complete launcher/source contracts, security drivers and measured qualification remain open |
+| 22 | Complete local correctness/fault suite | `5990a5c`; selected630/full758 native tests PASS, Python78 PASS; original source-bound local evidence and fresh review retained below |
+| 23–24 | In progress / NOT_QUALIFIED | Distributed workload/security execution, production enrollment and measured same-candidate qualification remain open |
 
 `./mvnw verify` at Task 2 completion: 43 tests. After the review fix: **51 tests, zero failures/errors/skips**. Empty-module JAR warnings are expected scaffold warnings; startup-failure warnings belong to negative config tests. Tests exercise configuration/protocol contracts, not any unimplemented runtime or production scale.
 
@@ -663,3 +664,70 @@ enrollment. Same-candidate10k→100k→200k/cell→multi-cell→P0/P2/N−1,24h 
 alternative also requires migration review and measured drained/fenced cluster
 replacement or stable backport before release. No task-complete ledger line,
 final whole-branch completion review or workspace deletion is claimed.
+
+## Task 22 completion — 2026-10-09 local suite
+
+This checkpoint supersedes historical Task22-in-progress statements above for the
+local correctness/fault suite. Tasks23–24 remain open and the release remains
+**NOT_QUALIFIED**.
+
+Implementation: `5990a5c3ab3957e33342b37644a3219ae7b05c54`
+(`test: add signaling safety and fault qualification suite`). Selected clean
+reactor completed 630 tests/143 reports without failures/errors/skips. Its collector
+correctly rejected jqwik's simple testcase classname; the original failed run was
+preserved. A new identity-binding regression failed first, then passed after the
+parser bound an exact simple classname to its original qualified suite name.
+
+Final full `./mvnw -B clean verify` on the clean immutable implementation SHA
+finished 2026-10-09T15:24:31+07:00 in 16m54: **758 tests/166 original XML reports,
+zero failures/errors/skips**. The corrected collector reported
+`LOCAL_SUITE_PASSED`, validated every required method and five original fault
+receipts, and confirmed unchanged source fingerprint. Python qualification
+regression passed **78 tests** in 74.269s. One fresh read-only whole-request review
+found no Critical/Important/Minor findings; its required full gate is now met.
+
+[Retained original local evidence](../../../qualification/evidence/local-task22-5990a5c/README.md)
+contains the collector JSON, clean source/run binding, matrix, original XML/fault
+receipts/Maven log archive, Python output, hash index and review notes. The 24
+fault records include 21 local PASS records; seven external obligations remain
+NOT_RUN. Documentation/evidence commits preserve the verified implementation SHA;
+no later source revision or deployed image is claimed to have passed this run.
+
+New coverage includes real actor SIGSTOP past the native 15s root expiry,
+SIGKILL/silent-call recovery, real synchronous standby loss/UNKNOWN reconciliation,
+physical primary kill before standby promotion/WAL-result-outbox preservation,
+actual Artery minority partition and replacement-before-old-address-rejoin, and
+fixed-seed lifecycle schedules through all five live phases with real negotiation
+and matching media observations. Existing native winner/reciprocal/COMMIT/outbox,
+clock/revocation/ICE/shutdown contracts ran in the same gates. No production runtime
+code, fencing, TTL, durability, queue bound or authorization was relaxed.
+
+### Task 22 rulings and costs
+
+- Continue the existing clean `dev-release-minikube` checkout rather than create a nested worktree; it already holds the native dependencies. Cost if wrong: later branch reconciliation.
+- Separate local suite completion from spec §§49.9–49.10 deployed qualification. Cost if wrong: local faults cannot certify the production topology; release stays NOT_QUALIFIED.
+- Move the five named tests into their already-declared storage package directory; preserve class names and fixtures. Cost if wrong: source paths change; binary/API identity does not.
+- Add an external-JDBC test fixture constructor for real replication while preserving isolated schemas and the default fixture. Cost if wrong: additional test harness maintenance; no runtime configuration fallback.
+- Treat stale release as successful idempotent cleanup and assert that the exact replacement token is unchanged, matching the native repository contract. Cost if wrong: boolean receipts could be misread as mutation counts.
+- Reuse original operation identities in generated reorder/retry schedules, preserving the native 16-operation bound. Cost if wrong: distinct-ID overload is a separate admission test, not this property schedule.
+- Force a native checkpoint after standby recovery exits before reading the promoted checkpoint timeline. Cost if wrong: local promotion includes extra checkpoint I/O; fence/WAL ordering remains mandatory.
+- Enable and assert only the fixture's Artery test transport hook; management-command success with the hook disabled is not an injected partition. Cost if wrong: deployed remoting still requires independent qualification.
+- Remove same-name typed ActorSystems by exact instance identity; their local `/user` path equality cannot identify a cluster member. Cost if wrong: the fixture could discard a survivor and await a dead member.
+- Prove survivor takeover before same-address fresh-UID rejoin; membership Up alone does not prove retirement of the old shard home. Cost if wrong: **immediate concurrent same-address restart/recovery availability remains unverified**, with no local delivery/RTO guarantee.
+- Use clean verify to avoid stale IDE/package-path bytecode, and require original fresh reports/receipts. Cost if wrong: extra compile time.
+- Bind jqwik simple testcase classnames only to an exactly matching qualified suite name; unrelated suites remain rejected. Cost if wrong: new report-engine naming conventions require a new regression and explicit parser support.
+- Preserve the failed selected collector result; use the passing final full reactor as the superset proof for corrected collection. Cost if wrong: there is no independent selected-collector PASS artifact.
+- Commit an immutable implementation checkpoint before the full gate, followed by documentation/evidence delivery. Cost if wrong: two commits rather than the plan's one final commit; verified code SHA stays explicit.
+- Run the one fresh final review concurrently with full verification on frozen source. Cost if wrong: reviewer saw full-gate pending, so executor separately checked original final PASS before completion.
+- Refresh stale GitNexus using pure `--index-only` during verification; source stayed unchanged. Cost if wrong: generated guidance is not refreshed; index metadata was verified up-to-date at 5990a5c.
+- Keep the current branch and ignored plan workspace while Tasks23–24 remain pending; user authorized Task22 completion only. Cost if wrong: scratch requires later cleanup; local evidence is also committed so it does not depend on scratch survival.
+
+### Reviewer declines resolved
+
+Immediate concurrent same-address restart/recovery remains a named deployment
+follow-up. Three-AZ HA/enrollment and recovery under load, P2/AZ loss, 24h soak,
+external identity/PKI and deployed DR retain Tasks23–24 NOT_RUN gates. Unchanged
+Task16 ICE behavior is covered by the existing full-suite contracts and actual
+Chrome interop, without claiming renewed production client-matrix qualification.
+The reviewer's pending-full-success condition was resolved by the original final
+collector PASS, not inferred from its static approval.

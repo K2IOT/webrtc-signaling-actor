@@ -539,16 +539,18 @@ runbooks/
 
 **Execution clarification (2026-10-09):** named native SQL tests declare the storage package and now use its matching source directory. The supplementary tests execute actual local JVM, Artery and synchronous PostgreSQL faults. Method-level local evidence and original fault receipts are separate from external three-AZ qualification; Tasks 23–24 retain production workload and deployed-candidate gates. See [suite contract](../../../qualification/scenarios/README.md).
 
+**Status: COMPLETE — local suite (2026-10-09).** Implementation commit `5990a5c`; selected clean reactor 630 tests PASS; full clean reactor 758 tests/166 original XML reports PASS, zero failures/errors/skips; Python regression 78 tests PASS. Fresh final review found no blocking findings. [Original local evidence](../../../qualification/evidence/local-task22-5990a5c/README.md) maps all 24 fault records: 21 local PASS, seven external obligations NOT_RUN. Production remains NOT_QUALIFIED. Immediate concurrent same-address restart/recovery availability is deferred explicitly; the rejoin schedule proves stale-tenure safety after native replacement takeover.
+
 **Interfaces:**
 - Consumes: all runtime modules and deployment test environment.
 - Produces: machine-readable invariant/fault evidence used by Task 24.
 
-- [ ] **Step 1: Write failing model/property tests** covering every state transition plus randomized duplicate/reordered/lost commands, stale generations, stale actors, reciprocal calls, winner races, delayed releases, unknown outcomes, and absorbing terminal states.
-- [ ] **Step 2: Add failing fault schedules** at before/after DB COMMIT/ACK/outbox, process pause past lease expiry, coordinator loss, shard host loss, old-node rejoin, partial partition, clock uncertainty, revocation lag, and PostgreSQL failover.
-- [ ] **Step 3: Run** `./mvnw -pl signaling-integration-tests -am verify` **Expected:** failures identify each not-yet-satisfied fault contract before fixes; once runtime tasks are complete, zero invariant violations.
-- [ ] **Step 4: Fix only implementation defects revealed by the suite, preserving spec safety rules**; never relax fencing, TTL, durability, queue bounds, or authorization to make a test pass.
-- [ ] **Step 5: Run** `./mvnw verify` **Expected:** all unit/integration/property/fault tests PASS.
-- [ ] **Step 6: Commit** `test: add signaling safety and fault qualification suite`.
+- [x] **Step 1: Write failing model/property tests** covering every state transition plus randomized duplicate/reordered/lost commands, stale generations, stale actors, reciprocal calls, winner races, delayed releases, unknown outcomes, and absorbing terminal states.
+- [x] **Step 2: Add failing fault schedules** at before/after DB COMMIT/ACK/outbox, process pause past lease expiry, coordinator loss, shard host loss, old-node rejoin, partial partition, clock uncertainty, revocation lag, and PostgreSQL failover.
+- [x] **Step 3: Run** `./mvnw -pl signaling-integration-tests -am verify` **Expected:** failures identify each not-yet-satisfied fault contract before fixes; once runtime tasks are complete, zero invariant violations.
+- [x] **Step 4: Fix only implementation defects revealed by the suite, preserving spec safety rules**; never relax fencing, TTL, durability, queue bounds, or authorization to make a test pass.
+- [x] **Step 5: Run** `./mvnw verify` **Expected:** all unit/integration/property/fault tests PASS.
+- [x] **Step 6: Commit** `test: add signaling safety and fault qualification suite`.
 
 ### Task 23: Build Distributed Load Generation and P0/P1/P2/N-1 Scenarios
 

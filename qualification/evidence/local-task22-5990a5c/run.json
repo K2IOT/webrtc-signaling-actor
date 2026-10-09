@@ -1,0 +1,17 @@
+{
+  "gitCommit": "5990a5c3ab3957e33342b37644a3219ae7b05c54",
+  "sourceFingerprint": "0e4d0b4cbb819a98a075be8e54dccec04774211c0397bf28cacfd58dce0f84bc",
+  "dirty": false,
+  "testOnly": true,
+  "command": [
+    "./mvnw",
+    "-B",
+    "clean",
+    "verify"
+  ],
+  "matrixSha256": "ca2ee3c5ee3bce49ab5f73427bbd56aeed1206086f09b9e50ec07052ab766a32",
+  "java": "openjdk version \"21.0.12.1\" 2026-08-18\nOpenJDK Runtime Environment (build 21.0.12.1+1-1-24.04.4-Ubuntu)\nOpenJDK 64-Bit Server VM (build 21.0.12.1+1-1-24.04.4-Ubuntu, mixed mode, sharing)\n",
+  "startedAt": 1791533254.594338,
+  "finishedAt": 1791534272.345927,
+  "exitCode": 0
+}
