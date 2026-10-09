@@ -387,6 +387,20 @@ faults:
     scenario: artery-partition-rejoin
   invariant: Actual bidirectional transport blackhole downs minority; survivor acquires a higher root before same-address
     fresh-UID rejoin; stale release is an idempotent no-op preserving the exact replacement token.
+- id: artery-concurrent-rejoin
+  scope: LOCAL_PEKKO_CLUSTER
+  localChecks:
+  - module: signaling-actors
+    class: io.webrtc.signaling.actors.cluster.MultiNodeShardingIT
+    methods:
+    - actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot
+  localReceipts:
+  - module: signaling-actors
+    scenario: artery-concurrent-rejoin
+  invariant: Six-member native quorum; restart same address with fresh UID without waiting for replacement acquisition.
+    Same-call bounded reconciliation reads converge after at-most-once loss; stale pulse is fenced and stale release
+    preserves the exact replacement token. Each query has at most 2s and the local correctness schedule has one 60s bound;
+    this is not production recovery-time qualification.
 productionQualification: NOT_QUALIFIED
 externalCandidateBinding:
 - gitCommit

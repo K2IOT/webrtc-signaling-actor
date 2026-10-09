@@ -24,6 +24,39 @@ class MultiNodeShardingIT {
 
   record Reply(String node, String entity, long epoch) implements CborSerializable {}
 
+  record RecoveryProbe(Reply reply, int attempts, int unknowns) {}
+
+  // These are pure same-call reconciliation reads, not replayed business mutations.
+  // Each ask retains its native 2s deadline; the entire fault schedule has one fixed bound.
+  static RecoveryProbe recoverCall(ActorSystem<?> system, CallId call, long recoveryEnd)
+      throws InterruptedException {
+    int unknowns = 0;
+    for (int attempt = 1; attempt <= 20; attempt++) {
+      long left = recoveryEnd - System.nanoTime();
+      if (left <= 0) break;
+      try {
+        var reply =
+            ClusterSharding.get(system)
+                .entityRefFor(ShardingBootstrap.CALL_TYPE, call.value())
+                .<Reply>ask(
+                    PingCall::new,
+                    Duration.ofNanos(Math.min(left, Duration.ofSeconds(2).toNanos())))
+                .toCompletableFuture()
+                .join();
+        return new RecoveryProbe(reply, attempt, unknowns);
+      } catch (CompletionException failure) {
+        if (!(failure.getCause() instanceof org.apache.pekko.pattern.AskTimeoutException))
+          throw failure;
+        unknowns++;
+      }
+      long delay = Math.min(Duration.ofMillis(100).toNanos(), recoveryEnd - System.nanoTime());
+      if (delay > 0) TimeUnit.NANOSECONDS.sleep(delay);
+    }
+    throw new AssertionError(
+        "Native same-call recovery did not converge within its original bound; UNKNOWN="
+            + unknowns);
+  }
+
   enum StopUser implements UserMessage {
     INSTANCE
   }
@@ -68,7 +101,7 @@ class MultiNodeShardingIT {
   }
 
   @BeforeEach
-  void setup() throws Exception {
+  void setup(TestInfo test) throws Exception {
     nodes.clear();
     runtime = new DbTestRuntime();
     repository = new GroupOwnerRepository(runtime.sql, "c001", 1);
@@ -77,7 +110,24 @@ class MultiNodeShardingIT {
       s.execute(
           "INSERT INTO group_owner(cell_id,ownership_hash_version,group_id,storage_epoch,group_epoch,lease_sequence,status) SELECT 'c001',1,n,1,1,0,'IDLE' FROM generate_series(0,1023) n ON CONFLICT DO NOTHING");
     }
-    for (String zone : List.of("a", "a", "b", "c")) nodes.add(start(zone, FINGERPRINT));
+    boolean partition =
+        test.getTestMethod()
+            .orElseThrow()
+            .getName()
+            .equals("actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot");
+    // A production cell has six actors. Five survivors retain the native DData
+    // majority cap; do not weaken quorum to make a four-node loss fixture pass.
+    var zones = partition ? List.of("a", "a", "b", "b", "c", "c") : List.of("a", "a", "b", "c");
+    for (String zone : zones) nodes.add(start(zone, FINGERPRINT));
+    if (partition) {
+      var effective = nodes.getFirst().settings().config();
+      assertThat(effective.getInt("pekko.cluster.sharding.distributed-data.majority-min-cap"))
+          .isEqualTo(5);
+      assertThat(effective.getInt("pekko.cluster.sharding.coordinator-state.write-majority-plus"))
+          .isEqualTo(3);
+      assertThat(effective.getInt("pekko.cluster.sharding.coordinator-state.read-majority-plus"))
+          .isEqualTo(5);
+    }
     var seed = Cluster.get(nodes.getFirst()).selfMember().address();
     for (var node : nodes) Cluster.get(node).manager().tell(new JoinSeedNodes(List.of(seed)));
     org.awaitility.Awaitility.await()
@@ -280,9 +330,10 @@ class MultiNodeShardingIT {
         .isEqualTo(true);
   }
 
-  @Test
-  void actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot()
-      throws Exception {
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void actualArteryPartitionDownsMinorityAndRejoinedUidCannotReleaseReplacementRoot(
+      boolean concurrentRejoin) throws Exception {
     ungatedChildren.set(0);
     var call = new CallId("c001.e1.00000000-0000-0000-0000-000000000001");
     var before = pingCall(nodes.getLast(), call);
@@ -296,7 +347,9 @@ class MultiNodeShardingIT {
     nodes.sort(Comparator.comparingInt(n -> n == isolated ? 1 : 0));
     assertThat(nodes.getFirst()).isNotSameAs(isolated);
     var survivors = nodes.stream().filter(n -> n != isolated).toList();
+    assertThat(survivors).hasSize(5);
     long faultAt = System.nanoTime();
+    long recoveryEnd = faultAt + Duration.ofSeconds(60).toNanos();
     for (var other : survivors) {
       transportFault(isolated, other, true);
       transportFault(other, isolated, true);
@@ -312,8 +365,19 @@ class MultiNodeShardingIT {
     for (var survivor : survivors) assertThat(nodes.stream().anyMatch(n -> n == survivor)).isTrue();
     // Establish replacement authority before the old address rejoins. Membership Up
     // alone does not prove that the coordinator has retired its previous shard home.
-    var takeover = pingCall(survivors.getFirst(), call);
-    assertThat(takeover.epoch()).isGreaterThan(before.epoch());
+    var takeover = concurrentRejoin ? null : recoverCall(survivors.getFirst(), call, recoveryEnd);
+    if (takeover != null) assertThat(takeover.reply().epoch()).isGreaterThan(before.epoch());
+    if (concurrentRejoin) {
+      try (var c = PgFixture.connection();
+          var q = c.createStatement();
+          var r = q.executeQuery("SELECT group_epoch FROM group_owner WHERE group_id=685")) {
+        assertThat(r.next()).isTrue();
+        assertThat(r.getLong(1))
+            .as("restart begins before replacement acquisition")
+            .isEqualTo(before.epoch());
+      }
+    }
+    long restartAt = System.nanoTime();
     var rejoined =
         ActorSystem.<Void>create(
             Behaviors.empty(),
@@ -325,6 +389,7 @@ class MultiNodeShardingIT {
     PostgresShardLeaseProvider.install(
         Adapter.toClassic(rejoined), repository, "c001", 1, UUID.randomUUID(), () -> true);
     nodes.add(rejoined);
+    int expectedMembers = nodes.size();
     Cluster.get(rejoined)
         .manager()
         .tell(new JoinSeedNodes(List.of(Cluster.get(survivors.getFirst()).selfMember().address())));
@@ -344,18 +409,30 @@ class MultiNodeShardingIT {
                             if (member.uniqueAddress().equals(oldUid)) return false;
                             if (member.status().equals(MemberStatus.up())) up++;
                           }
-                          return up == 4;
+                          return up == expectedMembers;
                         }));
     register(rejoined);
     assertThat(Cluster.get(rejoined).selfMember().address()).isEqualTo(oldUid.address());
     assertThat(Cluster.get(rejoined).selfMember().uniqueAddress()).isNotEqualTo(oldUid);
-    var after = pingCall(rejoined, call);
-    assertThat(after.epoch()).isEqualTo(takeover.epoch());
+    var recovery = recoverCall(rejoined, call, recoveryEnd);
+    long recoveredAt = System.nanoTime();
+    assertThat(recoveredAt).isLessThanOrEqualTo(recoveryEnd);
+    var after = recovery.reply();
+    assertThat(after.epoch()).isGreaterThan(before.epoch());
+    if (takeover != null) assertThat(after.epoch()).isEqualTo(takeover.reply().epoch());
     var owner = nodes.stream().filter(n -> node(n).equals(after.node())).findFirst().orElseThrow();
     var replacement =
         PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(owner), 685)
             .orElseThrow()
             .token();
+    assertThatThrownBy(
+            () ->
+                repository
+                    .pulseTracked(old, old.sequence() + 1, UUID.randomUUID())
+                    .logical()
+                    .toCompletableFuture()
+                    .join())
+        .hasCauseInstanceOf(AuthoritySql.FencedException.class);
     assertThat(
             repository
                 .releaseTracked(old.token())
@@ -373,7 +450,8 @@ class MultiNodeShardingIT {
         .isEqualTo(replacement);
     assertThat(pingCall(rejoined, call).epoch()).isEqualTo(after.epoch());
     assertThat(ungatedChildren.get()).isZero();
-    var path = java.nio.file.Path.of("target/fault-receipts/artery-partition-rejoin.json");
+    var scenario = concurrentRejoin ? "artery-concurrent-rejoin" : "artery-partition-rejoin";
+    var path = java.nio.file.Path.of("target/fault-receipts/" + scenario + ".json");
     java.nio.file.Files.createDirectories(path.getParent());
     java.nio.file.Files.writeString(
         path,
@@ -385,21 +463,31 @@ class MultiNodeShardingIT {
                         "scope",
                         "LOCAL_PEKKO_CLUSTER",
                         "scenario",
-                        "artery-partition-rejoin",
+                        scenario,
                         "observations",
-                        Map.of(
-                            "oldUid",
-                            oldUid.toString(),
-                            "newUid",
-                            Cluster.get(rejoined).selfMember().uniqueAddress().toString(),
-                            "faultAtNanos",
-                            faultAt,
-                            "recoveredAtNanos",
-                            System.nanoTime(),
-                            "oldEpoch",
-                            before.epoch(),
-                            "newEpoch",
-                            after.epoch())))
+                        Map.ofEntries(
+                            Map.entry("oldUid", oldUid.toString()),
+                            Map.entry(
+                                "newUid",
+                                Cluster.get(rejoined).selfMember().uniqueAddress().toString()),
+                            Map.entry("faultAtNanos", faultAt),
+                            Map.entry("restartAtNanos", restartAt),
+                            Map.entry("recoveredAtNanos", recoveredAt),
+                            Map.entry("recoveryEndNanos", recoveryEnd),
+                            Map.entry("initialMembers", expectedMembers),
+                            Map.entry("survivingMembers", survivors.size()),
+                            Map.entry("concurrentRejoin", concurrentRejoin),
+                            Map.entry("replacementAbsentAtRestart", concurrentRejoin),
+                            Map.entry(
+                                "queryAttempts",
+                                recovery.attempts() + (takeover == null ? 0 : takeover.attempts())),
+                            Map.entry(
+                                "unknownReadOutcomes",
+                                recovery.unknowns() + (takeover == null ? 0 : takeover.unknowns())),
+                            Map.entry("stalePulseFenced", true),
+                            Map.entry("exactReplacementPreserved", true),
+                            Map.entry("oldEpoch", before.epoch()),
+                            Map.entry("newEpoch", after.epoch()))))
             + "\n");
   }
 
