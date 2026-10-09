@@ -23,6 +23,8 @@ class NativeGatewayLifecycleIT {
     @Test void springStopRetainsOriginalNativeFlightAndPrivateHealthUntilPhysicalCleanup()throws Exception {
         var entered=new CountDownLatch(1);var release=new CountDownLatch(1);var factories=new AtomicInteger();
         var cryptoEntered=new CountDownLatch(1);var cryptoRelease=new CountDownLatch(1);
+        var sourceEntered=new CountDownLatch(1);var sourcePhysical=new CompletableFuture<Void>();
+        var sourceWorkers=new NativeWorkerScheduler(List.of(new NativeWorkerScheduler.Job("test_only_source",NativeWorkerScheduler.Priority.SAFETY,Duration.ofMillis(100),budget->{sourceEntered.countDown();return new RpcOperation<>(CompletableFuture.completedFuture(true),sourcePhysical);})),event->{});
         var tasks=Executors.newVirtualThreadPerTaskExecutor();
         try(var f=new LocalInviteAtomicIT.Fixture()){
             var now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
@@ -59,6 +61,7 @@ class NativeGatewayLifecycleIT {
                         .withBean(BoundedTokenVerifier.class,()->tokens,NativeGatewayLifecycleIT::owned)
                         .withBean(NativeGatewaySafety.class,()->nativeMain.safety)
                         .withBean(CellRpcClient.class,()->client,NativeGatewayLifecycleIT::owned)
+                        .withBean(NativeWorkerScheduler.class,()->sourceWorkers,NativeGatewayLifecycleIT::owned)
                         .run(context->{
                             assertThat(context).hasNotFailed().hasSingleBean(PrivateHealthServer.class);
                             var nativeLifecycles=context.getBeansOfType(SmartLifecycle.class).values().stream().filter(v->v.getClass().getSimpleName().equals("NativeGatewaySpringLifecycle")).toList();
@@ -66,6 +69,7 @@ class NativeGatewayLifecycleIT {
                             var health=context.getBean(PrivateHealthServer.class);assertThat(health.port()).isPositive();
                             var stopped=CompletableFuture.runAsync(context::stop);
                             try{
+                                assertThat(sourceEntered.await(2,TimeUnit.SECONDS)).as("Gateway lifecycle must start its enrolled safety source workers").isTrue();
                                 org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(()->!nativeMain.wss.getClass().getMethod("accepting").invoke(nativeMain.wss).equals(Boolean.TRUE));
                                 assertThat(stopped).isNotDone();assertThat(nativeMain.boot.current()).isTrue();
                                 assertThat(original).isNotDone();assertThat(health.port()).isPositive();
@@ -75,12 +79,14 @@ class NativeGatewayLifecycleIT {
                                 assertThatThrownBy(()->stopped.get(150,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
                                 assertThat(nativeMain.boot.current()).isTrue();assertThat(originalCrypto.toCompletableFuture()).isNotDone();
                                 cryptoRelease.countDown();originalCrypto.toCompletableFuture().get(1,TimeUnit.SECONDS);
+                                assertThatThrownBy(()->stopped.get(150,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                                sourcePhysical.complete(null);
                                 stopped.get(15,TimeUnit.SECONDS);assertThat(nativeLifecycles.getFirst().isRunning()).isFalse();assertThat(nativeMain.boot.current()).isFalse();
-                            }finally{release.countDown();cryptoRelease.countDown();}
+                            }finally{release.countDown();cryptoRelease.countDown();sourcePhysical.complete(null);}
                         });
                 }
             }
-        }finally{release.countDown();cryptoRelease.countDown();tasks.close();}
+        }finally{release.countDown();cryptoRelease.countDown();sourcePhysical.complete(null);sourceWorkers.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);tasks.close();}
     }
     static void owned(org.springframework.beans.factory.config.BeanDefinition definition){((org.springframework.beans.factory.support.AbstractBeanDefinition)definition).setDestroyMethodName("");}
 }

@@ -5,6 +5,7 @@ import io.webrtc.signaling.auth.BoundedTokenVerifier;
 import io.webrtc.signaling.gateway.*;
 import io.webrtc.signaling.rpc.CellRpcClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.*;
 import org.springframework.context.annotation.*;
 import org.springframework.context.support.DefaultLifecycleProcessor;
@@ -18,8 +19,11 @@ public class NativeGatewayLifecycleConfiguration {
     static DefaultLifecycleProcessor nativeGatewayLifecycleProcessor(){var lifecycle=new DefaultLifecycleProcessor();lifecycle.setTimeoutPerShutdownPhase(310000);return lifecycle;}
     @Bean(destroyMethod="") NativeGatewaySpringLifecycle nativeGatewaySpringLifecycle(NativeGatewayIngress ingress,
             GatewayBootController boot,NativeRelaySessionProofCache cache,CellRpcClient client,
-            NativeGatewayLifecycleEnrollment inputs,BoundedTokenVerifier tokens,NativeGatewaySafety safety)throws Exception {
-        return new NativeGatewaySpringLifecycle(ingress,boot,cache,client,inputs,tokens,safety);
+            NativeGatewayLifecycleEnrollment inputs,BoundedTokenVerifier tokens,NativeGatewaySafety safety,
+            ObjectProvider<NativeWorkerScheduler> workers,ObjectProvider<NativeClockSource> clocks,
+            ObjectProvider<NativeCachedRevocationSource> sources)throws Exception {
+        return new NativeGatewaySpringLifecycle(ingress,boot,cache,client,inputs,tokens,safety,
+            workers.orderedStream().toList(),clocks.orderedStream().toList(),sources.orderedStream().toList());
     }
     @Bean(destroyMethod="") PrivateHealthServer nativeGatewayHealth(NativeGatewaySpringLifecycle lifecycle){return lifecycle.health();}
 }

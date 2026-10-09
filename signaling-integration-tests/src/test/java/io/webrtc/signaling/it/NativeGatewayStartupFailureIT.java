@@ -33,6 +33,11 @@ class NativeGatewayStartupFailureIT {
             var tokens=new BoundedTokenVerifier((t,n)->{throw new IllegalArgumentException();},1,8,Duration.ofSeconds(1));
             var client=new CellRpcClient("test",Map.of("c001",new CellRpcClient.Endpoint("localhost",1,"localhost")),RpcTlsContexts.clients("test",NativeGatewayCommandIT.cert("ca.crt"),NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576))){
             var clock=new ClockSafetyMonitor("c001",1,UUID.randomUUID(),UUID.randomUUID(),Map.of("TEST_ONLY",keys.getPublic()),Clock.systemUTC(),System::nanoTime);
+            var identity=new IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofSeconds(1),Duration.ofSeconds(5),true,"TEST_ONLY_SOURCE");
+            var scoped=new NativeCachedSecurity(identity,new io.webrtc.signaling.storage.worker.RevocationSourceVerifier("c001",identity.issuer(),Map.of("TEST_ONLY",keys.getPublic())),16,Clock.systemUTC(),System::nanoTime);
+            var clockSource=new NativeClockSource(URI.create("https://localhost:1/clock"),NativeClockSourceIT.clientTls(true),clock,UUID.randomUUID(),UUID.randomUUID());
+            var scopedSource=new NativeCachedRevocationSource(URI.create("https://localhost:1/revocations"),NativeClockSourceIT.clientTls(true),scoped,UUID.randomUUID(),UUID.randomUUID());
+            var workers=new NativeWorkerScheduler(List.of(clockSource.job(Duration.ofMillis(100)),scopedSource.job(Duration.ofMillis(100))),event->{});
             var business=new NativeGatewayBusinessEnrollment(new NativeSessionHandler.GatewayIdentity("gw-1",UUID.randomUUID(),"c001",1,"TEST_ONLY_REGION"),1,tokens,(p,n)->AuthorizationStatus.FRESHNESS_UNKNOWN,()->false,u->new ProofBindings.TrustedHome("c001",1,1),new RelaySessionAuthorizationProof(Map.of("c001/test",keys.getPublic())),4,2);
             var wssTls=io.netty.handler.ssl.SslContextBuilder.forServer(NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")).sslProvider(io.netty.handler.ssl.SslProvider.JDK).protocols("TLSv1.3").build();
             var inputs=new NativeGatewayIngressEnrollment(new InetSocketAddress("127.0.0.1",0),wssTls,new GatewayServer.UpgradePolicy(Set.of("https://app.test"),h->false),1,8,16,EdgeAdmission.Limits.candidate(),"test",0,RpcTlsContexts.gatewayServer("test","c001","gw-1",NativeGatewayCommandIT.cert("ca.crt"),NativeGatewayCommandIT.cert("gateway.crt"),NativeGatewayCommandIT.cert("gateway.key")),new RpcAdmission(8,1048576,8,1048576),new RpcAdmission(8,1048576,8,1048576),GatewaySecuritySweep.Settings.candidate());
@@ -44,6 +49,7 @@ class NativeGatewayStartupFailureIT {
                 var beans=context.getBeanFactory();
                 beans.registerSingleton("TEST_ONLY_business",business);beans.registerSingleton("TEST_ONLY_ingress",inputs);
                 beans.registerSingleton("TEST_ONLY_clock",clock);beans.registerSingleton("TEST_ONLY_client",client);
+                beans.registerSingleton("TEST_ONLY_clock_source",clockSource);beans.registerSingleton("TEST_ONLY_scoped_source",scopedSource);beans.registerSingleton("TEST_ONLY_source_workers",workers);
                 if(healthBindFailure)beans.registerSingleton("TEST_ONLY_lifecycle",new NativeGatewayLifecycleEnrollment(new InetSocketAddress(InetAddress.getLoopbackAddress(),occupied.getLocalPort()),()->true,()->"TEST_ONLY 1\n"));
                 beans.addBeanPostProcessor(new BeanPostProcessor(){public Object postProcessAfterInitialization(Object value,String name){
                     if(value instanceof NativeGatewayIngress owner){ingress.set(owner);relayPort.set(owner.relay().port());}
@@ -57,11 +63,15 @@ class NativeGatewayStartupFailureIT {
                 assertThat(ingress.get()).isNotNull();
                 assertThat(ingress.get().wss().accepting()).as("failed Main must retire its bound native ingress").isFalse();
                 assertThatThrownBy(()->new java.net.Socket("127.0.0.1",relayPort.get())).isInstanceOf(java.io.IOException.class);
+                assertThatThrownBy(workers::start).hasMessageContaining("drained");
+                assertThat(scopedSource.poll(Duration.ofSeconds(1)).logical().toCompletableFuture()).isCompletedExceptionally();
+                assertThat(clockSource.poll(Duration.ofSeconds(1))).isFalse();
             } finally {
                 if(ingress.get()!=null)ingress.get().drain().toCompletableFuture().get(12,TimeUnit.SECONDS);
                 if(cache.get()!=null)cache.get().drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
                 client.drain().toCompletableFuture().get(5,TimeUnit.SECONDS);
                 if(boot.get()!=null)boot.get().close();
+                workers.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);clockSource.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);scopedSource.drain().toCompletableFuture().get(3,TimeUnit.SECONDS);
             }
         }
     }

@@ -20,6 +20,25 @@ import org.springframework.core.io.FileSystemResource;
 
 /** Original Main/PostgreSQL/Netty resources; delayed worker/DB tails are explicitly TEST_ONLY. */
 class NativeControlStartupFailureIT {
+    @Test void originalScopedSourceClosesWithInstalledControlProcess()throws Exception {
+        try(var fixture=new Fixture()){
+            var identity=new IdentitySecurityContract("TEST_ONLY_ISSUER","TEST_ONLY_AUDIENCE",Duration.ofMinutes(10),Duration.ofSeconds(30),Duration.ofSeconds(1),Duration.ofSeconds(5),true,"TEST_ONLY_SOURCE");
+            var keys=KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+            var cache=new NativeCachedSecurity(identity,new io.webrtc.signaling.storage.worker.RevocationSourceVerifier("c001",identity.issuer(),java.util.Map.of("source",keys.getPublic())),16,java.time.Clock.systemUTC(),System::nanoTime);
+            var source=new NativeCachedRevocationSource(URI.create("https://localhost:1/revocations"),NativeClockSourceIT.clientTls(true),cache,java.util.UUID.randomUUID(),java.util.UUID.randomUUID());
+            var app=fixture.application();app.addInitializers(context->context.getBeanFactory().registerSingleton("TEST_ONLY_scoped_source",source));
+            try(var context=fixture.run(app)){
+                var now=java.time.Instant.now();
+                var unsigned=new io.webrtc.signaling.storage.worker.RevocationReconciler.Batch(0,0,List.of(),now,"",List.of(),0);
+                var signer=java.security.Signature.getInstance("Ed25519");signer.initSign(keys.getPrivate());signer.update(io.webrtc.signaling.storage.worker.RevocationSourceVerifier.signingBytes("c001",identity.issuer(),unsigned));
+                var signed=new io.webrtc.signaling.storage.worker.RevocationReconciler.Batch(0,0,List.of(),now,"source."+java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(signer.sign()),List.of(),0);
+                assertThat(cache.apply(signed,System.nanoTime())).isTrue();assertThat(source.usable()).isTrue();
+                context.stop();assertThat(source.usable()).isFalse();
+                assertThat(source.poll(Duration.ofSeconds(1)).logical().toCompletableFuture()).isCompletedExceptionally();
+                assertThat(source.drain().toCompletableFuture()).isCompleted();}
+            finally{source.drain().toCompletableFuture().get(2,TimeUnit.SECONDS);}
+        }
+    }
     @Test void managedSourceCannotPollADifferentClockThanBusinessAuthorization()throws Exception {
         try(var fixture=new Fixture()){
             var app=fixture.application();app.addInitializers(context->context.getBeanFactory().registerSingleton("TEST_ONLY_source",new NativeControlSourceEnrollment(

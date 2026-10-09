@@ -28,6 +28,7 @@ final class NativeStartupCleanup implements BeanPostProcessor {
                 ||bean instanceof NativeControlBusinessEnrollment||bean instanceof SqlTransactions
                 ||bean instanceof NativeActorRpcIngress||bean instanceof NativeWorkerScheduler||bean instanceof PrivateHealthServer
                 ||bean instanceof NativeActorSafetySources||bean instanceof NativeClockSource||bean instanceof NativeRevocationSource||bean instanceof NativeCellHealthSource
+                ||bean instanceof NativeCachedRevocationSource
                 ||bean instanceof CellRpcServer||bean instanceof DbBoundary||bean instanceof DbPools
                 ||bean instanceof NativeRelaySessionProofCache||bean instanceof CellRpcClient||bean instanceof GatewayBootController||bean instanceof BoundedTokenVerifier)
             if(created.stream().noneMatch(owner->owner==bean))created.add(bean);
@@ -85,6 +86,10 @@ final class NativeStartupCleanup implements BeanPostProcessor {
                 for(var owner:owners)if(owner instanceof BoundedTokenVerifier tokens)await(tokens.drain(),started);
                 for(var owner:owners)if(owner instanceof CellRpcClient client)await(client.drain(),started);
                 for(var owner:owners)if(owner instanceof GatewayBootController boot)boot.close();
+                for(var owner:owners)if(owner instanceof NativeWorkerScheduler worker)await(worker.drain(),started);
+                for(var owner:owners)if(owner instanceof NativeClockSource clock)await(clock.drain(),started);
+                for(var owner:owners)if(owner instanceof NativeCachedRevocationSource source)await(source.drain(),started);
+                for(var owner:owners)if(owner instanceof PrivateHealthServer health)await(health.stop(),started);
             }
         }catch(InterruptedException interrupted){Thread.currentThread().interrupt();failed.addSuppressed(new IllegalStateException("Native startup cleanup interrupted"));}
         catch(Exception unknown){failed.addSuppressed(new IllegalStateException("Native startup cleanup unproven"));}

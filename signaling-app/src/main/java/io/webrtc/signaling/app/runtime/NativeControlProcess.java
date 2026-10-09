@@ -16,6 +16,7 @@ public final class NativeControlProcess implements SmartLifecycle {
     private final List<NativeClockSource> clocks;
     private final List<NativeRevocationSource> revocations;
     private final List<NativeCellHealthSource> primaries;
+    private final List<NativeCachedRevocationSource> cachedSources;
     private PrivateHealthServer health;
     private volatile boolean running;
     private CompletionStage<Void> drained;
@@ -23,7 +24,8 @@ public final class NativeControlProcess implements SmartLifecycle {
 
     NativeControlProcess(NativeControlBusinessEnrollment business,BoundedTokenVerifier tokens,
             List<SqlTransactions> sql,List<NativeWorkerScheduler> workers,List<NativeClockSource> clocks,
-            List<NativeRevocationSource> revocations,List<NativeCellHealthSource> primaries){
+            List<NativeRevocationSource> revocations,List<NativeCellHealthSource> primaries,
+            List<NativeCachedRevocationSource> cachedSources){
         if(tokens!=business.tokens())throw new IllegalArgumentException("Native control verifier ownership differs");
         if(!sql.containsAll(business.directory().transactionOwners()))
             throw new IllegalArgumentException("Control directory SQL owners are not enrolled");
@@ -34,6 +36,7 @@ public final class NativeControlProcess implements SmartLifecycle {
         pools=distinct(sql.stream().map(SqlTransactions::pools).toList());
         this.workers=distinct(workers);this.clocks=distinct(clocks);
         this.revocations=distinct(revocations);this.primaries=distinct(primaries);
+        this.cachedSources=distinct(cachedSources);
     }
     private static <T> List<T> distinct(List<T> values){
         Set<T> identities=Collections.newSetFromMap(new IdentityHashMap<>());
@@ -60,6 +63,7 @@ public final class NativeControlProcess implements SmartLifecycle {
         for(var clock:clocks)physical.add(clock.drain().toCompletableFuture());
         for(var source:revocations)physical.add(source.drain().toCompletableFuture());
         for(var source:primaries)physical.add(source.drain().toCompletableFuture());
+        for(var source:cachedSources)physical.add(source.drain().toCompletableFuture());
         physical.add(tokens.drain().toCompletableFuture());
         for(var boundary:boundaries)physical.add(boundary.drain().toCompletableFuture());
         drained=CompletableFuture.allOf(physical.toArray(CompletableFuture[]::new))
@@ -81,6 +85,7 @@ public final class NativeControlProcess implements SmartLifecycle {
         of(owners,NativeClockSource.class).forEach(clock->physical.add(clock.drain().toCompletableFuture()));
         of(owners,NativeRevocationSource.class).forEach(source->physical.add(source.drain().toCompletableFuture()));
         of(owners,NativeCellHealthSource.class).forEach(source->physical.add(source.drain().toCompletableFuture()));
+        of(owners,NativeCachedRevocationSource.class).forEach(source->physical.add(source.drain().toCompletableFuture()));
         distinct(tokens).forEach(token->physical.add(token.drain().toCompletableFuture()));
         distinct(boundaries).forEach(boundary->physical.add(boundary.drain().toCompletableFuture()));
         return CompletableFuture.allOf(physical.toArray(CompletableFuture[]::new))

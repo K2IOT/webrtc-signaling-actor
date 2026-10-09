@@ -23,8 +23,9 @@ public class NativeControlBusinessConfiguration {
     @Bean NativeControlReadiness nativeControlReadiness(NativeControlProcess process){return process.readiness();}
     @Bean NativeControlProcess nativeControlProcess(NativeControlBusinessEnrollment inputs,BoundedTokenVerifier tokens,
             ObjectProvider<SqlTransactions> sql,ObjectProvider<NativeWorkerScheduler> workers,ObjectProvider<NativeClockSource> clocks,
-            ObjectProvider<NativeRevocationSource> revocations,ObjectProvider<NativeCellHealthSource> primaries){
+            ObjectProvider<NativeRevocationSource> revocations,ObjectProvider<NativeCellHealthSource> primaries,
+            ObjectProvider<NativeCachedRevocationSource> cachedSources){
         return new NativeControlProcess(inputs,tokens,sql.orderedStream().toList(),workers.orderedStream().toList(),clocks.orderedStream().toList(),
-            revocations.orderedStream().toList(),primaries.orderedStream().toList());
+            revocations.orderedStream().toList(),primaries.orderedStream().toList(),cachedSources.orderedStream().toList());
     }
 }
