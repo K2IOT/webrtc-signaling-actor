@@ -272,7 +272,18 @@ class NativeActorCompositionIT {
       var winnerRoute = SessionAuthReadIT.route(f, callee);
       var winnerAuth = currentSession(registry, winnerRoute);
       var accept = AcceptCompletionIT.accept(callee, call);
-      var setup = publicCommand(backend, accept, proofs.sessionProofs().issue(winnerAuth, accept));
+      CallCommandService.Outcome setup = null;
+      long acceptEnd = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+      for (int attempt = 0; attempt < 8 && System.nanoTime() < acceptEnd; attempt++) {
+        winnerAuth = currentSession(registry, winnerRoute);
+        try {
+          setup = publicCommand(backend, accept, proofs.sessionProofs().issue(winnerAuth, accept));
+          break;
+        } catch (ExecutionException unknown) {
+          assertThat(unknown.getCause()).isInstanceOf(DbOutcomeUnknownException.class);
+        }
+      }
+      assertThat(setup).describedAs("Same-operation ACCEPT reconciliation").isNotNull();
       assertThat(setup.code()).isEqualTo("ACCEPTED_PENDING_ACTIVATION");
       auth = currentSession(registry, route);
       var negotiate =
@@ -404,7 +415,8 @@ class NativeActorCompositionIT {
             originalOffer.set(originalRelay);
             originalOfferProof.set(r1);
           }
-          var receipt = publicRelay(relayClient, originalRelay, r1);
+          var senderRoute = SessionAuthReadIT.route(f, sender);
+          var receipt = publicRelay(relayClient, originalRelay, proofs, registry, senderRoute);
           assertThat(receipt.matches(originalRelay)).isTrue();
           assertThat(receipt.callVersion()).isEqualTo(5);
           var delivered = recipientGateway.take(destination);
@@ -414,11 +426,7 @@ class NativeActorCompositionIT {
           assertThat(delivered.path("sessionIncarnation").asText())
               .isEqualTo(destination.incarnation().value().toString());
           if (type == SignalEnvelope.Type.OFFER) {
-            assertThat(
-                    publicRelay(
-                        relayClient,
-                        originalRelay,
-                        proofs.relaySessionProofs().issue(nativeSender, originalRelay)))
+            assertThat(publicRelay(relayClient, originalRelay, proofs, registry, senderRoute))
                 .isEqualTo(receipt);
             assertThat(recipientGateway.empty(destination)).isTrue();
           }
@@ -517,6 +525,8 @@ class NativeActorCompositionIT {
     final ConnectionRegistry connections;
     final Map<UserId, io.netty.channel.embedded.EmbeddedChannel> channels = new HashMap<>();
     final GatewayRelayRpcServer server;
+    final ScheduledExecutorService renewal = Executors.newSingleThreadScheduledExecutor();
+    final ScheduledFuture<?> renewalTask;
 
     RelayGatewayFixture(LocalInviteAtomicIT.Fixture f) throws Exception {
       this.f = f;
@@ -583,6 +593,27 @@ class NativeActorCompositionIT {
                   new RpcAdmission(8, 1048576, 8, 1048576),
                   stream::send)
               .start();
+      var currentBoot = new java.util.concurrent.atomic.AtomicReference<>(boot);
+      renewalTask =
+          renewal.scheduleWithFixedDelay(
+              () -> {
+                var current = currentBoot.get();
+                var work =
+                    f.sessions.renewGatewayBootTracked(
+                        current.gatewayId(),
+                        current.bootId(),
+                        current.renewalSequence() + 1,
+                        UUID.randomUUID(),
+                        Duration.ofSeconds(2));
+                try {
+                  currentBoot.set(work.logical().toCompletableFuture().join().boot());
+                } finally {
+                  work.physicalCompletion().toCompletableFuture().join();
+                }
+              },
+              1,
+              1,
+              TimeUnit.SECONDS);
     }
 
     static java.io.File cert(String name) {
@@ -645,14 +676,33 @@ class NativeActorCompositionIT {
     }
 
     public void close() throws Exception {
-      server.drain().toCompletableFuture().get(3, TimeUnit.SECONDS);
-      channels.values().forEach(io.netty.channel.embedded.EmbeddedChannel::finishAndReleaseAll);
+      renewal.shutdown();
+      try {
+        assertThat(renewal.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        if (renewalTask.isDone() && !renewalTask.isCancelled()) renewalTask.get();
+      } finally {
+        renewal.shutdownNow();
+        server.drain().toCompletableFuture().get(3, TimeUnit.SECONDS);
+        channels.values().forEach(io.netty.channel.embedded.EmbeddedChannel::finishAndReleaseAll);
+      }
     }
   }
 
   private static RelayWriteReceipt publicRelay(
-      CellRpcClient client, CallCommand command, String proof) throws Exception {
-    var reply = relayReply(client, command, proof);
+      CellRpcClient client,
+      CallCommand command,
+      HomeAuthorizationProof proofs,
+      SessionRegistryService registry,
+      SessionRepository.Route route)
+      throws Exception {
+    io.webrtc.signaling.protocol.internal.InternalReply reply = null;
+    long end = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+    for (int attempt = 0; attempt < 8 && System.nanoTime() < end; attempt++) {
+      var proof = proofs.relaySessionProofs().issue(currentSession(registry, route), command);
+      reply = relayReply(client, command, proof);
+      if (!reply.getErrorCode().equals("OUTCOME_UNKNOWN")) break;
+    }
+    assertThat(reply).isNotNull();
     assertThat(reply.getAckCommitted()).isFalse();
     assertThat(reply.getStatus()).describedAs(reply.getErrorCode()).isEqualTo("WRITE_COMPLETED");
     return new com.fasterxml.jackson.databind.ObjectMapper()
@@ -695,9 +745,11 @@ class NativeActorCompositionIT {
                     .setConnectionId(uuid.apply(sender.connectionId())))
             .build();
     var operation = client.callTracked(CellRpcServer.Operation.RELAY, wire, Duration.ofSeconds(1));
-    var reply = operation.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
-    operation.physicalCompletion().toCompletableFuture().get(3, TimeUnit.SECONDS);
-    return reply;
+    try {
+      return operation.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    } finally {
+      operation.physicalCompletion().toCompletableFuture().get(3, TimeUnit.SECONDS);
+    }
   }
 
   /** Fixture eligibility read: known native contention retries within one original read budget. */
@@ -767,8 +819,12 @@ class NativeActorCompositionIT {
             wire,
             new CellRpcServer.Peer("c001", "actor"),
             Duration.ofSeconds(2));
-    var reply = op.logical().toCompletableFuture().get(3, TimeUnit.SECONDS);
-    op.physicalCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    io.webrtc.signaling.protocol.internal.InternalReply reply;
+    try {
+      reply = op.logical().toCompletableFuture().get(3, TimeUnit.SECONDS);
+    } finally {
+      op.physicalCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    }
     assertThat(reply.getAckCommitted()).describedAs(reply.getErrorCode()).isTrue();
     return new com.fasterxml.jackson.databind.ObjectMapper()
         .readValue(reply.getResult().toByteArray(), CallCommandService.Outcome.class);
