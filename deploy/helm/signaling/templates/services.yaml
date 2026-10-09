@@ -11,6 +11,9 @@ spec:
     {{- include "signaling.labels" (dict "root" $ "component" .) | nindent 4 }}
   ports:
     - {name: business-tls, port: 8443, targetPort: business-tls}
+    {{- if eq . "gateway" }}
+    - {name: gateway-rpc, port: 9443, targetPort: gateway-rpc}
+    {{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount

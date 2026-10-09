@@ -1,3 +1,5 @@
+deploymentMode: production
+localAcknowledgement: ''
 cell: ''
 configurationFingerprint: ''
 image:

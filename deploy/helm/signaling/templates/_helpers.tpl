@@ -1,4 +1,8 @@
 {{- define "signaling.validate" -}}
+{{- $mode := default "production" .Values.deploymentMode -}}
+{{- if not (has $mode (list "production" "local-minikube")) }}{{ fail "invalid deployment mode" }}{{ end -}}
+{{- $local := eq $mode "local-minikube" -}}
+{{- if and $local (ne .Values.localAcknowledgement "LOCAL_TEST_ONLY") }}{{ fail "local mode requires LOCAL_TEST_ONLY acknowledgement" }}{{ end -}}
 {{- if not (regexMatch "^c[0-9]{3}$" .Values.cell) }}{{ fail "required cell cNNN" }}{{ end -}}
 {{- if not (regexMatch "^[0-9a-f]{64}$" .Values.configurationFingerprint) }}{{ fail "required immutable configuration fingerprint" }}{{ end -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) }}{{ fail "required exact candidate image digest" }}{{ end -}}
@@ -9,8 +13,13 @@
 {{- if or (ne (int .Values.actor.replicas) 6) (ne (int .Values.actor.maxSurge) 1) (ne (int .Values.actor.minAvailable) 4) (lt (int .Values.actor.terminationGraceSeconds) 90) }}{{ fail "actor quorum/ingress contract requires 6 + 1 surge, PDB4 and >=90s grace" }}{{ end -}}
 {{- if or (ne (int .Values.gateway.maxSurge) 1) (lt (int .Values.gateway.minAvailable) (int (ceil (divf (mulf (int .Values.gateway.replicas) 2) 3)))) }}{{ fail "gateway PDB must retain two thirds of configured capacity" }}{{ end -}}
 {{- if not (has .Values.actor.formationProfile (list "initial-six" "join-only" "authorized-reformation")) }}{{ fail "invalid formation profile" }}{{ end -}}
-{{- if or (lt (int .Values.gateway.replicas) 3) (ne (mod (int .Values.gateway.replicas) 3) 0) (lt (int .Values.gateway.terminationGraceSeconds) 300) }}{{ fail "gateway requires three-AZ capacity and 300s drain" }}{{ end -}}
+{{- if lt (int .Values.gateway.terminationGraceSeconds) 300 }}{{ fail "gateway requires 300s drain" }}{{ end -}}
+{{- if $local -}}
+{{- if or (ne (int .Values.gateway.replicas) 1) (ne (int .Values.gateway.minAvailable) 1) (ne (int .Values.control.replicas) 1) (ne (int .Values.control.minAvailable) 1) }}{{ fail "local mode requires one gateway/control and PDB1" }}{{ end -}}
+{{- else -}}
+{{- if or (lt (int .Values.gateway.replicas) 3) (ne (mod (int .Values.gateway.replicas) 3) 0) }}{{ fail "gateway requires three-AZ capacity" }}{{ end -}}
 {{- if or (ne (int .Values.control.replicas) 3) (ne (int .Values.control.minAvailable) 2) }}{{ fail "control requires three-AZ quorum" }}{{ end -}}
+{{- end -}}
 {{- $_ := required "required private Kubernetes API CIDR" .Values.network.kubernetesApiCidr -}}
 {{- $_ := required "required authority CIDRs" .Values.network.authorityCidrs -}}
 {{- $_ := required "required authenticated platform source CIDRs" .Values.network.platformCidrs -}}
@@ -62,6 +71,7 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
+      {{- if ne (default "production" $root.Values.deploymentMode) "local-minikube" }}
       topologySpreadConstraints:
         - topologyKey: topology.kubernetes.io/zone
           maxSkew: 1
@@ -77,6 +87,7 @@ spec:
               labelSelector:
                 matchLabels:
                   {{- include "signaling.labels" . | nindent 18 }}
+      {{- end }}
       containers:
         - name: {{ $component }}
           image: {{ printf "%s@%s" $root.Values.image.repository $root.Values.image.digest | quote }}
@@ -90,12 +101,17 @@ spec:
           ports:
             - {name: business-tls, containerPort: 8443}
             - {name: health, containerPort: 8559}
+            {{- if eq $component "gateway" }}
+            - {name: gateway-rpc, containerPort: 9443}
+            {{- end }}
             {{- if eq $component "actor" }}
             - {name: artery-tls, containerPort: 25520}
             - {name: management, containerPort: 8558}
             {{- end }}
           env:
             - {name: SPRING_PROFILES_ACTIVE, value: {{ $component | quote }}}
+            - {name: SIGNALING_DEPLOYMENT_MODE, value: {{ default "production" $root.Values.deploymentMode | quote }}}
+            - {name: SIGNALING_LOCAL_ACKNOWLEDGEMENT, value: {{ default "" $root.Values.localAcknowledgement | quote }}}
             - {name: JAVA_TOOL_OPTIONS, value: {{ $root.Values.javaOptions | quote }}}
             - {name: SIGNALING_CELL_ID, value: {{ $root.Values.cell | quote }}}
             - {name: SIGNALING_CLUSTER_FINGERPRINT, value: {{ $root.Values.configurationFingerprint | quote }}}
@@ -104,6 +120,11 @@ spec:
             - {name: SIGNALING_NATIVE_FENCE_REQUIRED, value: 'true'}
             - {name: SIGNALING_MAX_INGRESS_PRODUCERS, value: '7'}
             - {name: SIGNALING_RUNTIME_CONTRACT, value: /run/signaling/runtime.yaml}
+            - {name: SIGNALING_NATIVE_PROVIDER_CONTRACT, value: /run/signaling/provider.json}
+            - name: SIGNALING_POD_UID
+              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+            - name: SIGNALING_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
             - name: SIGNALING_POD_IP
               valueFrom: {fieldRef: {fieldPath: status.podIP}}
             - name: SIGNALING_NAMESPACE

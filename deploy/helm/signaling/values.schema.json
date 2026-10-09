@@ -1,50 +1,132 @@
 {
   "type": "object",
   "properties": {
-    "resources": {
-      "type": "object",
-      "properties": {
-        "requests": {
-          "type": "object",
-          "properties": {
-            "cpu": {
-              "const": "2"
-            },
-            "memory": {
-              "const": "4Gi"
+    "deploymentMode": {
+      "enum": [
+        "production",
+        "local-minikube"
+      ]
+    },
+    "localAcknowledgement": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "required": [
+      "deploymentMode"
+    ],
+    "properties": {
+      "deploymentMode": {
+        "const": "local-minikube"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "localAcknowledgement"
+    ],
+    "properties": {
+      "localAcknowledgement": {
+        "const": "LOCAL_TEST_ONLY"
+      },
+      "resources": {
+        "type": "object",
+        "required": [
+          "requests",
+          "limits"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "requests": {
+            "type": "object",
+            "required": [
+              "cpu",
+              "memory"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cpu": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*m$"
+              },
+              "memory": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*Mi$"
+              }
             }
           },
-          "required": [
-            "cpu",
-            "memory"
-          ],
-          "additionalProperties": false
-        },
-        "limits": {
-          "type": "object",
-          "properties": {
-            "cpu": {
-              "const": "2"
-            },
-            "memory": {
-              "const": "4Gi"
+          "limits": {
+            "type": "object",
+            "required": [
+              "cpu",
+              "memory"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cpu": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*m$"
+              },
+              "memory": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*Mi$"
+              }
             }
-          },
-          "required": [
-            "cpu",
-            "memory"
-          ],
-          "additionalProperties": false
+          }
         }
       },
-      "required": [
-        "requests",
-        "limits"
-      ],
-      "additionalProperties": false
-    },
-    "javaOptions": {
-      "const": "-Xms1536m -Xmx1536m -XX:MaxDirectMemorySize=1024m -XX:+ExitOnOutOfMemoryError"
+      "javaOptions": {
+        "const": "-Xms96m -Xmx96m -XX:MaxDirectMemorySize=64m -XX:+ExitOnOutOfMemoryError -XX:ActiveProcessorCount=1"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "resources": {
+        "type": "object",
+        "properties": {
+          "requests": {
+            "type": "object",
+            "properties": {
+              "cpu": {
+                "const": "2"
+              },
+              "memory": {
+                "const": "4Gi"
+              }
+            },
+            "required": [
+              "cpu",
+              "memory"
+            ],
+            "additionalProperties": false
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "cpu": {
+                "const": "2"
+              },
+              "memory": {
+                "const": "4Gi"
+              }
+            },
+            "required": [
+              "cpu",
+              "memory"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "requests",
+          "limits"
+        ],
+        "additionalProperties": false
+      },
+      "javaOptions": {
+        "const": "-Xms1536m -Xmx1536m -XX:MaxDirectMemorySize=1024m -XX:+ExitOnOutOfMemoryError"
+      }
     }
   }
 }

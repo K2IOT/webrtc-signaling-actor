@@ -26,6 +26,14 @@ spec:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ $.Values.network.edgeNamespace }}}
       ports: [{protocol: TCP, port: 8443}]
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" $ "component" "actor") | nindent 14 }}
+        {{- range $.Values.network.peerActorCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 9443}]
     {{- else }}
     - from:
         - podSelector:
@@ -35,6 +43,12 @@ spec:
         - ipBlock: {cidr: {{ . }}}
         {{- end }}
         {{- end }}
+      ports: [{protocol: TCP, port: 8443}]
+    {{- end }}
+    {{- if eq . "control" }}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.network.edgeNamespace }}}
       ports: [{protocol: TCP, port: 8443}]
     {{- end }}
     {{- if eq . "actor" }}
@@ -73,6 +87,14 @@ spec:
     - to:
         - podSelector:
             matchLabels:
+              {{- include "signaling.labels" (dict "root" $ "component" "gateway") | nindent 14 }}
+        {{- range $.Values.network.peerActorCidrs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 9443}]
+    - to:
+        - podSelector:
+            matchLabels:
               {{- include "signaling.labels" (dict "root" $ "component" "actor") | nindent 14 }}
       ports: [{protocol: TCP, port: 25520}, {protocol: TCP, port: 8558}]
     - to:
@@ -96,6 +118,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "signaling.labels" (dict "root" . "component" "actor") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "signaling.labels" (dict "root" . "component" "control") | nindent 14 }}
       ports: [{protocol: TCP, port: 5432}]
     - from:
         - namespaceSelector:

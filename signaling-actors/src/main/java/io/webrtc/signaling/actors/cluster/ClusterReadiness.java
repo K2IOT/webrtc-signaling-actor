@@ -1,6 +1,14 @@
 package io.webrtc.signaling.actors.cluster;
 import java.util.concurrent.atomic.AtomicReference;
 public final class ClusterReadiness {
+    private final int minimumFailureDomains;
+    public ClusterReadiness(){this(2);}
+    private ClusterReadiness(int minimumFailureDomains){this.minimumFailureDomains=minimumFailureDomains;}
+    /** Explicit single-host qualification exception; quorum and live safety remain mandatory. */
+    public static ClusterReadiness localMinikube(String acknowledgement){
+        if(!"LOCAL_TEST_ONLY".equals(acknowledgement))throw new IllegalArgumentException("Local readiness requires LOCAL_TEST_ONLY acknowledgement");
+        return new ClusterReadiness(1);
+    }
     private final AtomicReference<java.util.function.BooleanSupplier> liveSafety=new AtomicReference<>();
     /** Installed once by the native source owner; expiry is checked on every admission without I/O. */
     public void installSafetyGate(java.util.function.BooleanSupplier gate){
@@ -24,6 +32,6 @@ public final class ClusterReadiness {
     }
     private boolean safety(Snapshot s){return sourceReady()&&s.localUp()&&s.regionsRegistered()&&s.fingerprintValid()&&s.cellActive()&&s.safetyPoolUsable()&&s.clockBoundValid();}
     public boolean safetyReady(){return safety(state.get());}
-    public boolean businessReady(){var s=state.get();return safety(s)&&!s.draining()&&s.upActors()>=4&&s.reachableAzCount()>=2;}
+    public boolean businessReady(){var s=state.get();return safety(s)&&!s.draining()&&s.upActors()>=4&&s.reachableAzCount()>=minimumFailureDomains;}
     void registered(){state.updateAndGet(s->new Snapshot(s.localUp(),true,s.fingerprintValid(),s.cellActive(),s.safetyPoolUsable(),s.clockBoundValid(),s.upActors(),s.reachableAzCount(),s.draining()));}
 }
