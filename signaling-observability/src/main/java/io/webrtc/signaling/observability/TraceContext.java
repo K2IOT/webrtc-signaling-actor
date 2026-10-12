@@ -1,6 +1,7 @@
 package io.webrtc.signaling.observability;
 
 import java.util.*;
+import org.slf4j.MDC;
 
 /** W3C v00 only; baggage, tracestate and arbitrary public attributes are never copied. */
 public record TraceContext(String traceId, String spanId, boolean sampled) {
@@ -36,6 +37,33 @@ public record TraceContext(String traceId, String spanId, boolean sampled) {
 
   public String header() {
     return "00-" + traceId + "-" + spanId + (sampled ? "-01" : "-00");
+  }
+
+  /** Capture only bounded approved identity, never the complete MDC or baggage. */
+  public static TraceContext current() {
+    String trace = MDC.get("traceId");
+    String span = MDC.get("spanId");
+    if (SensitiveDataRedactor.approved("traceId", trace) == null) return null;
+    if (SensitiveDataRedactor.approved("spanId", span) == null)
+      span = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    return new TraceContext(trace, span, false);
+  }
+
+  public static Scope activate(TraceContext context) { return new Scope(context); }
+
+  /** Restores both fields, including absence, on the same callback thread. */
+  public static final class Scope implements AutoCloseable {
+    private final String priorTrace = MDC.get("traceId"), priorSpan = MDC.get("spanId");
+    private Scope(TraceContext context) {
+      restore("traceId", context == null ? null : context.traceId());
+      restore("spanId", context == null ? null : context.spanId());
+    }
+    @Override public void close() {
+      restore("traceId", priorTrace); restore("spanId", priorSpan);
+    }
+    private static void restore(String field, String value) {
+      if (value == null) MDC.remove(field); else MDC.put(field, value);
+    }
   }
 
   public static Map<String, Object> attributes(Map<String, ?> input) {

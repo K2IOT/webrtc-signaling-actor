@@ -95,3 +95,55 @@ message GatewayRelayRequest {
  string operation_id=5; bytes payload=6; int64 remaining_budget_ms=7;
 }
 service GatewayRelayIngress { rpc DeliverRelay(GatewayRelayRequest) returns (InternalReply); }
+
+// Adjacent-release capability: native-control-receipt-v1; no route is accepted from outbox JSON.
+message ControlRouteRequest {
+ int32 schema_major=1; string destination_cell=2; int64 storage_epoch=3;
+ int64 directory_epoch=4; string event_id=5; string call_id=6; int64 call_version=7;
+ string user_id=8; string issuer=9; string jti=10; int64 remaining_budget_ms=11;
+}
+message ControlRouteReply {
+ string event_id=1; string call_id=2; int64 call_version=3; string status=4;
+ string error_code=5; bytes route=6; string source_cell=7; int64 storage_epoch=8;
+ int64 directory_epoch=9;
+}
+service ControlRouteIngress { rpc ResolveControlRoute(ControlRouteRequest) returns (ControlRouteReply); }
+message GatewayControlRequest {
+ int32 schema_major=1; string destination_cell=2; string gateway_id=3; bytes boot_id=4;
+ ControlEvent event=5; bytes route=6; int64 remaining_budget_ms=7;
+}
+service GatewayControlIngress { rpc DeliverControl(GatewayControlRequest) returns (InternalReply); }
+
+// Authenticated read-only bootstrap; carries no business command or authority grant.
+service CompatibilityObservationIngress {
+  rpc ObserveCompatibility(CompatibilityObservationRequest) returns (CompatibilityObservationReply);
+}
+message CompatibilityObservationRequest {
+  string destination_cell = 1;
+  string gateway_id = 2;
+  string boot_id = 3;
+  string nonce = 4;
+}
+message CompatibilityActorDescriptor {
+  string member_id = 1;
+  string zone = 2;
+  string cell = 3;
+  int32 major = 4;
+  int32 minor = 5;
+  string executable_id = 6;
+  string fingerprint = 7;
+  repeated string features = 8;
+}
+message CompatibilityObservationReply {
+  string source_cell = 1;
+  string gateway_id = 2;
+  string boot_id = 3;
+  string nonce = 4;
+  int64 observed_at_ms = 5;
+  int64 valid_until_ms = 6;
+  repeated CompatibilityActorDescriptor actors = 7;
+  CompatibilityActorDescriptor gateway = 8;
+  bool schema_known = 9;
+  bool exact_migration16_applied = 10;
+  int64 schema_valid_until_ms = 11;
+}

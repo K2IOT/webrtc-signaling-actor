@@ -4,6 +4,9 @@ import io.grpc.*;
 import io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.netty.handler.ssl.SslContext;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics;
+import io.webrtc.signaling.protocol.RuntimeCapabilities;
 import io.webrtc.signaling.protocol.internal.*;
 import java.net.*;
 import java.time.Duration;
@@ -49,6 +52,15 @@ public final class CellRpcServer implements AutoCloseable {
   private final RpcAdmission admission;
   private final Backend backend;
   private final Function<ControlEvent, CompletionStage<InternalReply>> deliver;
+  private final NativeRpcDispatch preCall =
+      new NativeRpcDispatch(
+          "cell-rpc-dispatch",
+          Set.of(CellIngressGrpc.getRelayNegotiationMethod().getFullMethodName()),
+          List.of(
+              CellIngressGrpc.getServiceDescriptor(),
+              SessionIngressGrpc.getServiceDescriptor(),
+              ControlRouteIngressGrpc.getServiceDescriptor(),
+              CompatibilityObservationIngressGrpc.getServiceDescriptor()));
   private final ExecutorService executor =
       new ThreadPoolExecutor(
           4,
@@ -58,8 +70,45 @@ public final class CellRpcServer implements AutoCloseable {
           new ArrayBlockingQueue<>(256),
           Thread.ofPlatform().daemon().name("cell-rpc-cpu-", 0).factory(),
           new ThreadPoolExecutor.AbortPolicy());
+  private final ExecutorService controlExecutor =
+      new ThreadPoolExecutor(
+          4,
+          4,
+          0,
+          TimeUnit.SECONDS,
+          new ArrayBlockingQueue<>(256),
+          Thread.ofPlatform().daemon().name("cell-rpc-control-cpu-", 0).factory(),
+          new ThreadPoolExecutor.AbortPolicy());
   private Server server;
   private NativeSessionHandler sessions;
+  private volatile RuntimeCapabilities capabilities = RuntimeCapabilities.DENY;
+  private volatile java.util.function.Supplier<CompatibilityObservationReply> compatibilityFacts = () -> null;
+
+  public CellRpcServer compatibilityFacts(java.util.function.Supplier<CompatibilityObservationReply> source) {
+    compatibilityFacts = Objects.requireNonNull(source);
+    return this;
+  }
+
+  private volatile OperationObservation observations = OperationObservation.NONE;
+
+  public CellRpcServer compatibility(RuntimeCapabilities capabilities) {
+    this.capabilities = Objects.requireNonNull(capabilities);
+    return this;
+  }
+
+  public CellRpcServer observe(OperationObservation observations) {
+    this.observations = Objects.requireNonNull(observations);
+    return this;
+  }
+
+  private NativeControlRouteResolver controlRoutes;
+
+  public CellRpcServer controlRoutes(NativeControlRouteResolver resolver) {
+    if (server != null) throw new IllegalStateException("Already started");
+    controlRoutes = Objects.requireNonNull(resolver);
+    return this;
+  }
+
   private boolean draining;
   private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
@@ -100,7 +149,22 @@ public final class CellRpcServer implements AutoCloseable {
             .sslContext(tls)
             .maxInboundMessageSize(98304)
             .maxConcurrentCallsPerConnection(128)
-            .executor(executor)
+            .executor(preCall)
+            .addStreamTracerFactory(preCall.tracer())
+            .callExecutor(
+                new ServerCallExecutorSupplier() {
+                  @Override
+                  public <Q, A> java.util.concurrent.Executor getExecutor(
+                      ServerCall<Q, A> call, Metadata headers) {
+                    return call.getMethodDescriptor()
+                            .getFullMethodName()
+                            .endsWith("/RelayNegotiation")
+                        ? executor
+                        : controlExecutor;
+                  }
+                })
+            .addService(new CompatibilityObservationService(cell, "", "", admission, PEER::get, () -> compatibilityFacts.get()))
+            .intercept(NativeRpcTelemetry.server())
             .intercept(
                 new ServerInterceptor() {
                   @Override
@@ -118,6 +182,7 @@ public final class CellRpcServer implements AutoCloseable {
                 })
             .addService(new Ingress())
             .addService(new SessionService())
+            .addService(new ControlRoutes())
             .build()
             .start();
     return this;
@@ -148,12 +213,32 @@ public final class CellRpcServer implements AutoCloseable {
       respond(reply, error(c, "UNAUTHORIZED"));
       return;
     }
+    if (c.getType().equals("RenewReservation")
+        && !capabilities.permits(cell, RuntimeCapabilities.NATIVE_RENEWAL_V1)) {
+      respond(reply, error(c, "UNAVAILABLE"));
+      return;
+    }
+    if (c.getType().equals("INVITE")
+        && !capabilities.permitsNew(cell, RuntimeCapabilities.FULL_CONNECTION_ACTIVE)) {
+      respond(reply, error(c, "UNAVAILABLE"));
+      return;
+    }
+    if ((op == Operation.EXECUTE || op == Operation.SYNC)
+            && !capabilities.permits(cell, RuntimeCapabilities.FULL_CONNECTION_ACTIVE)
+        || c.getType().equals("QueryParticipation")
+            && (!capabilities.permits(cell, RuntimeCapabilities.HOME_PROOF_HIGH_WATER_V1)
+                || !capabilities.permits(
+                    peer.cell(), RuntimeCapabilities.HOME_PROOF_HIGH_WATER_V1))) {
+      respond(reply, error(c, "UNAVAILABLE"));
+      return;
+    }
     if (!cell.equals(c.getDestinationCell())) {
       respond(reply, error(c, "WRONG_CELL"));
       return;
     }
     try {
-      if (c.getSchemaMajor() != 1
+      if (!c.getTraceId().isEmpty() && !c.getTraceId().matches("[a-f0-9]{32}")
+          || c.getSchemaMajor() != 1
           || c.getSchemaMinor() > 1
           || c.getSchemaMinor() < 0
           || c.getSerializedSize() > 98304
@@ -189,7 +274,29 @@ public final class CellRpcServer implements AutoCloseable {
       return;
     }
     try {
-      var operation = backend.executeTracked(op, c, peer, Duration.ofMillis(remaining));
+      var receipt =
+          OperationObservation.safeStart(
+              observations,
+              op == Operation.RELAY
+                  ? SignalingMetrics.Operation.RPC_RELAY
+                  : SignalingMetrics.Operation.RPC_CONTROL);
+      RpcOperation<InternalReply> operation;
+      try (var scope = receipt.activate()) {
+        operation =
+            NativeRpcTelemetry.observe(
+                backend.executeTracked(op, c, peer, Duration.ofMillis(remaining)),
+                receipt,
+                value ->
+                    value == null
+                        ? SignalingMetrics.Outcome.OUTCOME_UNKNOWN
+                        : NativeRpcTelemetry.outcome(
+                            value.getErrorCode().isEmpty()
+                                ? value.getStatus()
+                                : value.getErrorCode()));
+      } catch (Exception unknown) {
+        receipt.logical(SignalingMetrics.Outcome.OUTCOME_UNKNOWN);
+        throw new RuntimeException(unknown);
+      }
       var replied = new CompletableFuture<Void>();
       retireAfter(operation.physicalCompletion(), replied, ticket);
       operation
@@ -318,7 +425,12 @@ public final class CellRpcServer implements AutoCloseable {
     @Override
     public void mutateSession(SessionCommand command, StreamObserver<SessionReply> reply) {
       var deadline = Context.current().getDeadline();
-      if (sessions == null || deadline == null || deadline.isExpired()) {
+      if (sessions == null
+          || deadline == null
+          || deadline.isExpired()
+          || !capabilities.permits(cell, RuntimeCapabilities.SESSION_S1)
+          || command.getType().equals("REGISTER")
+              && !capabilities.permitsNew(cell, RuntimeCapabilities.SESSION_S1)) {
         sessionReply(reply, sessionError(command, "UNAVAILABLE"));
         return;
       }
@@ -330,12 +442,24 @@ public final class CellRpcServer implements AutoCloseable {
         return;
       }
       try {
+        var observation =
+            OperationObservation.safeStart(observations, SignalingMetrics.Operation.RPC_CONTROL);
         var operation =
-            sessions.execute(
-                command,
-                PEER.get(),
-                Duration.ofMillis(
-                    Math.max(1, Math.min(2000, deadline.timeRemaining(TimeUnit.MILLISECONDS)))));
+            NativeRpcTelemetry.observe(
+                sessions.execute(
+                    command,
+                    PEER.get(),
+                    Duration.ofMillis(
+                        Math.max(
+                            1, Math.min(2000, deadline.timeRemaining(TimeUnit.MILLISECONDS))))),
+                observation,
+                value ->
+                    value == null
+                        ? SignalingMetrics.Outcome.OUTCOME_UNKNOWN
+                        : NativeRpcTelemetry.outcome(
+                            value.getErrorCode().isBlank()
+                                ? value.getStatus()
+                                : value.getErrorCode()));
         var replied = new CompletableFuture<Void>();
         retireAfter(operation.physicalCompletion(), replied, ticket);
         operation
@@ -355,6 +479,82 @@ public final class CellRpcServer implements AutoCloseable {
       } catch (RuntimeException invalid) {
         ticket.close();
         sessionReply(reply, sessionError(command, "OUTCOME_UNKNOWN"));
+      }
+    }
+  }
+
+  private final class ControlRoutes extends ControlRouteIngressGrpc.ControlRouteIngressImplBase {
+    @Override
+    public void resolveControlRoute(
+        ControlRouteRequest request, StreamObserver<ControlRouteReply> reply) {
+      var deadline = Context.current().getDeadline();
+      var error =
+          ControlRouteReply.newBuilder()
+              .setEventId(request.getEventId())
+              .setCallId(request.getCallId())
+              .setCallVersion(request.getCallVersion())
+              .setStatus("REJECTED")
+              .setErrorCode("OUTCOME_UNKNOWN")
+              .build();
+      RpcAdmission.Ticket ticket;
+      if (!capabilities.permits(cell, RuntimeCapabilities.NATIVE_CONTROL_RECEIPT_V1)
+          || controlRoutes == null
+          || deadline == null
+          || deadline.isExpired()
+          || request.getRemainingBudgetMs() <= 0
+          || request.getSerializedSize() > 4096) {
+        reply.onNext(error);
+        reply.onCompleted();
+        return;
+      }
+      try {
+        ticket = admission.acquire(RpcAdmission.Lane.CONTROL, request.getSerializedSize());
+      } catch (RpcAdmission.Overloaded full) {
+        reply.onNext(error);
+        reply.onCompleted();
+        return;
+      }
+      try {
+        var observation =
+            OperationObservation.safeStart(observations, SignalingMetrics.Operation.RPC_CONTROL);
+        var operation =
+            NativeRpcTelemetry.observe(
+                controlRoutes.resolve(
+                    request,
+                    PEER.get(),
+                    Duration.ofMillis(
+                        Math.max(
+                            1,
+                            Math.min(
+                                2000,
+                                Math.min(
+                                    request.getRemainingBudgetMs(),
+                                    deadline.timeRemaining(TimeUnit.MILLISECONDS)))))),
+                observation,
+                value ->
+                    value == null
+                        ? SignalingMetrics.Outcome.OUTCOME_UNKNOWN
+                        : NativeRpcTelemetry.outcome(
+                            value.getErrorCode().isBlank()
+                                ? value.getStatus()
+                                : value.getErrorCode()));
+        var replied = new CompletableFuture<Void>();
+        retireAfter(operation.physicalCompletion(), replied, ticket);
+        operation
+            .logical()
+            .whenComplete(
+                (value, failure) -> {
+                  try {
+                    reply.onNext(failure == null && value != null ? value : error);
+                    reply.onCompleted();
+                  } finally {
+                    replied.complete(null);
+                  }
+                });
+      } catch (RuntimeException notStarted) {
+        ticket.close();
+        reply.onNext(error);
+        reply.onCompleted();
       }
     }
   }
@@ -428,17 +628,22 @@ public final class CellRpcServer implements AutoCloseable {
                   drained.completeExceptionally(failure);
                   return;
                 }
-                if (server == null) {
-                  executor.shutdown();
-                  drained.complete(null);
-                  return;
-                }
                 Thread.startVirtualThread(
                     () -> {
                       try {
-                        if (!server.awaitTermination(2, TimeUnit.SECONDS))
+                        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                        if (server != null && !server.awaitTermination(2, TimeUnit.SECONDS))
                           throw new TimeoutException("RPC transport termination unproven");
+                        // Lookup producers can still hand off queued callbacks to these body pools.
+                        preCall.shutdownAndAwait(end);
                         executor.shutdown();
+                        controlExecutor.shutdown();
+                        for (var cpu : List.of(executor, controlExecutor)) {
+                          long remaining = end - System.nanoTime();
+                          if (remaining <= 0
+                              || !cpu.awaitTermination(remaining, TimeUnit.NANOSECONDS))
+                            throw new TimeoutException("RPC CPU termination unproven");
+                        }
                         drained.complete(null);
                       } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();

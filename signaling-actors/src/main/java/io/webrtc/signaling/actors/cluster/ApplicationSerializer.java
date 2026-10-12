@@ -27,6 +27,16 @@ public final class ApplicationSerializer extends SerializerWithStringManifest {
           Map.entry(
               "completion.physical",
               io.webrtc.signaling.actors.admission.CompletionReceipt.PhysicalDone.class),
+          Map.entry(
+              "completion.owner",
+              io.webrtc.signaling.actors.admission.CompletionReceipt.PhysicalOwner.class),
+          Map.entry(
+              "recovery.reconcile",
+              io.webrtc.signaling.actors.call.RecoveryWakeRegistry.Reconcile.class),
+          Map.entry(
+              "recovery.ack",
+              io.webrtc.signaling.actors.call.RecoveryWakeRegistry.Acknowledge.class),
+          Map.entry("call.reconcile-wake", CallActor.ReconcileWake.class),
           Map.entry("user.mutate", UserCommand.Mutate.class),
           Map.entry("user.result", UserCommand.Result.class),
           Map.entry("user.observe", UserCommand.GetState.class),
@@ -103,7 +113,10 @@ public final class ApplicationSerializer extends SerializerWithStringManifest {
     byte[] encoded =
         ActorEnvelope.newBuilder()
             .setSchemaMajor(1)
-            .setSchemaMinor(0)
+            .setSchemaMinor((value instanceof UserCommand.Mutate user && user.trace() != null)
+                || (value instanceof CallActor.Execute call && call.trace() != null)
+                || (value instanceof CallActor.GrantToHome grant && grant.trace() != null)
+                || (value instanceof CallActor.Progress progress && progress.trace() != null) ? 1 : 0)
             .setKind(kind)
             .setPayload(encode(json.valueToTree(value), 0, new int[] {0}))
             .build()

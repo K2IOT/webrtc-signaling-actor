@@ -9,7 +9,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.apache.pekko.actor.typed.ActorSystem;
 
-/** Explicit native process topology, protected maintenance jobs and private probe inputs. */
+/** Native topology, bounded additional jobs and probes; concrete maintenance is mandatory. */
 public record NativeActorSchedulingEnrollment(
     ActorSystem<?> system,
     Set<String> azRoles,
@@ -23,12 +23,12 @@ public record NativeActorSchedulingEnrollment(
     Objects.requireNonNull(system);
     azRoles = Set.copyOf(azRoles);
     if (maintenance == null
-        || maintenance.size() > 12
+        || maintenance.size() > 8
         || maintenance.stream()
             .anyMatch(
                 job -> job == null || job.priority() != NativeWorkerScheduler.Priority.MAINTENANCE))
       throw new IllegalArgumentException(
-          "Maintenance requires at most12 protected maintenance jobs");
+          "At most 8 additional jobs alongside mandatory native maintenance");
     maintenance = List.copyOf(maintenance);
     Objects.requireNonNull(events);
     Objects.requireNonNull(healthAddress);

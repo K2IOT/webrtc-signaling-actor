@@ -238,4 +238,15 @@ public final class PostgresShardLeaseProvider {
       ActorSystem system, int group) {
     return ID.get(system).currentGrant(group);
   }
+
+  /** Read-only native monotonic age; no groups or unpublished grants are unknown. */
+  public static long rootRenewalAgeNanos(ActorSystem system) {
+    var state = ID.get(system);
+    synchronized (state) {
+      state.requireInstalled();
+      long age = -1;
+      for (var engine : state.engines.values()) age = Math.max(age, engine.renewalAgeNanos());
+      return age;
+    }
+  }
 }

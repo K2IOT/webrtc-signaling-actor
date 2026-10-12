@@ -68,15 +68,19 @@ public class NativeActorSourceConfiguration {
   NativeRevocationSource nativeRevocationSource(
       NativeActorSourceEnrollment enrollment,
       RevocationSourceVerifier verifier,
-      RevocationReconciler reconciler) {
+      RevocationReconciler reconciler,
+      NativeTelemetry telemetry) {
     var endpoint = enrollment.revocations();
-    return new NativeRevocationSource(
+    var source = new NativeRevocationSource(
         endpoint.uri(),
         endpoint.tls(),
         verifier,
         reconciler,
         enrollment.podUid(),
         enrollment.processBoot());
+    telemetry.metrics().securityHardBound(reconciler.freshness());
+    telemetry.lagSource(io.webrtc.signaling.observability.SignalingMetrics.Lag.REVOCATION, source::freshnessAgeNanos);
+    return source;
   }
 
   @Bean(destroyMethod = "")

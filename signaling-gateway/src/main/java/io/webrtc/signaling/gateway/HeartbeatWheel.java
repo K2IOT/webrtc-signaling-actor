@@ -13,6 +13,9 @@ public final class HeartbeatWheel implements AutoCloseable {
 
   private record Entry(Key key, Channel channel, long due) {}
 
+  private static final io.netty.util.AttributeKey<Boolean> CLOSE_HOOK =
+      io.netty.util.AttributeKey.valueOf("signaling.heartbeat-close-hook");
+
   private final List<Map<Key, Entry>> buckets = new ArrayList<>(64);
   private final Map<Key, Integer> slots = new HashMap<>();
   private final Clock clock;
@@ -38,7 +41,10 @@ public final class HeartbeatWheel implements AutoCloseable {
     put(channel, 0, first);
     put(channel, 2, Math.max(now, binding.principal().expiresAt().getEpochSecond() - 60));
     put(channel, 3, binding.principal().expiresAt().getEpochSecond());
-    channel.closeFuture().addListener(f -> remove(binding.route().connectionId()));
+    if (channel.attr(CLOSE_HOOK).setIfAbsent(Boolean.TRUE) == null) {
+      UUID connection = binding.route().connectionId();
+      channel.closeFuture().addListener(f -> remove(connection));
+    }
   }
 
   private synchronized void put(Channel channel, int kind, long due) {

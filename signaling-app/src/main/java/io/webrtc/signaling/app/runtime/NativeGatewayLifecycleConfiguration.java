@@ -42,9 +42,9 @@ public class NativeGatewayLifecycleConfiguration {
       NativeGatewaySafety safety,
       ObjectProvider<NativeWorkerScheduler> workers,
       ObjectProvider<NativeClockSource> clocks,
-      ObjectProvider<NativeCachedRevocationSource> sources)
+      ObjectProvider<NativeCachedRevocationSource> sources, NativeTelemetry telemetry, NativeCompatibility compatibility)
       throws Exception {
-    return new NativeGatewaySpringLifecycle(
+    var lifecycle = new NativeGatewaySpringLifecycle(
         ingress,
         boot,
         cache,
@@ -54,7 +54,9 @@ public class NativeGatewayLifecycleConfiguration {
         safety,
         workers.orderedStream().toList(),
         clocks.orderedStream().toList(),
-        sources.orderedStream().toList());
+        sources.orderedStream().toList(), telemetry);
+    lifecycle.compatibility(() -> compatibility.gatewayReady(boot.identity().gatewayId(), boot.identity().bootId()));
+    return lifecycle;
   }
 
   @Bean(destroyMethod = "")

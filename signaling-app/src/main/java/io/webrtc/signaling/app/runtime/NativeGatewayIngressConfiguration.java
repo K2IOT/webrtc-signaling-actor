@@ -23,9 +23,10 @@ public class NativeGatewayIngressConfiguration {
       NativeGatewayBusinessEnrollment business,
       NativeGatewayIngressEnrollment inputs,
       NativeGatewayServices services,
-      ClockSafetyMonitor clock)
+      ClockSafetyMonitor clock,
+      NativeControlReceiptTracker receipts)
       throws Exception {
-    return new NativeGatewayIngress(business, inputs, services, clock);
+    return new NativeGatewayIngress(business, inputs, services, clock, receipts);
   }
 
   @Bean(destroyMethod = "")

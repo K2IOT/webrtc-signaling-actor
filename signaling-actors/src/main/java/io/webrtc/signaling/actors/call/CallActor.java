@@ -35,6 +35,14 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       throw new IllegalStateException("Coordinator grant service is required");
     }
 
+    default DbOperation<CoordinatorGrantService.Issued> renewalProjectionGrant(
+        HomeParticipationService.Request request,
+        AuthoritySql.GroupToken token,
+        long version,
+        Duration budget) {
+      throw new IllegalStateException("Protected native renewal projection grants are required");
+    }
+
     default DbOperation<Optional<Snapshot>> loadCold(
         CallId call, AuthoritySql.GroupToken token, Duration budget) {
       return load(call, token, budget);
@@ -74,8 +82,21 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       ActorRef<GrantReply> replyTo,
       Instant deadline,
       int encodedBytes,
-      io.webrtc.signaling.actors.admission.CompletionReceipt receipt)
+      io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
+      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+      io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
+    public GrantToHome(
+        HomeParticipationService.Request request,
+        HomeParticipationService.AuthorizationIntent action,
+        String destination,
+        ActorRef<GrantReply> replyTo,
+        Instant deadline,
+        int encodedBytes,
+        io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
+      this(request, action, destination, replyTo, deadline, encodedBytes, receipt, null);
+    }
+
     public GrantToHome(
         HomeParticipationService.Request request,
         HomeParticipationService.AuthorizationIntent action,
@@ -110,8 +131,19 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       ActorRef<CallWorkflowService.Outcome> replyTo,
       Instant deadline,
       int encodedBytes,
-      io.webrtc.signaling.actors.admission.CompletionReceipt receipt)
+      io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
+      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+      io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
+    public Progress(
+        CallWorkflowService.Transition transition,
+        ActorRef<CallWorkflowService.Outcome> replyTo,
+        Instant deadline,
+        int encodedBytes,
+        io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
+      this(transition, replyTo, deadline, encodedBytes, receipt, null);
+    }
+
     public Progress(
         CallWorkflowService.Transition transition,
         ActorRef<CallWorkflowService.Outcome> replyTo,
@@ -133,7 +165,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       ActorRef<CallCommandService.Outcome> replyTo,
       Instant deadline,
       int encodedBytes,
-      io.webrtc.signaling.actors.admission.CompletionReceipt receipt)
+      io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
+      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+      io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
     public Execute(
         CallCommand command,
@@ -141,9 +175,13 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         ActorRef<CallCommandService.Outcome> replyTo,
         Instant deadline,
         int encodedBytes) {
-      this(command, proof, replyTo, deadline, encodedBytes, null);
+      this(command, proof, replyTo, deadline, encodedBytes, null, null);
     }
 
+    public Execute(CallCommand command, String proof, ActorRef<CallCommandService.Outcome> replyTo,
+        Instant deadline, int encodedBytes, io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
+      this(command, proof, replyTo, deadline, encodedBytes, receipt, null);
+    }
     public Execute {
       Objects.requireNonNull(command);
       Objects.requireNonNull(replyTo);
@@ -151,11 +189,32 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     }
   }
 
-  public record WakeCall(CallId call, ActorRef<Boolean> replyTo, Instant deadline)
+  public record WakeCall(
+      CallId call,
+      ActorRef<Boolean> replyTo,
+      Instant deadline,
+      int encodedBytes,
+      io.webrtc.signaling.actors.admission.CompletionReceipt receipt)
       implements CallMessage {
+    public WakeCall(CallId call, ActorRef<Boolean> replyTo, Instant deadline) {
+      this(call, replyTo, deadline, 128, null);
+    }
+
     public WakeCall {
       Objects.requireNonNull(call);
       Objects.requireNonNull(replyTo);
+      check(deadline, encodedBytes);
+    }
+  }
+
+  public record ReconcileWake(
+      CallId call,
+      io.webrtc.signaling.actors.admission.CompletionReceipt original,
+      Instant deadline)
+      implements CallMessage {
+    public ReconcileWake {
+      Objects.requireNonNull(call);
+      Objects.requireNonNull(original);
       Objects.requireNonNull(deadline);
     }
   }
@@ -170,7 +229,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       UUID actor, UUID operation, AuthoritySql.GroupToken token, Object value, Throwable error)
       implements CallMessage {}
 
-  private record Cleaned(UUID actor, UUID operation) implements CallMessage {}
+  private record Cleaned(UUID actor, UUID operation, Throwable error) implements CallMessage {}
 
   private record Expire(UUID actor, AuthoritySql.GroupToken token, long version)
       implements CallMessage {}
@@ -180,6 +239,10 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
   private long hydrationEnd;
   private int hydrationAttempts;
   private boolean retryHydration;
+
+  private enum Renew implements CallMessage {
+    INSTANCE
+  }
 
   private enum Retire implements CallMessage {
     INSTANCE
@@ -211,24 +274,58 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       Clock clock,
       ActorRef<ClusterSharding.ShardCommand> shard,
       Consumer<CallId> invalidateRelay) {
+    return create(call, backend, gate, clock, shard, invalidateRelay, null);
+  }
+
+  public static Behavior<CallMessage> create(
+      CallId call,
+      Backend backend,
+      Supplier<Optional<AuthoritySql.GroupToken>> gate,
+      Clock clock,
+      ActorRef<ClusterSharding.ShardCommand> shard,
+      Consumer<CallId> invalidateRelay,
+      ParticipantRenewal renewal) {
     return Behaviors.withTimers(
         t ->
             Behaviors.setup(
-                c -> new CallActor(c, t, call, backend, gate, clock, shard, invalidateRelay)));
+                c ->
+                    new CallActor(
+                        c, t, call, backend, gate, clock, shard, invalidateRelay, renewal)));
+  }
+
+  private enum Purpose {
+    HYDRATE,
+    WORK,
+    EXPIRE,
+    RENEW,
+    RECONCILE_HYDRATE,
+    RECONCILE_RENEW
   }
 
   private static final class Pending {
     final UUID id = UUID.randomUUID();
     final CallMessage request;
     final AuthoritySql.GroupToken token;
+    final Purpose purpose;
     boolean logical, physical;
+    Throwable failure;
 
-    Pending(CallMessage request, AuthoritySql.GroupToken token) {
+    Pending(CallMessage request, AuthoritySql.GroupToken token, Purpose purpose) {
       this.request = request;
       this.token = token;
+      this.purpose = purpose;
+    }
+
+    boolean hydration() {
+      return purpose == Purpose.HYDRATE || purpose == Purpose.RECONCILE_HYDRATE;
+    }
+
+    boolean renewal() {
+      return purpose == Purpose.RENEW || purpose == Purpose.RECONCILE_RENEW;
     }
   }
 
+  private final ParticipantRenewal renewal;
   private final Consumer<CallId> invalidateRelay;
   private final UUID incarnation = UUID.randomUUID();
   private final CallId call;
@@ -242,7 +339,11 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
   private Optional<Snapshot> snapshot = Optional.empty();
   private Pending pending;
   private int bytes;
-  private boolean ready, unknown, stopping, passivating;
+  private boolean ready, unknown, stopping, passivating, renewalDue;
+  private boolean renewalStarted;
+  private long renewalLastStart, renewalNextDue;
+  private int renewalRetries;
+  private ParticipantRenewal.Reconciliation renewalRepair;
 
   private CallActor(
       ActorContext<CallMessage> c,
@@ -252,8 +353,10 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       Supplier<Optional<AuthoritySql.GroupToken>> gate,
       Clock clock,
       ActorRef<ClusterSharding.ShardCommand> shard,
-      Consumer<CallId> invalidateRelay) {
+      Consumer<CallId> invalidateRelay,
+      ParticipantRenewal renewal) {
     super(c);
+    this.renewal = renewal;
     this.invalidateRelay = Objects.requireNonNull(invalidateRelay);
     this.call = Objects.requireNonNull(call);
     this.backend = Objects.requireNonNull(backend);
@@ -267,7 +370,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       ready = true;
       return;
     }
-    pending = new Pending(null, token.get());
+    pending = new Pending(null, token.get(), Purpose.HYDRATE);
     submit(() -> backend.loadCold(call, pending.token, Duration.ofSeconds(2)));
   }
 
@@ -278,11 +381,19 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         .onMessage(Progress.class, this::enqueue)
         .onMessage(Execute.class, this::enqueue)
         .onMessage(WakeCall.class, this::enqueue)
+        .onMessage(
+            ReconcileWake.class,
+            r -> {
+              if (call.equals(r.call()) && r.deadline().isAfter(clock.instant()))
+                RecoveryWakeRegistry.get(getContext().getSystem()).reconcile(call, r.original());
+              return this;
+            })
         .onMessage(GetSnapshot.class, this::observe)
         .onMessage(Completed.class, this::completed)
         .onMessage(Cleaned.class, this::cleaned)
         .onMessage(Expire.class, this::expire)
         .onMessage(RetryHydration.class, this::retryHydration)
+        .onMessage(Renew.class, r -> renewParticipants())
         .onMessage(Retire.class, r -> retire())
         .onMessage(Stop.class, r -> stop())
         .build();
@@ -345,7 +456,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         reject(r, "FENCED");
         continue;
       }
-      pending = new Pending(r, token.get());
+      pending = new Pending(r, token.get(), Purpose.WORK);
       Duration remaining = Duration.between(clock.instant(), deadline(r));
       Duration budget =
           remaining.compareTo(Duration.ofSeconds(2)) > 0 ? Duration.ofSeconds(2) : remaining;
@@ -377,19 +488,56 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     UUID operation = pending.id;
     var token = pending.token;
     var receipt = receipt(pending.request);
-    try {
+    RecoveryWakeRegistry.Entry witness = null;
+    try (var traceScope = io.webrtc.signaling.observability.TraceContext.activate(
+        switch (pending.request) {
+          case Execute execute -> execute.trace();
+          case GrantToHome grant -> grant.trace();
+          case Progress progress -> progress.trace();
+          default -> null;
+        })) {
+      if (pending.request instanceof WakeCall && receipt != null)
+        witness = RecoveryWakeRegistry.get(getContext().getSystem()).reserve(call, token, receipt);
       var handle = action.get();
+      if (witness != null) witness.attach(handle.physicalCompletion());
       if (receipt != null)
-        handle.physicalCompletion().whenComplete((done, error) -> receipt.signal());
+        handle
+            .physicalCompletion()
+            .whenComplete(
+                (done, error) -> {
+                  if (error == null) receipt.signal();
+                });
       getContext()
           .pipeToSelf(
               handle.logical(), (v, e) -> new Completed(incarnation, operation, token, v, e));
       getContext()
-          .pipeToSelf(handle.physicalCompletion(), (v, e) -> new Cleaned(incarnation, operation));
+          .pipeToSelf(
+              handle.physicalCompletion(), (v, e) -> new Cleaned(incarnation, operation, e));
     } catch (RuntimeException e) {
-      if (receipt != null) receipt.signal();
+      if (e instanceof RecoveryWakeRegistry.AlreadyRegistered duplicate) {
+        getContext()
+            .pipeToSelf(
+                duplicate.entry().physical(),
+                (v, failure) -> new Cleaned(incarnation, operation, failure));
+        duplicate
+            .entry()
+            .physical()
+            .whenComplete(
+                (v, failure) -> {
+                  if (failure == null) receipt.signal();
+                });
+        getContext()
+            .getSelf()
+            .tell(new Completed(incarnation, operation, token, null, new DbOverloadedException()));
+        return;
+      }
+      String code = classify(e);
+      if (!code.equals("UNKNOWN")) {
+        if (witness != null) witness.notStarted();
+        if (receipt != null) receipt.signal();
+        getContext().getSelf().tell(new Cleaned(incarnation, operation, null));
+      }
       getContext().getSelf().tell(new Completed(incarnation, operation, token, null, e));
-      getContext().getSelf().tell(new Cleaned(incarnation, operation));
     }
   }
 
@@ -401,14 +549,24 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         || pending.logical) return this;
     pending.logical = true;
     if (e.error() != null) {
+      pending.failure = unwrap(e.error());
       String code = classify(e.error());
       retryHydration =
-          pending.request == null
+          pending.hydration()
               && code.equals("OVERLOADED")
               && hydrationEnd != 0
               && System.nanoTime() - hydrationEnd < 0
               && hydrationAttempts < 16;
-      unknown = !retryHydration && (code.equals("UNKNOWN") || pending.request == null);
+      boolean knownRenewalOverload =
+          pending.renewal()
+              && code.equals("OVERLOADED")
+              && current().filter(e.token()::equals).isPresent();
+      // Null request means internal work, not hydration. A known renewal overload keeps the
+      // incarnation live, but no replacement cycle is started before this owner's real cleanup.
+      if (pending.purpose == Purpose.RECONCILE_RENEW
+          || pending.purpose == Purpose.RECONCILE_HYDRATE) unknown = true;
+      else if (!knownRenewalOverload)
+        unknown = !retryHydration && (code.equals("UNKNOWN") || pending.request == null);
       if (pending.request != null) reply(pending.request, code);
     } else if (!current().filter(e.token()::equals).isPresent()) {
       unknown = true;
@@ -421,6 +579,19 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
                 .tell(
                     new GrantReply(
                         "GRANTED", value, backend.sealGrant(g.request(), g.destination(), value)));
+        } else if (e.value() instanceof ParticipantRenewal.Result result) {
+          if (!pending.renewal()) throw new IllegalArgumentException("Unexpected renewal outcome");
+          if (pending.purpose == Purpose.RECONCILE_RENEW) {
+            unknown = false;
+            renewalRepair = null;
+          }
+          renewalRetries = 0;
+          // A live near-expiry lease may need the next real root grant before the normal cadence.
+          if (result.retryAfter() != null) {
+            renewalNextDue =
+                Math.min(renewalNextDue, renewalLastStart + result.retryAfter().toNanos());
+            scheduleRenewal();
+          }
         } else if (e.value() instanceof Optional<?> loaded) {
           setSnapshot(loaded.map(v -> (Snapshot) v));
           ready = true;
@@ -443,6 +614,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
           ready = false;
         } else throw new IllegalArgumentException("Invalid committed DTO");
       } catch (RuntimeException invalid) {
+        pending.failure = invalid;
         unknown = true;
         if (pending.request != null) reply(pending.request, "UNKNOWN");
       }
@@ -470,6 +642,17 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
                     || !Objects.equals(value.get().winner(), snapshot.get().winner()))))
       invalidateRelay.accept(call);
     snapshot = value;
+    if (renewal != null && snapshot.isPresent() && snapshot.get().terminalAt() == null) {
+      if (!renewalStarted) renewalDue = true; // First guarded hydration pulses without timer delay.
+      else {
+        renewalNextDue = Math.min(renewalNextDue, renewalLastStart + renewalPeriod().toNanos());
+        if (System.nanoTime() - renewalNextDue >= 0) renewalDue = true;
+        scheduleRenewal();
+      }
+    } else {
+      renewalDue = false;
+      timers.cancel(Renew.INSTANCE);
+    }
     timers.cancel("deadline");
     timers.cancel(Retire.INSTANCE);
     if (snapshot.isPresent()) {
@@ -486,6 +669,10 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
 
   private Behavior<CallMessage> cleaned(Cleaned e) {
     if (incarnation.equals(e.actor()) && pending != null && pending.id.equals(e.operation())) {
+      if (e.error() != null) {
+        unknown = true;
+        return this; // Failed cleanup cannot retire the incarnation's admitted credit.
+      }
       pending.physical = true;
       finish();
     }
@@ -494,27 +681,86 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
 
   private void finish() {
     if (pending == null || !pending.logical || !pending.physical) return;
-    if (pending.request != null) bytes -= size(pending.request);
+    var settled = pending;
+    if (settled.request != null) bytes -= size(settled.request);
     pending = null;
-    if (unknown || stopping) {
-      retryHydration = false;
-      while (!queue.isEmpty()) {
-        var r = queue.remove();
-        bytes -= size(r);
-        reject(r, "UNAVAILABLE");
+    if (!stopping && current().filter(settled.token::equals).isPresent()) {
+      if (settled.renewal() && settled.failure instanceof ParticipantRenewal.Uncertain uncertain) {
+        renewalRepair = uncertain.reconciliation();
+        unknown = true;
+        ready = false;
+        finishUnavailable();
+        if (settled.purpose == Purpose.RECONCILE_RENEW) retryRenewalAfterSettlement();
+        else warmHydration(true);
+        return;
       }
+      if (settled.purpose == Purpose.RECONCILE_HYDRATE && settled.failure == null) {
+        if (snapshot.isPresent() && snapshot.get().terminalAt() == null) {
+          reconcileRenewal(settled.token);
+          return;
+        }
+        // The guarded load can prove durable terminal/absence; no participant write is needed.
+        renewalRepair = null;
+        unknown = false;
+      }
+      if (settled.renewal()
+          && settled.failure != null
+          && classify(settled.failure).equals("OVERLOADED")) {
+        retryRenewalAfterSettlement();
+        if (!unknown) start();
+        return;
+      }
+      if (settled.purpose == Purpose.RECONCILE_HYDRATE
+          && settled.failure != null
+          && (classify(settled.failure).equals("OVERLOADED")
+              || classify(settled.failure).equals("UNKNOWN"))) {
+        if (!retryHydration) {
+          retryRenewalAfterSettlement();
+          return;
+        }
+      }
+    } else renewalRepair = null;
+    if ((unknown && !retryHydration) || stopping) {
+      retryHydration = false;
+      // A definitive guard failure cannot be retried as a healthy renewal.
+      renewalRepair = null;
+      finishUnavailable();
     } else if (retryHydration) {
       retryHydration = false;
       var token = current();
       if (token.isEmpty()) {
         unknown = true;
+        renewalRepair = null;
         finishUnavailable();
         return;
       }
       timers.startSingleTimer(
           "hydrate-retry", new RetryHydration(incarnation, token.get()), Duration.ofMillis(25));
     } else if (!ready) warmHydration(true);
+    else if (renewalDue) renewParticipants();
     else start();
+  }
+
+  private void reconcileRenewal(AuthoritySql.GroupToken token) {
+    renewalLastStart = System.nanoTime();
+    renewalNextDue = renewalLastStart + renewalPeriod().toNanos();
+    var repair = Objects.requireNonNull(renewalRepair);
+    pending = new Pending(null, token, Purpose.RECONCILE_RENEW);
+    submit(() -> repair.reconcile(snapshot.get(), token, backend, Duration.ofSeconds(2)));
+  }
+
+  private void retryRenewalAfterSettlement() {
+    retryHydration = false;
+    // Four early retries per cadence, then use the normal phase interval. Each retry has one
+    // bounded physical scope; unresolved physical owners never reach this method.
+    Duration delay =
+        ++renewalRetries <= 4
+            ? Duration.ofSeconds(1)
+            : snapshot.isPresent() ? renewalPeriod() : Duration.ofSeconds(5);
+    if (renewalRetries > 4) renewalRetries = 0;
+    renewalNextDue = System.nanoTime() + delay.toNanos();
+    renewalDue = false;
+    scheduleRenewal();
   }
 
   /**
@@ -531,18 +777,26 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     if (token.isEmpty() || remaining <= 0 || hydrationAttempts >= 16) {
       unknown = true;
       finishUnavailable();
+      if (token.isPresent() && renewalRepair != null && !stopping) retryRenewalAfterSettlement();
+      else renewalRepair = null;
       return;
     }
     hydrationAttempts++;
-    pending = new Pending(null, token.get());
+    pending =
+        new Pending(
+            null, token.get(), renewalRepair == null ? Purpose.HYDRATE : Purpose.RECONCILE_HYDRATE);
     submit(() -> backend.load(call, pending.token, Duration.ofNanos(remaining)));
   }
 
   private Behavior<CallMessage> retryHydration(RetryHydration retry) {
-    if (!retry.actor().equals(incarnation) || pending != null || ready || unknown || stopping)
-      return this;
+    if (!retry.actor().equals(incarnation)
+        || pending != null
+        || ready
+        || unknown && renewalRepair == null
+        || stopping) return this;
     if (current().filter(retry.token()::equals).isEmpty()) {
       unknown = true;
+      renewalRepair = null;
       finishUnavailable();
       return next();
     }
@@ -569,8 +823,58 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       timers.startSingleTimer("deadline", e, Duration.ofMillis(50));
       return this;
     }
-    pending = new Pending(null, e.token());
+    pending = new Pending(null, e.token(), Purpose.EXPIRE);
     submit(() -> backend.expire(call, e.token(), e.version(), Duration.ofSeconds(2)));
+    return this;
+  }
+
+  private Duration renewalPeriod() {
+    return Duration.ofSeconds(snapshot.get().state().equals("PREPARING") ? 5 : 10);
+  }
+
+  private void scheduleRenewal() {
+    timers.startSingleTimer(
+        Renew.INSTANCE, Duration.ofNanos(Math.max(1, renewalNextDue - System.nanoTime())));
+  }
+
+  private Behavior<CallMessage> renewParticipants() {
+    if (renewalRepair != null && unknown && !stopping && !passivating && pending == null) {
+      if (System.nanoTime() - renewalNextDue < 0) {
+        scheduleRenewal();
+        return this;
+      }
+      ready = false;
+      warmHydration(true);
+      return next();
+    }
+    if (renewal == null
+        || unknown
+        || stopping
+        || passivating
+        || !ready
+        || snapshot.isEmpty()
+        || snapshot.get().terminalAt() != null) {
+      renewalDue = false;
+      if (ready && !unknown && !stopping && !passivating) start();
+      return this;
+    }
+    if (renewalStarted && System.nanoTime() - renewalNextDue < 0) {
+      renewalDue = false;
+      scheduleRenewal();
+      if (pending == null) start();
+      return this;
+    }
+    renewalDue = true;
+    if (pending != null) return this;
+    renewalDue = false;
+    var token = current();
+    if (token.isEmpty()) return this;
+    renewalStarted = true;
+    renewalLastStart = System.nanoTime();
+    renewalNextDue = renewalLastStart + renewalPeriod().toNanos();
+    scheduleRenewal();
+    pending = new Pending(null, token.get(), Purpose.RENEW);
+    submit(() -> renewal.renew(snapshot.get(), token.get(), backend, Duration.ofSeconds(2)));
     return this;
   }
 
@@ -595,7 +899,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
   private Behavior<CallMessage> stop() {
     invalidateRelay.accept(call);
     timers.cancel("hydrate-retry");
+    timers.cancel(Renew.INSTANCE);
     retryHydration = false;
+    renewalRepair = null;
     stopping = true;
     finishUnavailable();
     return next();
@@ -603,7 +909,8 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
 
   private Behavior<CallMessage> next() {
     if (pending == null && stopping) return Behaviors.stopped();
-    if (pending == null && unknown) return shard == null ? Behaviors.stopped() : retire();
+    if (pending == null && unknown && renewalRepair == null)
+      return shard == null ? Behaviors.stopped() : retire();
     return this;
   }
 
@@ -612,6 +919,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       case GrantToHome g -> g.encodedBytes();
       case Progress p -> p.encodedBytes();
       case Execute e -> e.encodedBytes();
+      case WakeCall w -> w.encodedBytes();
       default -> 128;
     };
   }
@@ -633,13 +941,35 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       case GrantToHome g -> g.receipt();
       case Progress p -> p.receipt();
       case Execute e -> e.receipt();
+      case WakeCall w -> w.receipt();
       default -> null;
     };
   }
 
   private void reject(CallMessage request, String code) {
     var receipt = receipt(request);
-    if (receipt != null) receipt.signal();
+    if (receipt != null) {
+      if (request instanceof WakeCall w) {
+        try {
+          RecoveryWakeRegistry.get(getContext().getSystem())
+              .reserve(w.call(), current().orElse(null), receipt)
+              .notStarted();
+        } catch (RecoveryWakeRegistry.AlreadyRegistered original) {
+          original
+              .entry()
+              .physical()
+              .whenComplete(
+                  (v, failure) -> {
+                    if (failure == null) receipt.signal();
+                  });
+          reply(request, code);
+          return;
+        } catch (DbOverloadedException full) {
+          // The original request was observed and rejected before backend submission.
+        }
+      }
+      receipt.signal();
+    }
     reply(request, code);
   }
 
@@ -663,8 +993,13 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     }
   }
 
-  private static String classify(Throwable e) {
+  private static Throwable unwrap(Throwable e) {
     while (e instanceof CompletionException && e.getCause() != null) e = e.getCause();
+    return e;
+  }
+
+  private static String classify(Throwable e) {
+    e = unwrap(e);
     if (e instanceof AuthoritySql.FencedException
         || e instanceof CallCommandService.AuthorizationRejected) return "FENCED";
     if (e instanceof AuthoritySql.RetryableConflict || e instanceof DbOverloadedException)

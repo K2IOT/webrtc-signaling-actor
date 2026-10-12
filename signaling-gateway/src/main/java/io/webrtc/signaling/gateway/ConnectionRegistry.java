@@ -6,11 +6,16 @@ import io.webrtc.signaling.auth.AuthPrincipal;
 import io.webrtc.signaling.protocol.Identity.SessionKey;
 import io.webrtc.signaling.storage.SessionRepository;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /** One local index per process. Closing an old channel cannot remove a replacement binding. */
 public final class ConnectionRegistry {
   public static final AttributeKey<UUID> CONNECTION = AttributeKey.valueOf("signaling.connection");
+
+  static final AttributeKey<Boolean> AUTHENTICATED =
+      AttributeKey.valueOf("signaling.authenticated");
 
   public record Binding(Channel channel, SessionRepository.Route route, AuthPrincipal principal) {}
 
@@ -18,9 +23,14 @@ public final class ConnectionRegistry {
   private final UUID boot;
   private final int maxUnauthenticated, maxConnections;
   private final Map<UUID, Channel> channels = new HashMap<>();
-  private final Map<UUID, Binding> bindings = new HashMap<>();
-  private final Map<SessionKey, UUID> sessions = new HashMap<>();
+  private final Map<UUID, Binding> bindings = new ConcurrentHashMap<>();
+  private final Map<SessionKey, UUID> sessions = new ConcurrentHashMap<>();
+  private final Map<UUID, Integer> scanSlots = new HashMap<>();
+  private final AtomicReferenceArray<Binding> scanBindings;
+  private final int[] freeSlots;
+  private int freeSlotCount;
   private int unauthenticated;
+  private volatile long safetyProgressNanos, safetyWindowNanos;
 
   public ConnectionRegistry(String gateway, UUID boot, int maxUnauthenticated) {
     this(gateway, boot, maxUnauthenticated, 200_000);
@@ -29,10 +39,17 @@ public final class ConnectionRegistry {
   public ConnectionRegistry(String gateway, UUID boot, int maxUnauthenticated, int maxConnections) {
     this.gateway = Objects.requireNonNull(gateway);
     this.boot = Objects.requireNonNull(boot);
-    if (maxUnauthenticated < 1 || maxUnauthenticated > 1000 || maxConnections < maxUnauthenticated)
+    if (maxUnauthenticated < 1
+        || maxUnauthenticated > 1000
+        || maxConnections < maxUnauthenticated
+        || maxConnections > 200_000)
       throw new IllegalArgumentException("Bounded connection admission required");
     this.maxUnauthenticated = maxUnauthenticated;
     this.maxConnections = maxConnections;
+    scanBindings = new AtomicReferenceArray<>(maxConnections);
+    freeSlots = new int[maxConnections];
+    for (int i = 0; i < maxConnections; i++) freeSlots[i] = i;
+    freeSlotCount = maxConnections;
   }
 
   public synchronized UUID attach(Channel channel) {
@@ -40,6 +57,7 @@ public final class ConnectionRegistry {
       throw new RejectedExecutionException("SOCKET_OVERLOADED");
     UUID id = UUID.randomUUID();
     channels.put(id, channel);
+    scanSlots.put(id, freeSlots[--freeSlotCount]);
     unauthenticated++;
     channel.attr(CONNECTION).set(id);
     channel.closeFuture().addListener(f -> remove(id));
@@ -50,6 +68,7 @@ public final class ConnectionRegistry {
       UUID id, SessionRepository.Route route, AuthPrincipal principal) {
     Channel channel = channels.get(id);
     if (channel == null
+        || !safetyFresh()
         || !channel.isActive()
         || GatewayRejection.rejecting(channel)
         || !route.connectionId().equals(id)
@@ -60,12 +79,15 @@ public final class ConnectionRegistry {
         || route.connectionGeneration() < 1
         || !route.tokenExpiresAt().equals(principal.expiresAt())) return false;
     UUID previousId = sessions.get(route.key());
-    Binding previous = bindings.get(previousId);
+    Binding previous = previousId == null ? null : bindings.get(previousId);
     if (previous != null
         && previous.route().incarnation().equals(route.incarnation())
         && previous.route().connectionGeneration() > route.connectionGeneration()) return false;
     if (!bindings.containsKey(id)) unauthenticated--;
-    bindings.put(id, new Binding(channel, route, principal));
+    var updated = new Binding(channel, route, principal);
+    bindings.put(id, updated);
+    scanBindings.set(scanSlots.get(id), updated);
+    channel.attr(AUTHENTICATED).set(Boolean.TRUE);
     sessions.put(route.key(), id);
     if (previous != null && !Objects.equals(id, previousId))
       previous
@@ -78,13 +100,14 @@ public final class ConnectionRegistry {
     return true;
   }
 
-  public synchronized Binding binding(UUID id) {
-    return bindings.get(id);
+  public Binding binding(UUID id) {
+    return id == null ? null : bindings.get(id);
   }
 
-  public synchronized boolean current(UUID id, SessionRepository.Route route) {
-    var binding = bindings.get(id);
+  public boolean current(UUID id, SessionRepository.Route route) {
+    var binding = binding(id);
     return binding != null
+        && safetyFresh()
         && binding.channel().isActive()
         && !GatewayRejection.rejecting(binding.channel())
         && binding.route().equals(route)
@@ -92,10 +115,38 @@ public final class ConnectionRegistry {
   }
 
   public synchronized void remove(UUID id) {
-    if (channels.remove(id) == null) return;
+    Channel channel = channels.remove(id);
+    if (channel == null) return;
+    channel.attr(AUTHENTICATED).set(Boolean.FALSE);
+    int slot = scanSlots.remove(id);
+    scanBindings.set(slot, null);
+    freeSlots[freeSlotCount++] = slot;
     var binding = bindings.remove(id);
     if (binding == null) unauthenticated--;
     else sessions.remove(binding.route().key(), id);
+  }
+
+  /** The watchdog uses planned progress, so a late scan cannot reset away accumulated lag. */
+  void beginSafetySweep(long intervalNanos, long nowNanos) {
+    safetyProgressNanos = nowNanos;
+    safetyWindowNanos = intervalNanos;
+  }
+
+  void safetyProgress(long plannedNanos) {
+    safetyProgressNanos = plannedNanos;
+  }
+
+  boolean safetyFresh() {
+    long window = safetyWindowNanos;
+    return window == 0 || System.nanoTime() - safetyProgressNanos <= window;
+  }
+
+  int scanCapacity() {
+    return maxConnections;
+  }
+
+  Binding scanBinding(int slot) {
+    return scanBindings.get(slot);
   }
 
   public synchronized int authenticatedCount() {

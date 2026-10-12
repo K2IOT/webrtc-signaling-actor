@@ -28,6 +28,27 @@ public final class NativeClusterMembership {
     this.enrolledAzRoles = Set.copyOf(enrolledAzRoles);
   }
 
+  public record AuthenticatedPeer(java.util.UUID memberId, String zone, Set<String> roles) {
+    public AuthenticatedPeer { roles = Set.copyOf(roles); }
+  }
+
+  /** Includes invalid descriptors so a missing capability cannot disappear from the gate. */
+  public List<AuthenticatedPeer> authenticatedUpPeers() {
+    var state = cluster.state();
+    var unreachable = new HashSet<>(state.getUnreachable());
+    var peers = new ArrayList<AuthenticatedPeer>();
+    for (var member : state.getMembers()) {
+      if (!member.status().equals(MemberStatus.up()) || unreachable.contains(member)
+          || !member.hasRole("signaling-actor")) continue;
+      var zones = member.getRoles().stream().filter(role -> role.startsWith("az-")).toList();
+      String zone = zones.size() == 1 && enrolledAzRoles.contains(zones.getFirst()) ? zones.getFirst() : "INVALID";
+      var identity = java.util.UUID.nameUUIDFromBytes(member.uniqueAddress().toString()
+          .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      peers.add(new AuthenticatedPeer(identity, zone, member.getRoles()));
+    }
+    return List.copyOf(peers);
+  }
+
   public ClusterReadiness.Snapshot refresh() {
     var state = cluster.state();
     var unreachable = new HashSet<>(state.getUnreachable());

@@ -9,6 +9,24 @@
     },
     "localAcknowledgement": {
       "type": "string"
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "dashboard": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "boolean"
+        },
+        "podMonitor": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "if": {

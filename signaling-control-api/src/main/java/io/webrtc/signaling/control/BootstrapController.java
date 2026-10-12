@@ -1,6 +1,8 @@
 package io.webrtc.signaling.control;
 
 import io.webrtc.signaling.auth.*;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics.*;
 import java.time.*;
 import java.util.concurrent.*;
 import java.util.function.*;
@@ -17,6 +19,8 @@ public final class BootstrapController {
           long directoryEpoch,
       int retryAfterMillis) {}
 
+  private OperationObservation observations = OperationObservation.NONE;
+  public BootstrapController observe(OperationObservation observations) { this.observations = java.util.Objects.requireNonNull(observations); return this; }
   private final DirectoryService directory;
   private final BoundedTokenVerifier verifier;
   private final BiFunction<AuthPrincipal, Instant, AuthorizationStatus> security;
@@ -67,13 +71,16 @@ public final class BootstrapController {
   }
 
   public CompletionStage<BootstrapResponse> bootstrap(AuthPrincipal principal) {
-    if (!allowed(principal)) return CompletableFuture.failedFuture(new AuthException());
-    return directory
+    var receipt = OperationObservation.safeLogicalStart(observations, Operation.BOOTSTRAP);
+    if (!allowed(principal)) { receipt.logical(Outcome.FORBIDDEN); return CompletableFuture.failedFuture(new AuthException()); }
+    var result = directory
         .resolveHome(principal.userId(), clock.instant())
         .thenApply(
             route -> {
               if (!allowed(principal)) throw new AuthException();
               return new BootstrapResponse(route.wssUrl(), "webrtc-signaling.v1", route.epoch(), 0);
             });
+    result.whenComplete((value, error) -> receipt.logical(error == null ? Outcome.READ : error instanceof AuthException ? Outcome.FORBIDDEN : Outcome.UNAVAILABLE));
+    return result;
   }
 }

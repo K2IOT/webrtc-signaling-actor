@@ -71,6 +71,8 @@ public final class CallWorkflowService {
   }
 
   private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
+  private volatile io.webrtc.signaling.protocol.RuntimeCapabilities capabilities = io.webrtc.signaling.protocol.RuntimeCapabilities.DENY;
+  public void compatibility(io.webrtc.signaling.protocol.RuntimeCapabilities capabilities) { this.capabilities = Objects.requireNonNull(capabilities); }
   private final SqlTransactions sql;
   private final String cell, owner;
   private final long epoch;
@@ -126,6 +128,7 @@ public final class CallWorkflowService {
   }
 
   public DbOperation<Snapshot> routeLost(RouteLoss loss, Duration budget) {
+    capabilities.require(cell, io.webrtc.signaling.protocol.RuntimeCapabilities.CAUSAL_ROUTE_LOSS);
     return sql.submitTracked(
         DbClass.RECOVERY,
         budget,

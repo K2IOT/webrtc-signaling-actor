@@ -23,6 +23,10 @@ public final class GatewaySecuritySweep implements AutoCloseable {
 
   private static final AttributeKey<Boolean> QUEUED =
       AttributeKey.valueOf("signaling.security-close-queued");
+  private static final int SLICE = 2048;
+  private int cursor;
+  private final long periodNanos;
+  private long plannedNanos;
   private final ConnectionRegistry registry;
   private final GatewayServices services;
   private final Clock clock;
@@ -36,12 +40,19 @@ public final class GatewaySecuritySweep implements AutoCloseable {
     this.services = Objects.requireNonNull(services);
     this.clock = Objects.requireNonNull(clock);
     long interval = Objects.requireNonNull(settings).interval().toNanos();
-    scheduler.scheduleWithFixedDelay(this::scan, interval, interval, TimeUnit.NANOSECONDS);
+    // Cover every fixed slot once per configured interval, including empty/removed slots.
+    // The fixed cursor cannot be held back by refresh/churn at the front of a map.
+    long slices = (registry.scanCapacity() + SLICE - 1L) / SLICE;
+    periodNanos = Math.max(1, interval / slices);
+    plannedNanos = System.nanoTime();
+    registry.beginSafetySweep(interval, plannedNanos);
+    scheduler.scheduleAtFixedRate(this::scan, periodNanos, periodNanos, TimeUnit.NANOSECONDS);
   }
 
   private GatewayRejection.Reason rejection(ConnectionRegistry.Binding binding) {
     try {
-      if (!services.currentBoot()) return GatewayRejection.Reason.AUTH_FRESHNESS_UNKNOWN;
+      if (!services.currentBoot() || !registry.safetyFresh())
+        return GatewayRejection.Reason.AUTH_FRESHNESS_UNKNOWN;
       if (!registry.current(binding.route().connectionId(), binding.route()))
         return GatewayRejection.Reason.STALE_CONNECTION;
       var now = clock.instant();
@@ -59,7 +70,12 @@ public final class GatewaySecuritySweep implements AutoCloseable {
   }
 
   private void scan() {
-    for (var binding : registry.snapshot()) {
+    plannedNanos += periodNanos;
+    registry.safetyProgress(plannedNanos);
+    int end = Math.min(registry.scanCapacity(), cursor + SLICE);
+    while (cursor < end) {
+      var binding = registry.scanBinding(cursor++);
+      if (binding == null) continue;
       var channel = binding.channel();
       if (!channel.isActive()
           || GatewayRejection.rejecting(channel)
@@ -85,6 +101,7 @@ public final class GatewaySecuritySweep implements AutoCloseable {
         channel.close();
       }
     }
+    if (cursor == registry.scanCapacity()) cursor = 0;
   }
 
   @Override

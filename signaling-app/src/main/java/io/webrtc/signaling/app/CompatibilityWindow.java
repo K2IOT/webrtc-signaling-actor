@@ -7,7 +7,14 @@ public final class CompatibilityWindow {
   public enum Feature {
     SESSION_S1,
     FULL_CONNECTION_ACTIVE,
-    CAUSAL_ROUTE_LOSS
+    CAUSAL_ROUTE_LOSS,
+    NATIVE_RENEWAL_V1,
+    NATIVE_RECOVERY_RECEIPT_V1,
+    NATIVE_WAKE_RECEIPT_V1,
+    STORAGE_DOMAIN_ADOPTION_V1,
+    NATIVE_CONTROL_RECEIPT_V1,
+    HOME_PROOF_HIGH_WATER_V1,
+    NATIVE_ACTOR_TRACE_V1
   }
 
   public record Peer(
@@ -84,8 +91,7 @@ public final class CompatibilityWindow {
       long incompatibleDurableWork,
       boolean physicalWorkSettled,
       boolean expandContractSchemaRetained) {
-    if (incompatibleDurableWork < 0)
-      throw new IllegalArgumentException("Invalid native work count");
+    if (incompatibleDurableWork < 0) return false;
     return enabled.isEmpty()
         && incompatibleDurableWork == 0
         && physicalWorkSettled

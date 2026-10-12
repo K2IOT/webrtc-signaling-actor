@@ -3,6 +3,12 @@ status: REQUIRED_UNCONFIGURED
 issuer: ${SIGNALING_IDENTITY_ISSUER}
 audience: ${SIGNALING_IDENTITY_AUDIENCE}
 maximumJwtLifetime: ${SIGNALING_MAXIMUM_JWT_LIFETIME}
+# Optional iat needs a reviewed issuer attestation binding the same maximumJwtLifetime.
+# Do not select optional mode until that external issuance contract is enrolled.
+claimLifetimePolicy:
+  version: 1
+  mode: REQUIRE_IAT
+  issuerAttestationReference: ""
 jwtClockSkew: 30s
 preserveJtiOnRefresh: ${SIGNALING_PRESERVE_JTI_ON_REFRESH}
 revocationPropagationSLO: ${SIGNALING_REVOCATION_PROPAGATION_SLO}

@@ -4,6 +4,9 @@ import io.grpc.*;
 import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import io.netty.handler.ssl.SslContext;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics;
+import io.webrtc.signaling.protocol.RuntimeCapabilities;
 import io.webrtc.signaling.protocol.internal.*;
 import java.time.Duration;
 import java.util.*;
@@ -38,6 +41,19 @@ public final class CellRpcClient implements AutoCloseable {
   private final RpcAdmission admission;
   private final ConcurrentHashMap<ChannelKey, ManagedChannel> channels = new ConcurrentHashMap<>();
   private volatile boolean closed;
+  private volatile OperationObservation observations = OperationObservation.NONE;
+  private volatile RuntimeCapabilities capabilities = RuntimeCapabilities.DENY;
+
+  public CellRpcClient observe(OperationObservation observations) {
+    this.observations = Objects.requireNonNull(observations);
+    return this;
+  }
+
+  public CellRpcClient compatibility(RuntimeCapabilities capabilities) {
+    this.capabilities = Objects.requireNonNull(capabilities);
+    return this;
+  }
+
   private final ExecutorService callbacks =
       new ThreadPoolExecutor(
           4,
@@ -46,6 +62,16 @@ public final class CellRpcClient implements AutoCloseable {
           TimeUnit.SECONDS,
           new ArrayBlockingQueue<>(256),
           Thread.ofPlatform().daemon().name("cell-rpc-client-", 0).factory(),
+          new ThreadPoolExecutor.AbortPolicy());
+
+  private final ExecutorService controlCallbacks =
+      new ThreadPoolExecutor(
+          4,
+          4,
+          0,
+          TimeUnit.SECONDS,
+          new ArrayBlockingQueue<>(256),
+          Thread.ofPlatform().daemon().name("cell-rpc-control-client-", 0).factory(),
           new ThreadPoolExecutor.AbortPolicy());
 
   /** Test-only raw context adapter; production supplies cell-bound handshake verification. */
@@ -95,7 +121,8 @@ public final class CellRpcClient implements AutoCloseable {
               .sslContext(tls.context(cell))
               .disableRetry()
               .maxInboundMessageSize(98304)
-              .executor(callbacks)
+              .executor(lane == RpcAdmission.Lane.CONTROL ? controlCallbacks : callbacks)
+              .intercept(NativeRpcTelemetry.client())
               .intercept(
                   new ClientInterceptor() {
                     @Override
@@ -165,13 +192,39 @@ public final class CellRpcClient implements AutoCloseable {
 
   private final class Flight<T> {
     final RpcAdmission.Ticket ticket;
+    final OperationObservation.Receipt observation;
     final CompletableFuture<T> logical = new CompletableFuture<>();
     final CompletableFuture<Void> physical = new CompletableFuture<>();
     int streams =
         1; // Dispatch sentinel: synchronously completed streams cannot retire unfinished dispatch.
 
-    Flight(RpcAdmission.Ticket ticket) {
+    Flight(RpcAdmission.Ticket ticket, RpcAdmission.Lane lane) {
       this.ticket = ticket;
+      observation =
+          OperationObservation.safeStart(
+              observations,
+              lane == RpcAdmission.Lane.RELAY
+                  ? SignalingMetrics.Operation.RPC_RELAY
+                  : SignalingMetrics.Operation.RPC_CONTROL);
+      logical.whenComplete(
+          (value, error) -> {
+            String code =
+                value instanceof InternalReply v
+                    ? (v.getErrorCode().isEmpty() ? v.getStatus() : v.getErrorCode())
+                    : value instanceof SessionReply v
+                        ? (v.getErrorCode().isEmpty() ? v.getStatus() : v.getErrorCode())
+                        : value instanceof ControlRouteReply v
+                            ? (v.getErrorCode().isEmpty() ? v.getStatus() : v.getErrorCode())
+                            : "READ";
+            observation.logical(
+                error == null
+                    ? NativeRpcTelemetry.outcome(code)
+                    : SignalingMetrics.Outcome.OUTCOME_UNKNOWN);
+          });
+      physical.whenComplete(
+          (v, e) -> {
+            if (e == null) observation.physical(true);
+          });
     }
 
     synchronized void opened() {
@@ -196,7 +249,7 @@ public final class CellRpcClient implements AutoCloseable {
 
   private synchronized <T> Flight<T> begin(RpcAdmission.Lane lane, int bytes) {
     if (closed) return null;
-    var flight = new Flight<T>(admission.acquire(lane, bytes));
+    var flight = new Flight<T>(admission.acquire(lane, bytes), lane);
     active.add(flight);
     return flight;
   }
@@ -215,6 +268,21 @@ public final class CellRpcClient implements AutoCloseable {
   public RpcOperation<InternalReply> callTracked(
       CellRpcServer.Operation op, InternalCommand original, Duration budget) {
     long started = System.nanoTime();
+    if (original.getType().equals("INVITE")
+        && !capabilities.permitsNew(original.getDestinationCell(), RuntimeCapabilities.FULL_CONNECTION_ACTIVE))
+      return completed(error(original, "UNAVAILABLE"));
+    if (original.getType().equals("RenewReservation")
+        && !capabilities.permits(
+            original.getDestinationCell(), RuntimeCapabilities.NATIVE_RENEWAL_V1))
+      return completed(error(original, "UNAVAILABLE"));
+    if (original.getType().equals("QueryParticipation")
+        && !capabilities.permits(
+            original.getDestinationCell(), RuntimeCapabilities.HOME_PROOF_HIGH_WATER_V1))
+      return completed(error(original, "UNAVAILABLE"));
+    if ((op == CellRpcServer.Operation.EXECUTE || op == CellRpcServer.Operation.SYNC)
+        && !capabilities.permits(
+            original.getDestinationCell(), RuntimeCapabilities.FULL_CONNECTION_ACTIVE))
+      return completed(error(original, "UNAVAILABLE"));
     if (closed
         || budget == null
         || budget.isNegative()
@@ -238,9 +306,13 @@ public final class CellRpcClient implements AutoCloseable {
       return completed(error(original, "OVERLOADED"));
     }
     if (flight == null) return completed(error(original, "OUTCOME_UNKNOWN"));
-    try {
-      attempt(op, original, started + nanos, 0, lane, flight);
-    } catch (RuntimeException failed) {
+    var traced =
+        original.getTraceId().isEmpty()
+            ? original.toBuilder().setTraceId(flight.observation.traceId()).build()
+            : original;
+    try (var scope = flight.observation.activate()) {
+      attempt(op, traced, started + nanos, 0, lane, flight);
+    } catch (Exception failed) {
       flight.logical.complete(error(original, "OUTCOME_UNKNOWN"));
     } finally {
       flight.ended();
@@ -271,7 +343,11 @@ public final class CellRpcClient implements AutoCloseable {
         original.toBuilder()
             .setRemainingBudgetMs(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)))
             .build();
-    var stub = CellIngressGrpc.newStub(transport).withDeadline(deadline).withWaitForReady();
+    var stub =
+        CellIngressGrpc.newStub(transport)
+            .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+            .withDeadline(deadline)
+            .withWaitForReady();
     flight.opened();
     var terminal = new java.util.concurrent.atomic.AtomicBoolean();
     var observer =
@@ -393,7 +469,10 @@ public final class CellRpcClient implements AutoCloseable {
         return flight.operation();
       }
       var deadline = Deadline.after(remaining, TimeUnit.NANOSECONDS);
-      var stub = CellIngressGrpc.newStub(transport).withDeadline(deadline);
+      var stub =
+          CellIngressGrpc.newStub(transport)
+              .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+              .withDeadline(deadline);
       flight.opened();
       var terminal = new java.util.concurrent.atomic.AtomicBoolean();
       var observer =
@@ -440,11 +519,118 @@ public final class CellRpcClient implements AutoCloseable {
     return flight.operation();
   }
 
+  public RpcOperation<ControlRouteReply> controlRouteTracked(
+      ControlRouteRequest request, Duration budget) {
+    if (!capabilities.permits(
+        request.getDestinationCell(), RuntimeCapabilities.NATIVE_CONTROL_RECEIPT_V1))
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(
+              new IllegalStateException("Native control capability unavailable")),
+          CompletableFuture.completedFuture(null));
+    if (closed
+        || budget == null
+        || budget.isZero()
+        || budget.isNegative()
+        || request.getRemainingBudgetMs() <= 0
+        || request.getSerializedSize() > 4096
+        || !destinations.containsKey(request.getDestinationCell()))
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(new IllegalStateException("Control route unavailable")),
+          CompletableFuture.completedFuture(null));
+    final Flight<ControlRouteReply> flight;
+    final long end =
+        System.nanoTime()
+            + Math.min(
+                Duration.ofSeconds(2).toNanos(),
+                Math.min(
+                    budget.toNanos(),
+                    TimeUnit.MILLISECONDS.toNanos(request.getRemainingBudgetMs())));
+    try {
+      flight = begin(RpcAdmission.Lane.CONTROL, request.getSerializedSize());
+    } catch (RuntimeException rejected) {
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
+    }
+    if (flight == null)
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(new IllegalStateException("Draining")),
+          CompletableFuture.completedFuture(null));
+    flight.logical.orTimeout(Math.max(1, end - System.nanoTime()), TimeUnit.NANOSECONDS);
+    try {
+      var transport = channel(request.getDestinationCell(), RpcAdmission.Lane.CONTROL);
+      long remaining = end - System.nanoTime();
+      if (remaining <= 0) throw new IllegalStateException("Original route deadline");
+      var stub =
+          ControlRouteIngressGrpc.newStub(transport)
+              .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+              .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
+      flight.opened();
+      var terminal = new java.util.concurrent.atomic.AtomicBoolean();
+      var observer =
+          new StreamObserver<ControlRouteReply>() {
+            public void onNext(ControlRouteReply value) {
+              if (value.getRoute().size() > 4096
+                  || !value.getEventId().equals(request.getEventId())
+                  || !value.getCallId().equals(request.getCallId())
+                  || value.getCallVersion() != request.getCallVersion()
+                  || !value.getSourceCell().equals(request.getDestinationCell())
+                  || value.getStorageEpoch() != request.getStorageEpoch()
+                  || value.getDirectoryEpoch() != request.getDirectoryEpoch()
+                  || !value.getStatus().equals("ROUTE")
+                  || !value.getErrorCode().isEmpty())
+                flight.logical.completeExceptionally(
+                    new IllegalStateException("Invalid native control route"));
+              else flight.logical.complete(value);
+            }
+
+            public void onError(Throwable failure) {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  flight.logical.completeExceptionally(failure);
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+
+            public void onCompleted() {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  flight.logical.completeExceptionally(
+                      new IllegalStateException("Missing route receipt"));
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+          };
+      try {
+        stub.resolveControlRoute(
+            request.toBuilder()
+                .setRemainingBudgetMs(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)))
+                .build(),
+            observer);
+      } catch (RuntimeException unknown) {
+        flight.logical.completeExceptionally(unknown);
+      }
+    } catch (RuntimeException failed) {
+      flight.logical.completeExceptionally(failed);
+    } finally {
+      flight.ended();
+    }
+    return flight.operation();
+  }
+
   public CompletionStage<SessionReply> session(SessionCommand command, Duration budget) {
     return sessionTracked(command, budget).logical();
   }
 
   public RpcOperation<SessionReply> sessionTracked(SessionCommand command, Duration budget) {
+    if (command.getType().equals("REGISTER")
+        && !capabilities.permitsNew(command.getDestinationCell(), RuntimeCapabilities.SESSION_S1))
+      return completed(sessionError(command, "UNAVAILABLE"));
+    if (!capabilities.permits(command.getDestinationCell(), RuntimeCapabilities.SESSION_S1))
+      return completed(sessionError(command, "UNAVAILABLE"));
     long started = System.nanoTime();
     if (closed
         || budget == null
@@ -474,7 +660,10 @@ public final class CellRpcClient implements AutoCloseable {
         return flight.operation();
       }
       var deadline = Deadline.after(remaining, TimeUnit.NANOSECONDS);
-      var stub = SessionIngressGrpc.newStub(transport).withDeadline(deadline);
+      var stub =
+          SessionIngressGrpc.newStub(transport)
+              .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+              .withDeadline(deadline);
       flight.opened();
       var terminal = new java.util.concurrent.atomic.AtomicBoolean();
       var observer =
@@ -531,6 +720,61 @@ public final class CellRpcClient implements AutoCloseable {
    * Permanently stop new streams. Existing bounded streams keep their credit until terminal
    * callbacks.
    */
+
+  /** Bootstrap observation uses authenticated CONTROL transport without a business capability gate. */
+  public RpcOperation<CompatibilityObservationReply> observeCompatibility(String target, Duration budget) {
+    final Flight<CompatibilityObservationReply> flight;
+    final CompatibilityObservationRequest request;
+    final long end;
+    try {
+      if (budget == null || budget.isNegative() || budget.isZero()
+          || budget.compareTo(Duration.ofSeconds(2)) > 0 || !destinations.containsKey(target))
+        throw new IllegalArgumentException("Unenrolled observation destination/budget");
+      end = System.nanoTime() + budget.toNanos();
+      request = CompatibilityObservationRequest.newBuilder().setDestinationCell(target)
+          .setNonce(UUID.randomUUID().toString()).build();
+      flight = begin(RpcAdmission.Lane.CONTROL, request.getSerializedSize());
+      if (flight == null) throw new IllegalStateException("Draining");
+    } catch (RuntimeException rejected) {
+      return new RpcOperation<>(CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
+    }
+    flight.logical.orTimeout(Math.max(1, end - System.nanoTime()), TimeUnit.NANOSECONDS);
+    try {
+      var transport = channel(target, RpcAdmission.Lane.CONTROL);
+      long remaining = end - System.nanoTime();
+      if (remaining <= 0) throw new IllegalStateException("Original observation deadline");
+      var stub = CompatibilityObservationIngressGrpc.newStub(transport)
+          .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
+      flight.opened();
+      var terminal = new java.util.concurrent.atomic.AtomicBoolean();
+      var observer = new StreamObserver<CompatibilityObservationReply>() {
+        CompatibilityObservationReply received;
+        public void onNext(CompatibilityObservationReply value) {
+          if (received != null || !CompatibilityObservationValidation.valid(request, value))
+            flight.logical.completeExceptionally(new IllegalStateException("Invalid observation"));
+          else received = value;
+        }
+        public void onError(Throwable error) {
+          if (terminal.compareAndSet(false, true)) {
+            try { flight.logical.completeExceptionally(error); } finally { flight.ended(); }
+          }
+        }
+        public void onCompleted() {
+          if (terminal.compareAndSet(false, true)) {
+            try {
+              if (received == null) flight.logical.completeExceptionally(new IllegalStateException("Missing observation"));
+              else flight.logical.complete(received);
+            } finally { flight.ended(); }
+          }
+        }
+      };
+      try { stub.observeCompatibility(request, observer); }
+      catch (RuntimeException ambiguous) { flight.logical.completeExceptionally(ambiguous); }
+    } catch (RuntimeException notDispatched) { flight.logical.completeExceptionally(notDispatched); }
+    finally { flight.ended(); }
+    return flight.operation();
+  }
+
   public synchronized CompletionStage<Void> settleAdmitted() {
     return CompletableFuture.allOf(
             active.stream().map(f -> f.physical).toArray(CompletableFuture[]::new))
@@ -545,7 +789,12 @@ public final class CellRpcClient implements AutoCloseable {
       settled.whenComplete(
           (ignored, failure) ->
               RpcTransportDrain.await(
-                  settled, List.copyOf(channels.values()), drained, callbacks, retryTimers));
+                  settled,
+                  List.copyOf(channels.values()),
+                  drained,
+                  callbacks,
+                  controlCallbacks,
+                  retryTimers));
       if (active.isEmpty()) settled.complete(null);
     }
     return drained.minimalCompletionStage();

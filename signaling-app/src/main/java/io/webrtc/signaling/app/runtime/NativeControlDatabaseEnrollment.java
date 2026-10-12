@@ -27,7 +27,15 @@ public record NativeControlDatabaseEnrollment(
       String password,
       Map<DbClass, Integer> quotas,
       int safetyMax,
-      int controlMax) {
+      int controlMax,
+      Map<DbClass, DbResourceProfile> resourceProfiles) {
+    /** Count-only enrollment is explicitly LOCAL_TEST_ONLY and cannot launch production. */
+    public Database(String jdbcUrl, String username, String password,
+        Map<DbClass, Integer> quotas, int safetyMax, int controlMax) {
+      this(jdbcUrl, username, password, quotas, safetyMax, controlMax,
+          DbResourceProfile.localTestOnly(quotas));
+    }
+
     public Database {
       if (jdbcUrl == null
           || !jdbcUrl.startsWith("jdbc:postgresql:")
@@ -36,7 +44,8 @@ public record NativeControlDatabaseEnrollment(
           || password == null)
         throw new IllegalArgumentException("Explicit PostgreSQL database credentials required");
       quotas = Map.copyOf(quotas);
-      var admission = new DbAdmission(quotas);
+      resourceProfiles = Map.copyOf(resourceProfiles);
+      var admission = new DbAdmission(quotas, resourceProfiles);
       if (safetyMax < 1
           || controlMax < 1
           || admission.poolCapacity(true) > safetyMax

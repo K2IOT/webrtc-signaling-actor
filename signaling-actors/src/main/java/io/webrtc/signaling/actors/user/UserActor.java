@@ -171,7 +171,7 @@ public final class UserActor extends AbstractBehavior<UserMessage> {
       Duration remaining = Duration.between(clock.instant(), request.deadline());
       Duration budget =
           remaining.compareTo(Duration.ofSeconds(2)) > 0 ? Duration.ofSeconds(2) : remaining;
-      try {
+      try (var traceScope = io.webrtc.signaling.observability.TraceContext.activate(request.trace())) {
         track(pending, backend.execute(request.operation(), budget));
       } catch (RuntimeException error) {
         if (pending.request.receipt() != null) pending.request.receipt().signal();

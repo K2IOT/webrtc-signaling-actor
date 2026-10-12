@@ -13,7 +13,6 @@ final class WorkerCompletion {
     retained.add(
         operation
             .physicalCompletion()
-            .handle((v, e) -> null)
             .thenCombine(operation.logical().handle((v, e) -> null), (a, b) -> null)
             .toCompletableFuture());
     return operation
@@ -22,19 +21,26 @@ final class WorkerCompletion {
   }
 
   <T> CompletionStage<T> finish(CompletionStage<T> logical, Runnable release) {
-    var exposed = new CompletableFuture<T>();
+    return finishTracked(logical, release).logical();
+  }
+
+  <T> DbOperation<T> finishTracked(CompletionStage<T> logical, Runnable release) {
+    var physical = new CompletableFuture<DbOperation.PhysicalCompletion>();
     logical.whenComplete(
         (v, e) -> {
           CompletableFuture<?>[] cleanup;
           synchronized (retained) {
             cleanup = retained.toArray(CompletableFuture[]::new);
           }
-          var all = CompletableFuture.allOf(cleanup);
-          if (all.isDone()) release.run();
-          else all.whenComplete((done, error) -> release.run());
-          if (e == null) exposed.complete(v);
-          else exposed.completeExceptionally(e);
+          CompletableFuture.allOf(cleanup).whenComplete(
+              (done, error) -> {
+                if (error != null) physical.completeExceptionally(error);
+                else {
+                  release.run();
+                  physical.complete(DbOperation.PhysicalCompletion.FINISHED);
+                }
+              });
         });
-    return exposed;
+    return new DbOperation<>(logical, physical.minimalCompletionStage());
   }
 }

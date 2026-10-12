@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.auth.BoundedTokenVerifier;
+import io.webrtc.signaling.control.PostgresBucketTransfer;
 import io.webrtc.signaling.storage.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -31,16 +32,31 @@ public final class NativeControlProcess implements SmartLifecycle {
       List<NativeRevocationSource> revocations,
       List<NativeCellHealthSource> primaries,
       List<NativeCachedRevocationSource> cachedSources) {
+    this(business, tokens, sql, workers, clocks, revocations, primaries, cachedSources, null);
+  }
+
+  NativeControlProcess(
+      NativeControlBusinessEnrollment business,
+      BoundedTokenVerifier tokens,
+      List<SqlTransactions> sql,
+      List<NativeWorkerScheduler> workers,
+      List<NativeClockSource> clocks,
+      List<NativeRevocationSource> revocations,
+      List<NativeCellHealthSource> primaries,
+      List<NativeCachedRevocationSource> cachedSources,
+      PostgresBucketTransfer transfer) {
     if (tokens != business.tokens())
       throw new IllegalArgumentException("Native control verifier ownership differs");
     if (!sql.containsAll(business.directory().transactionOwners()))
       throw new IllegalArgumentException("Control directory SQL owners are not enrolled");
     if (clocks.stream().anyMatch(source -> !source.monitors(business.clock())))
       throw new IllegalArgumentException("Control clock ownership differs");
-    readiness = new NativeControlReadiness(business);
+    readiness = new NativeControlReadiness(business, transfer != null);
+    var enrolledSql = new ArrayList<>(sql);
+    if (transfer != null) enrolledSql.addAll(transfer.transactionOwners());
     this.tokens = tokens;
-    boundaries = distinct(sql.stream().map(SqlTransactions::boundary).toList());
-    pools = distinct(sql.stream().map(SqlTransactions::pools).toList());
+    boundaries = distinct(enrolledSql.stream().map(SqlTransactions::boundary).toList());
+    pools = distinct(enrolledSql.stream().map(SqlTransactions::pools).toList());
     this.workers = distinct(workers);
     this.clocks = distinct(clocks);
     this.revocations = distinct(revocations);
@@ -118,6 +134,14 @@ public final class NativeControlProcess implements SmartLifecycle {
               sql.add(resources.regional());
               sql.add(resources.local());
             });
+    of(owners, NativeBucketTransferEnrollment.class)
+        .forEach(
+            inputs -> {
+              sql.add(inputs.source().sql());
+              sql.add(inputs.target().sql());
+            });
+    of(owners, PostgresBucketTransfer.class)
+        .forEach(transfer -> sql.addAll(transfer.transactionOwners()));
     var boundaries = new ArrayList<>(of(owners, DbBoundary.class));
     sql.forEach(owner -> boundaries.add(owner.boundary()));
     var tokens = new ArrayList<>(of(owners, BoundedTokenVerifier.class));

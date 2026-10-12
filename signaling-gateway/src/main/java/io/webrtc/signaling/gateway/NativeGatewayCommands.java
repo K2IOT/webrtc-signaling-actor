@@ -58,6 +58,14 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
   private final Clock clock;
   private final long routingEpoch;
   private volatile NativeRelaySessionProofCache relayCache;
+  private volatile NativeControlReceiptTracker controlReceipts;
+
+  public synchronized NativeGatewayCommands controlReceipts(NativeControlReceiptTracker tracker) {
+    if (controlReceipts != null)
+      throw new IllegalStateException("Control receipts already installed");
+    controlReceipts = Objects.requireNonNull(tracker);
+    return this;
+  }
 
   public synchronized NativeGatewayCommands relayProofCache(NativeRelaySessionProofCache cache) {
     if (!(network instanceof TrackedNetwork) || relayCache != null)
@@ -105,6 +113,24 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
           || !route.bootId().equals(gateway.bootId())
           || !same(route, original.sender()))
         return CompletableFuture.completedFuture(error(original, "UNAUTHORIZED"));
+      if (original.type() == SignalEnvelope.Type.EVENT_RECEIVED) {
+        var payload = receiptPayload(original.payloadJson());
+        if (payload == null
+            || !payload.isObject()
+            || payload.size() != 1
+            || !payload.path("eventId").isTextual()
+            || original.callId() == null)
+          return CompletableFuture.completedFuture(error(original, "INVALID_MESSAGE"));
+        var tracker = controlReceipts;
+        boolean accepted =
+            tracker != null
+                && tracker.acknowledge(
+                    original, route, UUID.fromString(payload.path("eventId").asText()));
+        return CompletableFuture.completedFuture(
+            accepted
+                ? envelope(original, "EVENT_RECEIPT").put("ackCommitted", false).toString()
+                : error(original, "STALE_BINDING"));
+      }
       boolean invite = original.type() == SignalEnvelope.Type.INVITE;
       boolean lookup =
           original.type() == SignalEnvelope.Type.GET_COMMAND_RESULT && original.callId() == null;
@@ -317,6 +343,14 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
           .exceptionally(failure -> error(original, "OUTCOME_UNKNOWN"));
     } catch (RuntimeException invalid) {
       return CompletableFuture.completedFuture(error(original, "OUTCOME_UNKNOWN"));
+    }
+  }
+
+  private static JsonNode receiptPayload(String payload) {
+    try {
+      return JSON.readTree(payload);
+    } catch (java.io.IOException invalid) {
+      throw new IllegalArgumentException("Invalid receipt", invalid);
     }
   }
 

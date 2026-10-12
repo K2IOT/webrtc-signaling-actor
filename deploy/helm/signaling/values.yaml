@@ -1,2 +1,6 @@
-# All deployment values are in values-production.yaml; no guessed production identity.
-{}
+# Deployment identity and trust are supplied explicitly in values-production.yaml.
+monitoring:
+  enabled: false
+  dashboard: true
+  rules: true
+  podMonitor: true

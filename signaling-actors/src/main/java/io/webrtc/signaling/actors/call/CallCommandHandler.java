@@ -138,6 +138,17 @@ public final class CallCommandHandler implements CallActor.Backend {
   }
 
   @Override
+  public DbOperation<CoordinatorGrantService.Issued> renewalProjectionGrant(
+      HomeParticipationService.Request request,
+      AuthoritySql.GroupToken token,
+      long version,
+      Duration budget) {
+    check(token);
+    if (grants == null) throw new IllegalStateException("Coordinator grant service is required");
+    return grants.issueRenewalProjection(request, token, directoryEpoch, version, budget);
+  }
+
+  @Override
   public DbOperation<Optional<Snapshot>> loadCold(
       CallId call, AuthoritySql.GroupToken token, Duration budget) {
     check(token);

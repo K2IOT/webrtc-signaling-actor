@@ -69,21 +69,14 @@ public final class GatewayServer implements AutoCloseable {
   private final GatewayServices services;
   private final Clock clock;
   private final int loops;
-  private final ExecutorService cpu =
-      new ThreadPoolExecutor(
-          4,
-          4,
-          0,
-          TimeUnit.SECONDS,
-          new ArrayBlockingQueue<>(1024),
-          Thread.ofPlatform().daemon().name("gateway-json-", 0).factory(),
-          new ThreadPoolExecutor.AbortPolicy());
+  private final ExecutorService cpu = new GatewayCpuExecutor();
   private final EdgeAdmission edge;
   private final GatewaySecuritySweep.Settings securitySettings;
   private GatewaySecuritySweep safety;
   private final io.webrtc.signaling.rpc.DeliveryCreditController outbound =
       new io.webrtc.signaling.rpc.DeliveryCreditController(16384, 268435456, 1024, 8388608);
-  private final GatewayIngressBudget ingress = new GatewayIngressBudget(4096, 33554432);
+  private final GatewayIngressBudget ingress =
+      new GatewayIngressBudget(4096, 33554432, 1024, 8388608);
   private EventLoopGroup boss, workers;
   private HeartbeatWheel heartbeat;
   private Channel listener;

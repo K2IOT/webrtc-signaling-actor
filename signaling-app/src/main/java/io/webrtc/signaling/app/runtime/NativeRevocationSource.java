@@ -38,6 +38,8 @@ public final class NativeRevocationSource implements AutoCloseable {
   private boolean active, draining;
   private long checkedNanos;
   private Instant checkedAt;
+  private Instant observedCheckedAt;
+  private long observedNanos;
   private CompletableFuture<Void> admitted = CompletableFuture.completedFuture(null);
   private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
@@ -62,6 +64,14 @@ public final class NativeRevocationSource implements AutoCloseable {
         && age < reconciler.freshness().toNanos()
         && !checkedAt.isAfter(now)
         && now.isBefore(checkedAt.plus(reconciler.freshness()));
+  }
+
+  /** Age of the last committed caught-up source page; invalid/absent observations are unknown. */
+  public synchronized long freshnessAgeNanos() {
+    if (observedCheckedAt == null) return -1;
+    long monotonic = System.nanoTime() - observedNanos;
+    long wall = Duration.between(observedCheckedAt, Instant.now()).toNanos();
+    return monotonic < 0 || wall < 0 ? -1 : Math.max(monotonic, wall);
   }
 
   /** Blocking HTTP and bounded native waits run only on an admitted worker, never event loops. */
@@ -103,6 +113,7 @@ public final class NativeRevocationSource implements AutoCloseable {
       synchronized (this) {
         checkedAt = !draining && batch.caughtUp() ? batch.checkedAt() : null;
         checkedNanos = start;
+        if (checkedAt != null) { observedCheckedAt = checkedAt; observedNanos = start; }
       }
       logical = CompletableFuture.completedFuture(offset);
     } catch (Throwable invalid) {

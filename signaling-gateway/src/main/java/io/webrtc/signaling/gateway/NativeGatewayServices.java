@@ -2,6 +2,8 @@ package io.webrtc.signaling.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics;
 import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.UserId;
@@ -36,6 +38,8 @@ public final class NativeGatewayServices implements GatewayServices {
         Duration budget);
   }
 
+  private OperationObservation observation = OperationObservation.NONE;
+  public NativeGatewayServices observe(OperationObservation observation) { this.observation = Objects.requireNonNull(observation); return this; }
   private final ContextCommands contextCommands;
   private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
   private final GatewayBootController boot;
@@ -82,7 +86,7 @@ public final class NativeGatewayServices implements GatewayServices {
   }
 
   public CompletionStage<AuthPrincipal> verify(String token, Instant now) {
-    return verifier.verify(token, now);
+    return observed(SignalingMetrics.Operation.AUTH, () -> verifier.verify(token, now));
   }
 
   public AuthorizationStatus cachedSecurity(AuthPrincipal principal, Instant now) {
@@ -124,7 +128,7 @@ public final class NativeGatewayServices implements GatewayServices {
     if (commands == null)
       return CompletableFuture.failedFuture(
           new IllegalStateException("Original session provenance required"));
-    return commands.execute(command, budget);
+    return observed(operation(command), () -> commands.execute(command, budget));
   }
 
   public CompletionStage<String> command(
@@ -143,7 +147,7 @@ public final class NativeGatewayServices implements GatewayServices {
         || !route.connectionId().equals(command.sender().connectionId()))
       return CompletableFuture.failedFuture(
           new IllegalStateException("Invalid native session provenance"));
-    return contextCommands.execute(command, route, token, budget);
+    return observed(operation(command), () -> contextCommands.execute(command, route, token, budget));
   }
 
   private CompletionStage<SessionReply> mutate(
@@ -178,7 +182,7 @@ public final class NativeGatewayServices implements GatewayServices {
             .setRemainingBudgetMs(Math.max(1, budget.toMillis()))
             .setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(request)))
             .build();
-    return client
+    return observed(type.equals("REGISTER") ? SignalingMetrics.Operation.REGISTER_SESSION : type.equals("REFRESH") ? SignalingMetrics.Operation.AUTH_REFRESH : SignalingMetrics.Operation.SESSION_CLOSE, () -> client
         .session(command, budget)
         .thenApply(
             value -> {
@@ -188,7 +192,53 @@ public final class NativeGatewayServices implements GatewayServices {
                 throw new CompletionException(
                     new IllegalStateException("Native session outcome unavailable"));
               return value;
-            });
+            }));
+  }
+
+  private <T> CompletionStage<T> observed(SignalingMetrics.Operation operation, Supplier<CompletionStage<T>> action) {
+    var receipt = OperationObservation.safeLogicalStart(observation, operation);
+    try (var scope = receipt.activate()) {
+      var result = action.get();
+      result.whenComplete((value, error) -> receipt.logical(error == null ? observedOutcome(value)
+          : observedFailure(error)));
+      return result;
+    } catch (Exception failure) {
+      receipt.logical(observedFailure(failure));
+      return CompletableFuture.failedFuture(failure);
+    }
+  }
+
+  private static SignalingMetrics.Outcome observedFailure(Throwable error) {
+    for (int wrappers = 0; wrappers < 16 && (error instanceof CompletionException
+        || error instanceof ExecutionException) && error.getCause() != null; wrappers++) error = error.getCause();
+    if (error instanceof AuthException) return SignalingMetrics.Outcome.FORBIDDEN;
+    if (error instanceof RejectedExecutionException) return SignalingMetrics.Outcome.BACKPRESSURE;
+    if (error instanceof TimeoutException) return SignalingMetrics.Outcome.DEADLINE_EXCEEDED;
+    if (error instanceof CancellationException) return SignalingMetrics.Outcome.OUTCOME_UNKNOWN;
+    return SignalingMetrics.Outcome.INTERNAL_ERROR;
+  }
+
+  private static SignalingMetrics.Outcome observedOutcome(Object value) {
+    if (value instanceof SessionReply reply)
+      return NativeRpcTelemetry.outcome(reply.getErrorCode().isEmpty() ? reply.getStatus() : reply.getErrorCode());
+    if (value instanceof String payload) {
+      try {
+        if (payload.length() > 81920) return SignalingMetrics.Outcome.INTERNAL_ERROR;
+        var wire = JSON.readTree(payload);
+        if (wire.has("error")) return NativeRpcTelemetry.outcome(wire.path("error").path("code").asText());
+        String code = wire.path("result").path("code").asText();
+        if (java.util.Set.of("USER_BUSY", "CALL_ENDED", "TOKEN_EXPIRED", "FORBIDDEN", "STALE_VERSION", "OUTCOME_UNKNOWN", "WORKFLOW_PENDING").contains(code))
+          return NativeRpcTelemetry.outcome(code);
+        if (wire.path("ackCommitted").asBoolean(false)) return SignalingMetrics.Outcome.COMMITTED;
+        return SignalingMetrics.Outcome.READ;
+      } catch (Exception invalid) { return SignalingMetrics.Outcome.INTERNAL_ERROR; }
+    }
+    return SignalingMetrics.Outcome.READ;
+  }
+
+  private static SignalingMetrics.Operation operation(CallCommand command) {
+    try { return SignalingMetrics.Operation.valueOf(command.type().name()); }
+    catch (IllegalArgumentException unsupported) { return SignalingMetrics.Operation.QUERY; }
   }
 
   private static <T> T decode(SessionReply reply, Class<T> type) {

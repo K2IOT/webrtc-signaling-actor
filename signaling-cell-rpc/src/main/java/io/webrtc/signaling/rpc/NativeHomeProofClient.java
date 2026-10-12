@@ -2,6 +2,7 @@ package io.webrtc.signaling.rpc;
 
 import com.fasterxml.jackson.databind.*;
 import com.google.protobuf.ByteString;
+import io.webrtc.signaling.actors.call.CallActor;
 import io.webrtc.signaling.actors.user.UserCommand;
 import io.webrtc.signaling.protocol.Identity.*;
 import io.webrtc.signaling.protocol.internal.*;
@@ -19,8 +20,25 @@ public final class NativeHomeProofClient {
   private final NativeSagaEffects.Network network;
   private final Clock clock;
 
+  @FunctionalInterface
+  public interface RenewalGrant {
+    RpcOperation<CallActor.GrantReply> issue(
+        Request request, String home, Instant deadline, int bytes);
+  }
+
+  private final RenewalGrant renewalGrant;
+
   public NativeHomeProofClient(
       RpcBusinessHandler.ActorIngress actors, NativeSagaEffects.Network network, Clock clock) {
+    this(actors, network, clock, null);
+  }
+
+  public NativeHomeProofClient(
+      RpcBusinessHandler.ActorIngress actors,
+      NativeSagaEffects.Network network,
+      Clock clock,
+      RenewalGrant renewalGrant) {
+    this.renewalGrant = renewalGrant;
     this.actors = Objects.requireNonNull(actors);
     this.network = Objects.requireNonNull(network);
     this.clock = Objects.requireNonNull(clock);
@@ -130,6 +148,51 @@ public final class NativeHomeProofClient {
       io.webrtc.signaling.protocol.CallCommand desiredCommand,
       CallSnapshotRepository.Participant participant,
       Duration budget) {
+    return readTracked(template, home, sender, desired, desiredCommand, participant, budget, false);
+  }
+
+  public RpcOperation<HomeProofReadService.View> observeRenewalTracked(
+      Request template, String home, Duration budget) {
+    return map(
+        readTracked(template, home, null, null, null, null, budget, true),
+        reply -> {
+          var result = decode(reply, UserCommand.Result.class);
+          if (result.code() != UserCommand.Code.PROOF_READ || result.proofView() == null)
+            throw new CompletionException(new AuthoritySql.FencedException());
+          return result.proofView();
+        });
+  }
+
+  public RpcOperation<Optional<HomeProofReadService.View>> observePreparingRenewalTracked(
+      Request template, String home, Duration budget) {
+    if (template.phase() != HomeParticipationService.Phase.PREPARING)
+      throw new IllegalArgumentException("Only an unresolved preparing reserve can be absent");
+    return map(
+        readTracked(template, home, null, null, null, null, budget, true),
+        reply -> {
+          var result = decode(reply, UserCommand.Result.class);
+          if (result.code() != UserCommand.Code.PROOF_READ)
+            throw new AuthoritySql.FencedException();
+          return Optional.ofNullable(result.proofView());
+        });
+  }
+
+  private RpcOperation<CallActor.GrantReply> protectedRenewalGrant(
+      Request request, String home, Instant deadline, int bytes) {
+    if (renewalGrant == null)
+      throw new IllegalStateException("Native renewal grant issuer missing");
+    return renewalGrant.issue(request, home, deadline, bytes);
+  }
+
+  private RpcOperation<InternalReply> readTracked(
+      Request template,
+      String home,
+      AuthenticatedSession sender,
+      RpcBusinessHandler.WorkflowProofRequest desired,
+      io.webrtc.signaling.protocol.CallCommand desiredCommand,
+      CallSnapshotRepository.Participant participant,
+      Duration budget,
+      boolean renewal) {
     if (budget == null || budget.isNegative() || budget.isZero())
       return new RpcOperation<>(
           CompletableFuture.failedFuture(new DbOutcomeUnknownException()),
@@ -142,12 +205,18 @@ public final class NativeHomeProofClient {
       logical =
           scope
               .track(
-                  actors.grantTracked(
-                      template,
-                      action,
-                      home,
-                      clock.instant().plus(remaining(end)),
-                      RpcBusinessHandler.encode(template).length))
+                  renewal
+                      ? protectedRenewalGrant(
+                          template,
+                          home,
+                          clock.instant().plus(remaining(end)),
+                          RpcBusinessHandler.encode(template).length)
+                      : actors.grantTracked(
+                          template,
+                          action,
+                          home,
+                          clock.instant().plus(remaining(end)),
+                          RpcBusinessHandler.encode(template).length))
               .thenCompose(
                   granted -> {
                     if (!granted.code().equals("GRANTED")
@@ -198,7 +267,7 @@ public final class NativeHomeProofClient {
                                 ByteString.copyFrom(
                                     RpcBusinessHandler.encode(
                                         new RpcBusinessHandler.UserPayload(
-                                            new UserCommand.QueryProof(r, sender),
+                                            new UserCommand.QueryProof(r, sender, renewal),
                                             null,
                                             desired,
                                             desiredCommand == null
@@ -215,6 +284,11 @@ public final class NativeHomeProofClient {
                                 CellRpcServer.Operation.RESERVE, wire, remaining(end)))
                         .thenApply(
                             reply -> {
+                              if (reply.getOperationId().equals(wire.getOperationId())
+                                  && reply.getCallId().equals(wire.getCallId())
+                                  && !reply.getAckCommitted()
+                                  && reply.getErrorCode().equals("OVERLOADED"))
+                                throw new DbOverloadedException();
                               if (!reply.getOperationId().equals(wire.getOperationId())
                                   || !reply.getCallId().equals(wire.getCallId())
                                   || !reply.getStatus().equals("READ")

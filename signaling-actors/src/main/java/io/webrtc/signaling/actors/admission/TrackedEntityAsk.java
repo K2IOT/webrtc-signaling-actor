@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import org.apache.pekko.actor.typed.*;
 import org.apache.pekko.actor.typed.javadsl.*;
 
@@ -26,6 +27,16 @@ public final class TrackedEntityAsk {
       Duration budget,
       Class<T> resultType,
       BiConsumer<ActorRef<T>, CompletionReceipt> send) {
+    return ask(system, budget, resultType, send, witness -> {});
+  }
+
+  public static <T> ActorOperation<T> ask(
+      ActorSystem<?> system,
+      Duration budget,
+      Class<T> resultType,
+      BiConsumer<ActorRef<T>, CompletionReceipt> send,
+      Consumer<CompletionReceipt.PhysicalOwner> witness) {
+    Objects.requireNonNull(witness);
     if (budget == null
         || budget.isNegative()
         || budget.isZero()
@@ -47,6 +58,8 @@ public final class TrackedEntityAsk {
                           value -> {
                             if (value instanceof CompletionReceipt.PhysicalDone done) {
                               if (operation.equals(done.operation())) physical.complete(null);
+                            } else if (value instanceof CompletionReceipt.PhysicalOwner owner) {
+                              if (operation.equals(owner.operation())) witness.accept(owner);
                             } else if (value == DeadlineExpired.INSTANCE)
                               logical.completeExceptionally(
                                   new TimeoutException("OUTCOME_UNKNOWN"));
@@ -58,7 +71,8 @@ public final class TrackedEntityAsk {
                           });
                     }));
     var collector =
-        system.systemActorOf(behavior, "physical-completion-" + operation, Props.empty());
+        system.systemActorOf(
+            behavior, "physical-completion-" + operation, MailboxSelector.bounded(16));
     var receipt = new CompletionReceipt(operation, collector.narrow());
     logical.orTimeout(budget.toNanos(), TimeUnit.NANOSECONDS);
     try {

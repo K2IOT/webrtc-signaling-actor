@@ -43,7 +43,8 @@ public class NativeActorCompositionConfiguration {
       ObjectProvider<NativeActorSourceEnrollment> sources,
       ObjectProvider<NativeActorSchedulingEnrollment> scheduling,
       ObjectProvider<NativeActorProcess> processes,
-      ObjectProvider<CallAuthorizationPolicy> callingPolicies) {
+      ObjectProvider<CallAuthorizationPolicy> callingPolicies, NativeCompatibility compatibility,
+      NativeTelemetry telemetry) {
     var process = processes.getIfAvailable();
     if (process != null) {
       if (process.system() != enrollment.system())
@@ -86,7 +87,10 @@ public class NativeActorCompositionConfiguration {
             Clock.systemUTC(),
             clock::valid,
             security);
-    return new NativeActorComposition(enrollment.system(), inputs, readiness);
+    var composition = new NativeActorComposition(enrollment.system(), inputs, readiness);
+    composition.installRuntimeCapabilities(compatibility);
+    composition.installObservation(telemetry);
+    return composition;
   }
 
   @Bean

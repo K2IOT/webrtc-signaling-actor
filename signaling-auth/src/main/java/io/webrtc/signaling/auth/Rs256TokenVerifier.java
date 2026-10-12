@@ -68,12 +68,19 @@ public final class Rs256TokenVerifier implements TokenVerifier {
       if (aud.isArray() && aud.size() <= 16)
         for (var a : aud) audience |= a.isTextual() && contract.audience().equals(a.textValue());
       if (!audience) throw new AuthException();
-      Instant issued = Instant.ofEpochSecond(number(claims, "iat")),
-          expires = Instant.ofEpochSecond(number(claims, "exp"));
-      if (!expires.isAfter(issued)
-          || Duration.between(issued, expires).compareTo(contract.maximumJwtLifetime()) > 0
-          || issued.isAfter(now.plus(contract.clockSkew()))
-          || !now.minus(contract.clockSkew()).isBefore(expires)) throw new AuthException();
+      Instant issued = claims.has("iat") ? Instant.ofEpochSecond(number(claims, "iat")) : null;
+      Instant expires = Instant.ofEpochSecond(number(claims, "exp"));
+      if (!now.minus(contract.clockSkew()).isBefore(expires)) throw new AuthException();
+      if (issued != null) {
+        if (!expires.isAfter(issued)
+            || Duration.between(issued, expires).compareTo(contract.maximumJwtLifetime()) > 0
+            || issued.isAfter(now.plus(contract.clockSkew()))) throw new AuthException();
+      } else if (contract.claimLifetimePolicy().mode()
+              != ClaimLifetimePolicy.Mode.OPTIONAL_IAT_ATTESTED_LIFETIME
+          || expires.isAfter(now.plus(contract.maximumJwtLifetime()).plus(contract.clockSkew()))) {
+        // The bound on total issuance lifetime is issuer-attested, not inferred from exp-now.
+        throw new AuthException();
+      }
       if (claims.has("nbf")
           && Instant.ofEpochSecond(number(claims, "nbf")).isAfter(now.plus(contract.clockSkew())))
         throw new AuthException();

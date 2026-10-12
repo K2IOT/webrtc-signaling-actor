@@ -60,6 +60,8 @@ public final class NativeActorComposition {
 
   private final ActorSystem<?> system;
   private final Inputs inputs;
+  private volatile io.webrtc.signaling.observability.OperationObservation observation =
+      io.webrtc.signaling.observability.OperationObservation.NONE;
   private final ClusterReadiness readiness;
   private final ShardedActorIngress ingress;
   private final NativeProofIssuer issuer;
@@ -71,6 +73,8 @@ public final class NativeActorComposition {
   private final CoordinatorGrantService grants;
   private boolean registered;
   private volatile NativeRelayProducer relayProducer;
+  private volatile NativeSagaEffects.Network renewalNetwork;
+  private final NativeParticipantRenewal participantRenewal;
 
   public NativeActorComposition(ActorSystem<?> system, Inputs inputs, ClusterReadiness readiness) {
     this.system = Objects.requireNonNull(system);
@@ -126,6 +130,8 @@ public final class NativeActorComposition {
             owner,
             bindings.workflowVerifier(inputs.cell(), inputs.homes()));
     grants = new CoordinatorGrantService(inputs.sql(), inputs.cell(), inputs.storageEpoch(), owner);
+    participantRenewal = new NativeParticipantRenewal(inputs.sql(), inputs.homes(),
+        () -> renewalNetwork, inputs.clock());
     issuer =
         new NativeProofIssuer(
             inputs.proofs(),
@@ -187,7 +193,8 @@ public final class NativeActorComposition {
                   changed -> {
                     var producer = relayProducer;
                     if (producer != null) producer.invalidate(changed);
-                  });
+                  },
+                  participantRenewal);
             },
             CallActor.Stop.INSTANCE,
             readiness);
@@ -201,6 +208,7 @@ public final class NativeActorComposition {
               RpcBusinessHandler.RelayRequest,
               CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply>>
           relay) {
+    renewalNetwork = Objects.requireNonNull(network);
     var handler =
         new RpcBusinessHandler(
                 inputs.cell(),
@@ -306,7 +314,6 @@ public final class NativeActorComposition {
     Objects.requireNonNull(memory);
     Objects.requireNonNull(gateway);
     Objects.requireNonNull(gatewayWorkloads);
-    Objects.requireNonNull(deliver);
     var sessions =
         new NativeSessionHandler(
             inputs.cell(), inputs.storageEpoch(), gatewayWorkloads, sessionOperations());
@@ -319,9 +326,26 @@ public final class NativeActorComposition {
     var producer = relayProducer(network, capacity, memory, gateway);
     backend.nativeRelay(producer);
     var server =
-        new CellRpcServer(inputs.cell(), environment, port, tls, admission, backend, deliver)
-            .sessions(sessions);
+        new CellRpcServer(inputs.cell(), environment, port, tls, admission, backend,
+            event -> CompletableFuture.completedFuture(
+                io.webrtc.signaling.protocol.internal.InternalReply.newBuilder()
+                    .setOperationId(event.getEventId()).setCallId(event.getCallId())
+                    .setStatus("REJECTED").setErrorCode("UNSUPPORTED_OPERATION").build()))
+            .sessions(sessions).controlRoutes(controlRouteResolver());
     return new NativeActorRpcIngress(server, producer, gateway);
+  }
+
+  public NativeControlRouteResolver controlRouteResolver() {
+    return new NativeControlRouteResolver(inputs.sql(), inputs.cell(), inputs.storageEpoch(),
+        inputs.homes(), inputs.homeSecurity(), inputs.routeSecurity(),
+        () -> inputs.trustedClock().getAsBoolean() && readiness.safetyReady());
+  }
+
+  public NativeOutboxDelivery outboxDelivery(CellRpcClient homeRpc, GatewayRelayRpcClient gateways,
+      String worker, UUID workerIncarnation) {
+    return new NativeOutboxDelivery(inputs.sql(), inputs.cell(), inputs.storageEpoch(), worker,
+        workerIncarnation, inputs.homes(), homeRpc, gateways,
+        () -> inputs.trustedClock().getAsBoolean() && readiness.safetyReady());
   }
 
   public NativeSessionOperations sessionOperations() {
@@ -333,6 +357,57 @@ public final class NativeActorComposition {
         inputs.proofs().relaySessionProofs(),
         inputs.trustedClock(),
         inputs.callPolicy());
+  }
+
+  /** Concrete mandatory worker dependencies share this composition's database and identity. */
+  public SqlTransactions transactions() { return inputs.sql(); }
+  public String cell() { return inputs.cell(); }
+  public long storageEpoch() { return inputs.storageEpoch(); }
+  public String ownerNode() {
+    return PostgresShardLeaseProvider.ownerNode(Adapter.toClassic(system));
+  }
+  public boolean participantRenewalInstalled() {
+    return registered && renewalNetwork != null;
+  }
+
+  /** Live local ownership plus an even partition of missing-owner discovery across Up hosts. */
+  public Set<Integer> recoveryGroups() {
+    if (!inputs.trustedClock().getAsBoolean() || !readiness.safetyReady()) return Set.of();
+    var members = new ArrayList<String>();
+    for (var member : org.apache.pekko.cluster.typed.Cluster.get(system).state().getMembers())
+      if (member.hasRole("signaling-actor")
+          && member.status().equals(org.apache.pekko.cluster.MemberStatus.up()))
+        members.add(member.uniqueAddress().toString());
+    members.sort(String::compareTo);
+    String self = org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().uniqueAddress().toString();
+    int index = members.indexOf(self);
+    if (index < 0 || members.isEmpty()) return Set.of();
+    var groups = new HashSet<Integer>();
+    for (int group = 0; group < 1024; group++)
+      if (group % members.size() == index || local(group).isPresent()) groups.add(group);
+    return Set.copyOf(groups);
+  }
+
+  public CallRecoveryService recoveryService() {
+    return new CallRecoveryService(inputs.sql(), inputs.cell(), inputs.storageEpoch(), ownerNode(),
+        this::recoveryGroups, new CallRecoveryService.Wake() {
+          private final Map<DbOperation<Boolean>, ShardedActorIngress.RecoveryWake> originals =
+              new java.util.concurrent.ConcurrentHashMap<>();
+          public DbOperation<Boolean> apply(CallId call, Duration budget) {
+            var original = ingress.recoveryWake(call, inputs.clock().instant().plus(budget));
+            var operation = new DbOperation<>(original.operation().logical(),
+                original.operation().physicalCompletion().thenApply(v -> DbOperation.PhysicalCompletion.FINISHED));
+            originals.put(operation, original);
+            operation.physicalCompletion().whenComplete((done, failure) -> {
+              if (failure == null) originals.remove(operation, original);
+            });
+            return operation;
+          }
+          public void reconcile(CallId call, DbOperation<Boolean> operation, Duration budget) {
+            var original = originals.get(operation);
+            if (original != null) original.reconcile(budget);
+          }
+        }).observe(observation);
   }
 
   public void shedNewAcquisition() {
@@ -355,6 +430,18 @@ public final class NativeActorComposition {
 
   public ClusterReadiness readiness() {
     return readiness;
+  }
+
+  public void installRuntimeCapabilities(io.webrtc.signaling.protocol.RuntimeCapabilities capabilities) {
+    ingress.installCompatibilityGuard(feature -> capabilities.require(inputs.cell(), feature));
+    ingress.installTraceEligibility(() -> capabilities.permits(inputs.cell(),
+        io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_ACTOR_TRACE_V1));
+    workflow.compatibility(capabilities);
+  }
+
+  public void installObservation(io.webrtc.signaling.observability.OperationObservation observer) {
+    observation = Objects.requireNonNull(observer);
+    participantRenewal.observe(observer);
   }
 
   public ShardedActorIngress ingress() {

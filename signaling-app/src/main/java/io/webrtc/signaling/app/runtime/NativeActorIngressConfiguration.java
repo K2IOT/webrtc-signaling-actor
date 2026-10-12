@@ -28,11 +28,12 @@ public class NativeActorIngressConfiguration {
   NativeActorRpcIngress nativeActorRpcIngress(
       NativeActorComposition actors,
       NativeActorIngressEnrollment enrollment,
-      ObjectProvider<ShardingBootstrap.Regions> regions)
+      ObjectProvider<ShardingBootstrap.Regions> regions, NativeCompatibility compatibility, NativeTelemetry telemetry)
       throws IOException {
     // Resolve Main's registration dependency before listener creation. Already-installed
     // native compositions still undergo rpcIngress's independent registered-region guard.
     regions.getIfAvailable();
+    enrollment.gateways().compatibility(compatibility).observe(telemetry);
     return actors
         .rpcIngress(
             enrollment.environment(),

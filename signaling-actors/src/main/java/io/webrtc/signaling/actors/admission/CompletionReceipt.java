@@ -17,6 +17,15 @@ public record CompletionReceipt(UUID operation, ActorRef<PhysicalDone> recipient
     }
   }
 
+  public record PhysicalOwner(
+      UUID operation, ActorRef<io.webrtc.signaling.actors.call.RecoveryWakeRegistry.Query> owner)
+      implements ApplicationSerializable {
+    public PhysicalOwner {
+      Objects.requireNonNull(operation);
+      Objects.requireNonNull(owner);
+    }
+  }
+
   public void signal() {
     recipient.tell(new PhysicalDone(operation));
   }

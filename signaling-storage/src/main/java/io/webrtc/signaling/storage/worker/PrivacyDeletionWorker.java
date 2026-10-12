@@ -54,10 +54,12 @@ public final class PrivacyDeletionWorker {
         Duration.ofSeconds(2),
         c -> {
           WorkerFence.cell(c, cell, epoch);
-          WorkerFence.bucket(c, bucket);
+          WorkerFence.cleanupBucket(c, bucket);
           try (var q =
               c.prepareStatement(
-                  "INSERT INTO privacy_deletion_request(opaque_subject,authority_bucket_id,request_id,requested_at) VALUES(decode(?,'hex'),?,?,clock_timestamp()) ON CONFLICT DO NOTHING")) {
+                  "INSERT INTO"
+                      + " privacy_deletion_request(opaque_subject,authority_bucket_id,request_id,requested_at)"
+                      + " VALUES(decode(?,'hex'),?,?,clock_timestamp()) ON CONFLICT DO NOTHING")) {
             q.setString(1, opaque);
             q.setInt(2, bucket);
             q.setObject(3, request);
@@ -68,9 +70,15 @@ public final class PrivacyDeletionWorker {
   }
 
   public CompletionStage<Integer> process(int limit) {
+    return processTracked(limit).logical();
+  }
+
+  public DbOperation<Integer> processTracked(int limit) {
     WorkerFence.limit(limit, 128);
     if (!busy.compareAndSet(false, true))
-      return CompletableFuture.failedFuture(new DbOverloadedException());
+      return new DbOperation<>(
+          CompletableFuture.failedFuture(new DbOverloadedException()),
+          CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.NOT_STARTED));
     var work = new WorkerCompletion();
     CompletionStage<Integer> logical;
     try {
@@ -84,18 +92,33 @@ public final class PrivacyDeletionWorker {
                         var hints = new TreeSet<Integer>();
                         try (var q =
                             c.prepareStatement(
-                                "SELECT p.authority_bucket_id FROM privacy_deletion_request p JOIN bucket_authority b ON b.bucket_id=p.authority_bucket_id AND b.status='ACTIVE' WHERE p.completed_at IS NULL AND (p.dispatch_until IS NULL OR p.dispatch_until<clock_timestamp()) ORDER BY p.requested_at,p.opaque_subject LIMIT ?")) {
+                                "SELECT p.authority_bucket_id FROM privacy_deletion_request p JOIN"
+                                    + " bucket_authority b ON b.bucket_id=p.authority_bucket_id AND"
+                                    + " (b.status='ACTIVE' OR"
+                                    + " native_transfer_published(b.bucket_id)) WHERE"
+                                    + " p.completed_at IS NULL AND (p.dispatch_until IS NULL OR"
+                                    + " p.dispatch_until<clock_timestamp()) ORDER BY"
+                                    + " p.requested_at,p.opaque_subject LIMIT ?")) {
                           q.setInt(1, limit);
                           try (var r = q.executeQuery()) {
                             while (r.next()) hints.add(r.getInt(1));
                           }
                         }
-                        for (int bucket : hints) WorkerFence.bucket(c, bucket);
+                        for (int bucket : hints) WorkerFence.cleanupBucket(c, bucket);
                         var claims = new ArrayList<Claim>();
                         var buckets = c.createArrayOf("integer", hints.toArray(Integer[]::new));
                         try (var q =
                             c.prepareStatement(
-                                "WITH due AS (SELECT opaque_subject FROM privacy_deletion_request WHERE authority_bucket_id=ANY(?) AND completed_at IS NULL AND (dispatch_until IS NULL OR dispatch_until<clock_timestamp()) ORDER BY requested_at,opaque_subject LIMIT ? FOR UPDATE SKIP LOCKED) UPDATE privacy_deletion_request p SET dispatch_incarnation=?,dispatch_generation=p.dispatch_generation+1,dispatch_until=clock_timestamp()+interval '5 seconds' FROM due d WHERE p.opaque_subject=d.opaque_subject RETURNING encode(p.opaque_subject,'hex'),p.authority_bucket_id,p.dispatch_generation")) {
+                                "WITH due AS (SELECT opaque_subject FROM privacy_deletion_request"
+                                    + " WHERE authority_bucket_id=ANY(?) AND completed_at IS NULL"
+                                    + " AND (dispatch_until IS NULL OR"
+                                    + " dispatch_until<clock_timestamp()) ORDER BY"
+                                    + " requested_at,opaque_subject LIMIT ? FOR UPDATE SKIP LOCKED)"
+                                    + " UPDATE privacy_deletion_request p SET"
+                                    + " dispatch_incarnation=?,dispatch_generation=p.dispatch_generation+1,dispatch_until=clock_timestamp()+interval"
+                                    + " '5 seconds' FROM due d WHERE"
+                                    + " p.opaque_subject=d.opaque_subject RETURNING"
+                                    + " encode(p.opaque_subject,'hex'),p.authority_bucket_id,p.dispatch_generation")) {
                           q.setArray(1, buckets);
                           q.setInt(2, limit);
                           q.setObject(3, incarnation);
@@ -123,10 +146,25 @@ public final class PrivacyDeletionWorker {
                                                 Duration.ofSeconds(2),
                                                 c -> {
                                                   WorkerFence.cell(c, cell, epoch);
-                                                  WorkerFence.bucket(c, claim.bucket());
+                                                  WorkerFence.cleanupBucket(c, claim.bucket());
+                                                  // All raw staging copies can be retired after
+                                                  // publication.
+                                                  // Keep the manifest/fence receipt and binding
+                                                  // tombstones.
+                                                  WorkerFence.retireTransferCopies(
+                                                      c, claim.bucket(), 128);
+                                                  if (!WorkerFence.copiesRetired(c, claim.bucket()))
+                                                    return false;
                                                   try (var q =
                                                       c.prepareStatement(
-                                                          "UPDATE privacy_deletion_request SET completed_at=clock_timestamp() WHERE opaque_subject=decode(?,'hex') AND dispatch_incarnation=? AND dispatch_generation=? AND dispatch_until>clock_timestamp() AND completed_at IS NULL")) {
+                                                          "UPDATE privacy_deletion_request SET"
+                                                              + " completed_at=clock_timestamp()"
+                                                              + " WHERE"
+                                                              + " opaque_subject=decode(?,'hex')"
+                                                              + " AND dispatch_incarnation=? AND"
+                                                              + " dispatch_generation=? AND"
+                                                              + " dispatch_until>clock_timestamp()"
+                                                              + " AND completed_at IS NULL")) {
                                                     q.setString(1, claim.opaque());
                                                     q.setObject(2, incarnation);
                                                     q.setLong(3, claim.generation());
@@ -145,7 +183,7 @@ public final class PrivacyDeletionWorker {
     } catch (RuntimeException failure) {
       logical = CompletableFuture.failedFuture(failure);
     }
-    return work.finish(logical, () -> busy.set(false));
+    return work.finishTracked(logical, () -> busy.set(false));
   }
 
   private String pseudonym(String issuer, UserId user) {

@@ -11,8 +11,23 @@ public record IdentitySecurityContract(
     Duration revocationPropagationSLO,
     Duration hardSafetyBound,
     boolean preserveJtiOnRefresh,
-    String highWaterSource) {
+    String highWaterSource,
+    ClaimLifetimePolicy claimLifetimePolicy) {
+  public IdentitySecurityContract(
+      String issuer,
+      String audience,
+      Duration maximumJwtLifetime,
+      Duration clockSkew,
+      Duration revocationPropagationSLO,
+      Duration hardSafetyBound,
+      boolean preserveJtiOnRefresh,
+      String highWaterSource) {
+    this(issuer, audience, maximumJwtLifetime, clockSkew, revocationPropagationSLO,
+        hardSafetyBound, preserveJtiOnRefresh, highWaterSource, ClaimLifetimePolicy.legacyRequired());
+  }
+
   public IdentitySecurityContract {
+    java.util.Objects.requireNonNull(claimLifetimePolicy);
     new SessionKey(issuer, "contract");
     new SessionKey(audience, "contract");
     new SessionKey(highWaterSource, "contract");

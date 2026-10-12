@@ -62,18 +62,25 @@ public class NativeGatewayBusinessConfiguration {
         enrollment.relayProofs());
   }
 
+  @Bean(destroyMethod = "")
+  NativeControlReceiptTracker nativeControlReceipts() {
+    return new NativeControlReceiptTracker(256, 4194304);
+  }
+
   @Bean
   NativeGatewayCommands nativeGatewayCommands(
       NativeGatewayBusinessEnrollment enrollment,
       CellRpcClient client,
-      NativeRelaySessionProofCache cache) {
+      NativeRelaySessionProofCache cache,
+      NativeControlReceiptTracker receipts) {
     return new NativeGatewayCommands(
             enrollment.identity(),
             enrollment.homes(),
             NativeGatewayCommands.network(client),
             Clock.systemUTC(),
             enrollment.routingEpoch())
-        .relayProofCache(cache);
+        .relayProofCache(cache)
+        .controlReceipts(receipts);
   }
 
   @Bean
@@ -82,7 +89,7 @@ public class NativeGatewayBusinessConfiguration {
       GatewayBootController boot,
       NativeGatewaySafety safety,
       CellRpcClient client,
-      NativeGatewayCommands commands) {
+      NativeGatewayCommands commands, NativeTelemetry telemetry) {
     return new NativeGatewayServices(
         boot,
         enrollment.tokens(),
@@ -102,6 +109,6 @@ public class NativeGatewayBusinessConfiguration {
           return new NativeGatewayServices.Home(home.cell(), home.directoryEpoch());
         },
         client,
-        commands);
+        commands).observe(telemetry);
   }
 }

@@ -12,6 +12,16 @@ public final class NativeGatewayIngress implements AutoCloseable {
   private final GatewayServer wss;
   private final GatewayRelayStream writes;
   private final GatewayRelayRpcServer relay;
+  private final GatewayDeliveryStream control;
+  private final ExecutorService controlCpu =
+      new ThreadPoolExecutor(
+          2,
+          2,
+          0,
+          TimeUnit.SECONDS,
+          new ArrayBlockingQueue<>(128),
+          Thread.ofPlatform().daemon().name("gateway-control-json-", 0).factory(),
+          new ThreadPoolExecutor.AbortPolicy());
   private final ExecutorService cpu =
       new ThreadPoolExecutor(
           4,
@@ -29,6 +39,16 @@ public final class NativeGatewayIngress implements AutoCloseable {
       NativeGatewayIngressEnrollment inputs,
       NativeGatewayServices services,
       ClockSafetyMonitor clock)
+      throws Exception {
+    this(business, inputs, services, clock, new NativeControlReceiptTracker(256, 4194304));
+  }
+
+  NativeGatewayIngress(
+      NativeGatewayBusinessEnrollment business,
+      NativeGatewayIngressEnrollment inputs,
+      NativeGatewayServices services,
+      ClockSafetyMonitor clock,
+      NativeControlReceiptTracker receipts)
       throws Exception {
     var identity = business.identity();
     connections =
@@ -50,16 +70,20 @@ public final class NativeGatewayIngress implements AutoCloseable {
     writes =
         new GatewayRelayStream(
             connections, services, Clock.systemUTC(), cpu, inputs.writeAdmission(), clock::valid);
+    control =
+        new GatewayDeliveryStream(
+            connections, services, Clock.systemUTC(), controlCpu, receipts, clock::valid);
     relay =
         new GatewayRelayRpcServer(
-            identity.cell(),
-            identity.gatewayId(),
-            identity.bootId(),
-            inputs.rpcEnvironment(),
-            inputs.rpcPort(),
-            inputs.rpcTls(),
-            inputs.rpcAdmission(),
-            writes::send);
+                identity.cell(),
+                identity.gatewayId(),
+                identity.bootId(),
+                inputs.rpcEnvironment(),
+                inputs.rpcPort(),
+                inputs.rpcTls(),
+                inputs.rpcAdmission(),
+                writes::send)
+            .control(control::send);
     try {
       relay.start();
       wss.start(inputs.wssAddress());
@@ -88,6 +112,7 @@ public final class NativeGatewayIngress implements AutoCloseable {
       relay
           .drain()
           .thenCombine(writes.drain(), (a, b) -> null)
+          .thenCombine(control.drain(), (a, b) -> null)
           .whenComplete(
               (ignored, failure) -> {
                 if (failure != null) {
@@ -99,7 +124,9 @@ public final class NativeGatewayIngress implements AutoCloseable {
                       try {
                         wss.close();
                         cpu.shutdown();
-                        if (!cpu.awaitTermination(2, TimeUnit.SECONDS))
+                        controlCpu.shutdown();
+                        if (!cpu.awaitTermination(2, TimeUnit.SECONDS)
+                            || !controlCpu.awaitTermination(2, TimeUnit.SECONDS))
                           throw new TimeoutException("Native gateway CPU cleanup unproven");
                         drained.complete(null);
                       } catch (Exception unknown) {

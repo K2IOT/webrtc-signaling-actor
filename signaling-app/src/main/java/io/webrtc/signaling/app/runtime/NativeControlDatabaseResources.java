@@ -23,7 +23,7 @@ public final class NativeControlDatabaseResources {
   }
 
   private static SqlTransactions create(NativeControlDatabaseEnrollment.Database inputs) {
-    var admission = new DbAdmission(inputs.quotas());
+    var admission = new DbAdmission(inputs.quotas(), inputs.resourceProfiles());
     var boundary = new DbBoundary(admission);
     try {
       return new SqlTransactions(

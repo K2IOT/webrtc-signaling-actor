@@ -29,16 +29,18 @@ public class NativeControlBusinessConfiguration {
       NativeControlBusinessEnrollment inputs,
       DirectoryService directory,
       NativeControlReadiness readiness,
-      BoundedTokenVerifier tokens) {
+      BoundedTokenVerifier tokens, NativeTelemetry telemetry) {
     if (tokens != inputs.tokens())
       throw new IllegalArgumentException("Native control verifier ownership differs");
     return new BootstrapController(
-        directory, tokens, inputs.cachedSecurity(), Clock.systemUTC(), readiness::safe);
+        directory, tokens, inputs.cachedSecurity(), Clock.systemUTC(), readiness::safe).observe(telemetry);
   }
 
   @Bean
-  NativeControlReadiness nativeControlReadiness(NativeControlProcess process) {
-    return process.readiness();
+  NativeControlReadiness nativeControlReadiness(NativeControlProcess process, NativeCompatibility compatibility, NativeControlBusinessEnrollment inputs) {
+    var readiness = process.readiness();
+    readiness.compatibility(() -> compatibility.controlReady());
+    return readiness;
   }
 
   @Bean
@@ -50,7 +52,8 @@ public class NativeControlBusinessConfiguration {
       ObjectProvider<NativeClockSource> clocks,
       ObjectProvider<NativeRevocationSource> revocations,
       ObjectProvider<NativeCellHealthSource> primaries,
-      ObjectProvider<NativeCachedRevocationSource> cachedSources) {
+      ObjectProvider<NativeCachedRevocationSource> cachedSources,
+      ObjectProvider<PostgresBucketTransfer> transfers) {
     return new NativeControlProcess(
         inputs,
         tokens,
@@ -59,6 +62,7 @@ public class NativeControlBusinessConfiguration {
         clocks.orderedStream().toList(),
         revocations.orderedStream().toList(),
         primaries.orderedStream().toList(),
-        cachedSources.orderedStream().toList());
+        cachedSources.orderedStream().toList(),
+        transfers.getIfAvailable());
   }
 }

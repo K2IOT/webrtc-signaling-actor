@@ -1,10 +1,14 @@
 package io.webrtc.signaling.auth;
 
 import java.time.*;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class BoundedTokenVerifier implements AutoCloseable {
+  private volatile OperationObservation observations = OperationObservation.NONE;
+  public void observe(OperationObservation observations) { this.observations = java.util.Objects.requireNonNull(observations); }
   private final TokenVerifier verifier;
   private final ThreadPoolExecutor executor;
   private final Semaphore admission;
@@ -35,15 +39,21 @@ public final class BoundedTokenVerifier implements AutoCloseable {
   }
 
   public CompletionStage<AuthPrincipal> verify(String token, Instant now) {
-    if (!admission.tryAcquire())
+    var observation = OperationObservation.safeStart(observations, Operation.AUTH_VERIFY);
+    if (!admission.tryAcquire()) {
+      observation.logical(Outcome.BACKPRESSURE); observation.physical(false);
       return CompletableFuture.failedFuture(new RejectedExecutionException("AUTH_OVERLOADED"));
+    }
     pending.incrementAndGet();
     long submitted = System.nanoTime();
     var result = new CompletableFuture<AuthPrincipal>();
+    result.whenComplete((value, failure) -> observation.logical(failure == null ? Outcome.READ
+        : failure instanceof RejectedExecutionException ? Outcome.BACKPRESSURE : Outcome.FORBIDDEN));
     try {
       executor.execute(
           () -> {
-            try {
+            try (var scope = observation.activate()) {
+              observation.queue(Math.max(0, System.nanoTime() - submitted));
               if (System.nanoTime() - submitted > maxQueueAge.toNanos())
                 throw new RejectedExecutionException("AUTH_QUEUE_EXPIRED");
               result.complete(verifier.validate(token, now));
@@ -52,12 +62,14 @@ public final class BoundedTokenVerifier implements AutoCloseable {
             } finally {
               pending.decrementAndGet();
               admission.release();
+              observation.physical(true);
             }
           });
     } catch (RejectedExecutionException e) {
       pending.decrementAndGet();
       admission.release();
       result.completeExceptionally(e);
+      observation.physical(false);
     }
     return result.minimalCompletionStage();
   }

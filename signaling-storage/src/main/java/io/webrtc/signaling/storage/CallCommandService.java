@@ -317,7 +317,8 @@ public final class CallCommandService {
     long sequence;
     try (var s =
         c.prepareStatement(
-            "SELECT clock_timestamp(),lease_sequence FROM group_owner WHERE cell_id=? AND ownership_hash_version=? AND group_id=?")) {
+            "SELECT clock_timestamp(),lease_sequence FROM group_owner WHERE cell_id=? AND"
+                + " ownership_hash_version=? AND group_id=?")) {
       s.setString(1, cell);
       s.setLong(2, context.group().hashVersion());
       s.setInt(3, context.group().group());
@@ -377,7 +378,10 @@ public final class CallCommandService {
     String state = local ? "RINGING" : "PREPARING";
     try (var s =
         c.prepareStatement(
-            "INSERT INTO call_state(call_id,authority_bucket_id,ownership_hash_version,ownership_group_id,caller_user,caller_issuer,caller_jti,caller_incarnation,caller_generation,callee_user,state,version,negotiation_id,saga_phase,deadlines,offered_sessions,last_mutation_group_epoch,invite_request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,0,?,jsonb_build_object(?,clock_timestamp()+(? * interval '1 second')),?::jsonb,?,?)")) {
+            "INSERT INTO"
+                + " call_state(call_id,authority_bucket_id,ownership_hash_version,ownership_group_id,caller_user,caller_issuer,caller_jti,caller_incarnation,caller_generation,callee_user,state,version,negotiation_id,saga_phase,deadlines,offered_sessions,last_mutation_group_epoch,invite_request_id)"
+                + " VALUES(?,?,?,?,?,?,?,?,?,?,?,1,0,?,jsonb_build_object(?,clock_timestamp()+(? *"
+                + " interval '1 second')),?::jsonb,?,?)")) {
       s.setString(1, context.callId().value());
       s.setInt(2, bucket);
       s.setLong(3, context.group().hashVersion());
@@ -459,7 +463,8 @@ public final class CallCommandService {
       throw new AuthorizationRejected();
     try (var q =
         c.prepareStatement(
-            "SELECT lease_until>clock_timestamp()+interval '5 seconds' FROM user_reservation WHERE user_id=? AND call_id=?")) {
+            "SELECT lease_until>clock_timestamp()+interval '5 seconds' FROM user_reservation WHERE"
+                + " user_id=? AND call_id=?")) {
       q.setString(1, previous.caller().user().value());
       q.setString(2, previous.callId().value());
       try (var r = q.executeQuery()) {
@@ -525,7 +530,9 @@ public final class CallCommandService {
     metadata.put("mediaWinnerConnected", false);
     try (var q =
         c.prepareStatement(
-            "UPDATE call_state SET negotiation_id=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            "UPDATE call_state SET"
+                + " negotiation_id=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp()"
+                + " WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
       q.setLong(1, round);
       q.setLong(2, version);
       q.setString(3, JSON.writeValueAsString(metadata));
@@ -626,7 +633,8 @@ public final class CallCommandService {
         c.prepareStatement(
             "UPDATE call_state SET "
                 + column
-                + "=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+                + "=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp()"
+                + " WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
       q.setLong(1, command.sender().connectionGeneration());
       q.setLong(2, version);
       q.setString(3, JSON.writeValueAsString(metadata));
@@ -696,7 +704,9 @@ public final class CallCommandService {
     String state = both ? "ESTABLISHED" : previous.state();
     try (var q =
         c.prepareStatement(
-            "UPDATE call_state SET state=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            "UPDATE call_state SET"
+                + " state=?,version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp()"
+                + " WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
       q.setString(1, state);
       q.setLong(2, version);
       q.setString(3, JSON.writeValueAsString(metadata));
@@ -791,7 +801,9 @@ public final class CallCommandService {
     long version = Math.addExact(previous.version(), 1);
     try (var q =
         c.prepareStatement(
-            "UPDATE call_state SET version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            "UPDATE call_state SET"
+                + " version=?,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp()"
+                + " WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
       q.setLong(1, version);
       q.setString(2, JSON.writeValueAsString(metadata));
       q.setLong(3, context.group().epoch());
@@ -817,7 +829,10 @@ public final class CallCommandService {
     long version = Math.addExact(previous.version(), 1);
     try (var s =
         c.prepareStatement(
-            "UPDATE call_state SET state='TERMINAL',version=?,saga_phase='COMPENSATE',terminal_reason=?,terminal_at=clock_timestamp(),expires_at=clock_timestamp()+interval '24 hours 5 seconds',updated_at=clock_timestamp(),last_mutation_group_epoch=? WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
+            "UPDATE call_state SET"
+                + " state='TERMINAL',version=?,saga_phase='COMPENSATE',terminal_reason=?,terminal_at=clock_timestamp(),expires_at=clock_timestamp()+interval"
+                + " '24 hours 5 seconds',updated_at=clock_timestamp(),last_mutation_group_epoch=?"
+                + " WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
       s.setLong(1, version);
       s.setString(2, reason);
       s.setLong(3, context.group().epoch());
@@ -1014,10 +1029,69 @@ public final class CallCommandService {
         DbClass.RECOVERY,
         budget,
         c -> {
-          authorizedRead(c, read, proof);
+          AuthoritySql.cellBarrier(c, false);
+          AuthoritySql.validateCell(c, cell, epoch);
+          var hint = calls.find(c, read.callId());
+          if (hint == null || !cell.equals(read.callId().coordinatorCell()))
+            throw new AuthorizationRejected();
+          AuthoritySql.bucketBarrier(c, hint.bucket(), false);
+          AuthoritySql.callReadBarrier(c, read.callId().value());
+          var snapshot = calls.find(c, read.callId());
           var stored = results.find(c, read.sender().key(), read.scope(), read.requestId());
+          if (!activeOrExactFrozenReplay(c, read, snapshot, stored))
+            throw new AuthoritySql.FencedException();
+          // Native proof verifies the current home session/security; local socket history is
+          // intentionally not used after the user has reconnected at the destination.
+          if (snapshot == null || !proofs.verify(read, snapshot, proof))
+            throw new AuthorizationRejected();
+          requirePrincipal(read.sender(), snapshot);
           return stored == null ? Optional.empty() : Optional.of(outcome(stored));
         });
+  }
+
+  private boolean activeOrExactFrozenReplay(
+      Connection c, CallCommand read, Snapshot snapshot, CommandResultRepository.Stored result)
+      throws SQLException {
+    if (snapshot == null) return false;
+    try (var q =
+        c.prepareStatement("SELECT b.status FROM bucket_authority b WHERE b.bucket_id=?")) {
+      q.setInt(1, snapshot.bucket());
+      try (var r = q.executeQuery()) {
+        if (!r.next()) return false;
+        if ("ACTIVE".equals(r.getString(1))) return true;
+        if (!"FROZEN".equals(r.getString(1))) return false;
+      }
+    }
+    if (snapshot.terminalAt() == null
+        || result == null
+        || !"FINAL".equals(result.status())
+        || result.outcome() == null
+        || result.bucket() != snapshot.bucket()
+        || !read.callId().equals(result.callId())
+        || !cell.equals(snapshot.callId().coordinatorCell())) return false;
+    try (var q =
+        c.prepareStatement(
+            "SELECT 1 FROM bucket_authority b JOIN bucket_transfer t ON t.transfer_id=b.transfer_id"
+                + " WHERE b.bucket_id=? AND b.status='FROZEN' AND t.role='SOURCE' AND t.state IN"
+                + " ('FROZEN','PUBLISHED') AND t.bucket_id=b.bucket_id AND t.source_cell=? AND"
+                + " t.source_storage_epoch=? AND t.source_epoch=b.directory_epoch AND"
+                + " t.recovery_epoch=b.recovery_epoch AND t.target_epoch=t.source_epoch+1 AND"
+                + " t.target_cell<>t.source_cell AND EXISTS(SELECT 1 FROM command_result r WHERE"
+                + " r.issuer=? AND r.jti=? AND r.command_scope=? AND r.request_id=? AND r.call_id=?"
+                + " AND r.authority_bucket_id=b.bucket_id AND r.status='FINAL' AND"
+                + " r.expires_at>clock_timestamp())")) {
+      q.setInt(1, snapshot.bucket());
+      q.setString(2, cell);
+      q.setLong(3, epoch);
+      q.setString(4, read.sender().key().issuer());
+      q.setString(5, read.sender().key().jti());
+      q.setString(6, read.scope().value());
+      q.setObject(7, read.requestId().value());
+      q.setString(8, read.callId().value());
+      try (var r = q.executeQuery()) {
+        return r.next();
+      }
+    }
   }
 
   public record SetupContext(

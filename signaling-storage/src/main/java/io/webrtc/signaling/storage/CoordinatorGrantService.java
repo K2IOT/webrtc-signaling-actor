@@ -54,8 +54,38 @@ public final class CoordinatorGrantService {
       long callerDirectoryEpoch,
       long expectedCallVersion,
       Duration budget) {
+    return issue(request, action, token, callerDirectoryEpoch, expectedCallVersion, budget, false);
+  }
+
+  /**
+   * Native participant renewer only; the signed intent remains QUERY, not a general priority flag.
+   */
+  public DbOperation<Issued> issueRenewalProjection(
+      Request request,
+      AuthoritySql.GroupToken token,
+      long callerDirectoryEpoch,
+      long expectedCallVersion,
+      Duration budget) {
+    return issue(
+        request,
+        new AuthorizationIntent("QUERY", null, 0, null, 0, null, null),
+        token,
+        callerDirectoryEpoch,
+        expectedCallVersion,
+        budget,
+        true);
+  }
+
+  private DbOperation<Issued> issue(
+      Request request,
+      AuthorizationIntent action,
+      AuthoritySql.GroupToken token,
+      long callerDirectoryEpoch,
+      long expectedCallVersion,
+      Duration budget,
+      boolean renewalProjection) {
     return sql.submitTracked(
-        action.action().equals("RENEW")
+        renewalProjection || action.action().equals("RENEW")
             ? DbClass.RENEWAL
             : action.action().equals("RELEASE") ? DbClass.TERMINATION : DbClass.CRITICAL,
         budget,
@@ -80,6 +110,11 @@ public final class CoordinatorGrantService {
               || current.hashVersion() != token.hashVersion()
               || current.group() != token.group()
               || !Set.of(current.caller().user(), current.callee()).contains(request.user()))
+            throw new AuthoritySql.FencedException();
+          if (renewalProjection
+              && (current.terminalAt() != null
+                  || request.phase()
+                      != (current.state().equals("PREPARING") ? Phase.PREPARING : Phase.RINGING)))
             throw new AuthoritySql.FencedException();
           var original =
               results.find(
@@ -120,7 +155,8 @@ public final class CoordinatorGrantService {
               throw new AuthoritySql.FencedException();
             try (var q =
                 c.prepareStatement(
-                    "SELECT command_type FROM command_result WHERE issuer=? AND jti=? AND command_scope=? AND request_id=?")) {
+                    "SELECT command_type FROM command_result WHERE issuer=? AND jti=? AND"
+                        + " command_scope=? AND request_id=?")) {
               q.setString(1, action.route().key().issuer());
               q.setString(2, action.route().key().jti());
               q.setString(3, CommandScope.call(request.call()).value());
@@ -134,7 +170,8 @@ public final class CoordinatorGrantService {
           }
           try (var q =
               c.prepareStatement(
-                  "SELECT lease_sequence,clock_timestamp(),lease_until FROM group_owner WHERE cell_id=? AND ownership_hash_version=1 AND group_id=?")) {
+                  "SELECT lease_sequence,clock_timestamp(),lease_until FROM group_owner WHERE"
+                      + " cell_id=? AND ownership_hash_version=1 AND group_id=?")) {
             q.setString(1, cell);
             q.setInt(2, token.group());
             try (var r = q.executeQuery()) {

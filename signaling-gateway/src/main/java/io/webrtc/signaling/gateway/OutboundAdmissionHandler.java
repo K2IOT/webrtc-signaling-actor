@@ -26,6 +26,19 @@ public final class OutboundAdmissionHandler extends ChannelDuplexHandler {
     }
   }
 
+  /** Protected CONTROL frame with original socket-write cleanup independent of queue timeout. */
+  public static final class ControlFrame extends TextWebSocketFrame {
+    private final CompletableFuture<Void> physical = new CompletableFuture<>();
+
+    public ControlFrame(String payload) {
+      super(payload);
+    }
+
+    public CompletionStage<Void> physicalCompletion() {
+      return physical.minimalCompletionStage();
+    }
+  }
+
   private final DeliveryCreditController aggregate;
   private final OutboundQueue queue;
   private io.netty.util.concurrent.ScheduledFuture<?> pressure;
@@ -58,6 +71,7 @@ public final class OutboundAdmissionHandler extends ChannelDuplexHandler {
                     if (done.isSuccess()) physical.complete(null);
                     else physical.completeExceptionally(new OutboundQueue.ResyncRequired());
                     if (message instanceof RelayFrame relay) relay.physical.complete(null);
+                    if (message instanceof ControlFrame control) control.physical.complete(null);
                   });
               ctx.writeAndFlush(message, promise);
               return physical;
@@ -67,6 +81,7 @@ public final class OutboundAdmissionHandler extends ChannelDuplexHandler {
           if (!transferred.get()) {
             ReferenceCountUtil.release(message);
             if (message instanceof RelayFrame relay) relay.physical.complete(null);
+            if (message instanceof ControlFrame control) control.physical.complete(null);
           }
           if (error == null) logical.trySuccess();
           else logical.tryFailure(new OutboundQueue.ResyncRequired());

@@ -15,8 +15,12 @@ public record AuthPrincipal(
     Objects.requireNonNull(userId);
     Objects.requireNonNull(key);
     Objects.requireNonNull(expiresAt);
-    Objects.requireNonNull(issuedAt);
     Objects.requireNonNull(signingKeyId);
     if (securityEpoch < 0) throw new IllegalArgumentException("negative security epoch");
+  }
+
+  /** Empty when an enrolled issuer omits iat; never infer an issuance timestamp from validation. */
+  public java.util.Optional<Instant> knownIssuedAt() {
+    return java.util.Optional.ofNullable(issuedAt);
   }
 }

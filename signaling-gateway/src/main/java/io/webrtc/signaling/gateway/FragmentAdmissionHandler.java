@@ -26,7 +26,7 @@ public final class FragmentAdmissionHandler extends ChannelInboundHandlerAdapter
         if (retained != null) throw new IllegalArgumentException("Nested fragment");
         bytes = text.content().readableBytes();
         fragments = 1;
-        retained = budget.acquire(Math.max(1, bytes));
+        retained = budget.acquireFragment(Math.max(1, bytes));
         timeout =
             ctx.executor()
                 .schedule(

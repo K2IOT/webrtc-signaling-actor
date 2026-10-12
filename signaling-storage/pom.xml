@@ -1,4 +1,5 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>io.webrtc.signaling</groupId><artifactId>signaling-parent</artifactId><version>0.1.0-SNAPSHOT</version></parent><artifactId>signaling-storage</artifactId><dependencies>
+<dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-observability</artifactId><version>${project.version}</version></dependency>
 <dependency><groupId>io.webrtc.signaling</groupId><artifactId>signaling-auth</artifactId><version>${project.version}</version></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
 <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId></dependency>

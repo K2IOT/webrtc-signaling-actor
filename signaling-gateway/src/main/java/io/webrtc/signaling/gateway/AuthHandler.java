@@ -31,7 +31,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
   private UUID connection;
   private SessionRepository.Route route;
   private String verifiedToken;
-  private boolean verifying;
+  private volatile boolean verifying;
   private io.netty.util.concurrent.ScheduledFuture<?> authTimeout;
 
   public AuthHandler(ConnectionRegistry registry, GatewayServices services, Clock clock) {
@@ -139,12 +139,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                   services.command(command, committedRoute, originalToken, remaining(frame));
               respond(ctx, frame, result, false);
             } catch (RuntimeException invalid) {
-              ctx.executor()
-                  .execute(
-                      () -> {
-                        frame.release().run();
-                        ctx.close();
-                      });
+              completion(ctx, () -> ctx.close(), () -> disconnectRejected(ctx), frame.release());
             }
           });
     } catch (RuntimeException invalid) {
@@ -165,9 +160,13 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
     SessionRepository.Route expected = route;
     var failed = new java.util.concurrent.atomic.AtomicBoolean();
     var nativeClosed = new java.util.concurrent.atomic.AtomicBoolean();
+    var committed = new java.util.concurrent.atomic.AtomicReference<SessionRepository.Route>();
+    var credits = new CompletionCredits(frame.release());
+    CompletionStage<?> physical = null;
     java.util.function.Consumer<SessionRepository.Route> closeOnce =
         nativeRoute -> {
-          if (nativeClosed.compareAndSet(false, true)) services.close(nativeRoute);
+          if (nativeRoute != null && nativeClosed.compareAndSet(false, true))
+            services.close(nativeRoute);
         };
     try {
       String token =
@@ -198,6 +197,7 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                     // COMMIT still needs cleanup.
                     original.whenComplete(
                         (nativeRoute, error) -> {
+                          if (nativeRoute != null) committed.set(nativeRoute);
                           if (nativeRoute != null
                               && (failed.get()
                                   || !ctx.channel().isActive()
@@ -206,70 +206,88 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                             closeOnce.accept(nativeRoute);
                         });
                     return original.thenApply(
-                        committed -> new AbstractMap.SimpleImmutableEntry<>(principal, committed));
+                        registered ->
+                            new AbstractMap.SimpleImmutableEntry<>(principal, registered));
                   });
-      checked
-          .toCompletableFuture()
-          .orTimeout(remaining(frame).toNanos(), TimeUnit.NANOSECONDS)
+      physical = checked;
+      deadline(checked, frame, credits)
           .whenComplete(
               (value, error) -> {
                 if (error != null) failed.set(true);
-                ctx.executor()
-                    .execute(
-                        () -> {
-                          verifying = false;
-                          try {
-                            if (error != null) {
-                              failed.set(true);
-                              if (value != null) closeOnce.accept(value.getValue());
-                              rejectKnownOrClose(ctx, error);
-                              return;
-                            }
-                            if (!ctx.channel().isActive() || !services.currentBoot()) {
-                              failed.set(true);
-                              closeOnce.accept(value.getValue());
-                              ctx.close();
-                              return;
-                            }
-                            var security = services.cachedSecurity(value.getKey(), clock.instant());
-                            if (security != AuthorizationStatus.ALLOWED) {
-                              failed.set(true);
-                              closeOnce.accept(value.getValue());
-                              if (security == null) ctx.close();
-                              else
-                                GatewayRejection.close(
-                                    ctx.channel(), GatewayRejection.security(security));
-                              return;
-                            }
-                            if (!registry.bind(connection, value.getValue(), value.getKey())) {
-                              failed.set(true);
-                              closeOnce.accept(value.getValue());
-                              GatewayRejection.close(
-                                  ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
-                              return;
-                            }
-                            route = value.getValue();
-                            verifiedToken = token;
-                            authTimeout.cancel(false);
-                            ctx.fireUserEventTriggered(
-                                new GatewayServer.Authenticated(registry.binding(connection)));
-                            ctx.writeAndFlush(
-                                new TextWebSocketFrame(
-                                    "{\"v\":1,\"type\":\"AUTH_OK\",\"sessionIncarnation\":\""
-                                        + route.incarnation().value()
-                                        + "\",\"connectionGeneration\":\""
-                                        + route.connectionGeneration()
-                                        + "\"}"));
-                          } finally {
-                            frame.release().run();
-                          }
-                        });
+                completion(
+                    ctx,
+                    () -> {
+                      verifying = false;
+                      try {
+                        if (error != null) {
+                          failed.set(true);
+                          closeOnce.accept(committed.get());
+                          rejectKnownOrClose(ctx, error);
+                          return;
+                        }
+                        if (!ctx.channel().isActive() || !services.currentBoot()) {
+                          failed.set(true);
+                          closeOnce.accept(value.getValue());
+                          ctx.close();
+                          return;
+                        }
+                        var security = services.cachedSecurity(value.getKey(), clock.instant());
+                        if (security != AuthorizationStatus.ALLOWED) {
+                          failed.set(true);
+                          closeOnce.accept(value.getValue());
+                          if (security == null) ctx.close();
+                          else
+                            GatewayRejection.close(
+                                ctx.channel(), GatewayRejection.security(security));
+                          return;
+                        }
+                        if (!registry.bind(connection, value.getValue(), value.getKey())) {
+                          failed.set(true);
+                          closeOnce.accept(value.getValue());
+                          GatewayRejection.close(
+                              ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
+                          return;
+                        }
+                        route = value.getValue();
+                        verifiedToken = token;
+                        authTimeout.cancel(false);
+                        ctx.fireUserEventTriggered(
+                            new GatewayServer.Authenticated(registry.binding(connection)));
+                        ctx.writeAndFlush(
+                            new TextWebSocketFrame(
+                                "{\"v\":1,\"type\":\"AUTH_OK\",\"sessionIncarnation\":\""
+                                    + route.incarnation().value()
+                                    + "\",\"connectionGeneration\":\""
+                                    + route.connectionGeneration()
+                                    + "\"}"));
+                      } catch (RuntimeException invalid) {
+                        failed.set(true);
+                        closeOnce.accept(committed.get());
+                        ctx.close();
+                      }
+                    },
+                    () -> {
+                      failed.set(true);
+                      verifying = false;
+                      try {
+                        closeOnce.accept(committed.get());
+                      } finally {
+                        disconnectRejected(ctx);
+                      }
+                    },
+                    credits::logicalDone);
               });
     } catch (Exception invalid) {
       failed.set(true);
       verifying = false;
-      frame.release().run();
-      ctx.close();
+      try {
+        closeOnce.accept(committed.get());
+        ctx.close();
+      } finally {
+        if (physical == null) credits.physicalDone();
+        else physical.whenComplete((value, error) -> credits.physicalDone());
+        credits.logicalDone();
+      }
     }
   }
 
@@ -305,32 +323,113 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
       FrameAdmissionHandler.Admitted frame,
       CompletionStage<String> response,
       boolean auth) {
-    response
-        .toCompletableFuture()
-        .orTimeout(remaining(frame).toNanos(), TimeUnit.NANOSECONDS)
+    var credits = new CompletionCredits(frame.release());
+    deadline(response, frame, credits)
         .whenComplete(
             (value, error) ->
-                ctx.executor()
-                    .execute(
-                        () -> {
-                          try {
-                            if (ctx.channel().isActive()
-                                && services.currentBoot()
-                                && registry.current(connection, route)) {
-                              String output =
-                                  error == null ? value : "{\"v\":1,\"type\":\"OUTCOME_UNKNOWN\"}";
-                              if (output == null
-                                  || output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
-                                      > 98304) {
-                                ctx.close();
-                                return;
-                              }
-                              ctx.writeAndFlush(new TextWebSocketFrame(output));
-                            }
-                          } finally {
-                            frame.release().run();
-                          }
-                        }));
+                completion(
+                    ctx,
+                    () -> {
+                      if (ctx.channel().isActive()
+                          && services.currentBoot()
+                          && registry.current(connection, route)) {
+                        String output =
+                            error == null ? value : "{\"v\":1,\"type\":\"OUTCOME_UNKNOWN\"}";
+                        if (output == null
+                            || output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                                > 98304) {
+                          ctx.close();
+                          return;
+                        }
+                        ctx.writeAndFlush(new TextWebSocketFrame(output));
+                      }
+                    },
+                    () -> disconnectRejected(ctx),
+                    credits::logicalDone));
+  }
+
+  /** Timeout the reply only; the original asynchronous operation still owns its frame credits. */
+  private <T> CompletableFuture<T> deadline(
+      CompletionStage<T> physical,
+      FrameAdmissionHandler.Admitted frame,
+      CompletionCredits credits) {
+    var reply = new CompletableFuture<T>();
+    physical.whenComplete(
+        (value, error) -> {
+          try {
+            if (error == null) reply.complete(value);
+            else reply.completeExceptionally(error);
+          } finally {
+            credits.physicalDone();
+          }
+        });
+    try {
+      reply.orTimeout(remaining(frame).toNanos(), TimeUnit.NANOSECONDS);
+    } catch (RejectedExecutionException expired) {
+      reply.completeExceptionally(expired);
+    }
+    return reply;
+  }
+
+  /** Every accepted or rejected callback completes its logical ownership exactly once. */
+  private static void completion(
+      ChannelHandlerContext ctx, Runnable accepted, Runnable rejected, Runnable done) {
+    try {
+      ctx.executor()
+          .execute(
+              () -> {
+                try {
+                  accepted.run();
+                } finally {
+                  done.run();
+                }
+              });
+    } catch (RejectedExecutionException stopped) {
+      try {
+        rejected.run();
+      } finally {
+        done.run();
+      }
+    }
+  }
+
+  private void disconnectRejected(ChannelHandlerContext ctx) {
+    var binding = registry.binding(connection);
+    registry.remove(connection);
+    try {
+      if (binding != null) services.close(binding.route());
+    } finally {
+      ctx.channel().close();
+    }
+  }
+
+  private static final class CompletionCredits {
+    private final Runnable release;
+    private final java.util.concurrent.atomic.AtomicInteger state =
+        new java.util.concurrent.atomic.AtomicInteger();
+
+    CompletionCredits(Runnable release) {
+      this.release = release;
+    }
+
+    void physicalDone() {
+      finish(1);
+    }
+
+    void logicalDone() {
+      finish(2);
+    }
+
+    private void finish(int flag) {
+      while (true) {
+        int previous = state.get(), updated = previous | flag;
+        if ((updated & 3) == 3) updated |= 4;
+        if (state.compareAndSet(previous, updated)) {
+          if ((previous & 4) == 0 && (updated & 4) != 0) release.run();
+          return;
+        }
+      }
+    }
   }
 
   @Override

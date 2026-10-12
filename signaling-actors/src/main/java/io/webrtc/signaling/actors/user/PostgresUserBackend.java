@@ -58,10 +58,17 @@ public final class PostgresUserBackend implements UserActor.Backend {
         if (proofReads == null)
           throw new IllegalStateException("Native home proof reads are required");
         yield map(
-            proofReads.observe(r.request(), r.sender(), budget),
+            r.renewalProjection()
+                ? proofReads.observeRenewal(r.request(), budget)
+                : proofReads.observe(r.request(), r.sender(), budget),
             view ->
                 new UserCommand.Result(
-                    UserCommand.Code.PROOF_READ, null, view.participation(), null, null, view));
+                    UserCommand.Code.PROOF_READ,
+                    null,
+                    view == null ? null : view.participation(),
+                    null,
+                    null,
+                    view));
       }
       case UserCommand.Register r ->
           map(

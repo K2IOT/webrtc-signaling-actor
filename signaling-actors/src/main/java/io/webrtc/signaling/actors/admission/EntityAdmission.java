@@ -10,7 +10,8 @@ import java.util.concurrent.*;
 public final class EntityAdmission {
   public enum Priority {
     NORMAL,
-    SAFETY
+    SAFETY,
+    RECOVERY
   }
 
   public static final class Overloaded extends RejectedExecutionException {
@@ -20,7 +21,7 @@ public final class EntityAdmission {
   }
 
   private static final class Usage {
-    int count, bytes;
+    int count, bytes, recoveryCount, recoveryBytes;
   }
 
   private final int maximumCount,
@@ -29,7 +30,8 @@ public final class EntityAdmission {
       reservedBytes,
       processCount,
       processBytes;
-  private int count, bytes;
+  private final int recoveryCount, recoveryBytes, recoveryProcessCount, recoveryProcessBytes;
+  private int count, bytes, retainedRecoveryCount, retainedRecoveryBytes;
   private final Map<String, Usage> entities = new HashMap<>();
 
   public EntityAdmission(
@@ -39,6 +41,19 @@ public final class EntityAdmission {
       int reservedBytes,
       int processCount,
       int processBytes) {
+    this(
+        maximumCount, maximumBytes, reservedCount, reservedBytes, processCount, processBytes, 0, 0);
+  }
+
+  public EntityAdmission(
+      int maximumCount,
+      int maximumBytes,
+      int reservedCount,
+      int reservedBytes,
+      int processCount,
+      int processBytes,
+      int recoveryCount,
+      int recoveryBytes) {
     if (maximumCount < 2
         || maximumCount > 64
         || maximumBytes < 1024
@@ -50,7 +65,12 @@ public final class EntityAdmission {
         || processCount < maximumCount
         || processCount > 65536
         || processBytes < maximumBytes
-        || processBytes > 268435456)
+        || processBytes > 268435456
+        || recoveryCount < 0
+        || recoveryCount + reservedCount > maximumCount
+        || recoveryBytes < 0
+        || recoveryBytes + reservedBytes > maximumBytes
+        || (recoveryCount == 0) != (recoveryBytes == 0))
       throw new IllegalArgumentException("Unsafe entity admission limits");
     this.maximumCount = maximumCount;
     this.maximumBytes = maximumBytes;
@@ -58,6 +78,38 @@ public final class EntityAdmission {
     this.reservedBytes = reservedBytes;
     this.processCount = processCount;
     this.processBytes = processBytes;
+    this.recoveryCount = recoveryCount;
+    this.recoveryBytes = recoveryBytes;
+    this.recoveryProcessCount =
+        recoveryCount == 0 ? 0 : Math.min(128, Math.max(recoveryCount, processCount / 8));
+    this.recoveryProcessBytes =
+        recoveryBytes == 0
+            ? 0
+            : Math.min(4 * 1024 * 1024, Math.max(recoveryBytes, processBytes / 8));
+  }
+
+  private int countLimit(Priority priority, boolean process, Usage usage) {
+    int maximum = process ? processCount : maximumCount;
+    int recovery =
+        (process ? recoveryProcessCount : recoveryCount)
+            - (process ? retainedRecoveryCount : usage == null ? 0 : usage.recoveryCount);
+    return switch (priority) {
+      case RECOVERY -> maximum;
+      case SAFETY -> maximum - recovery;
+      case NORMAL -> maximum - recovery - reservedCount;
+    };
+  }
+
+  private int byteLimit(Priority priority, boolean process, Usage usage) {
+    int maximum = process ? processBytes : maximumBytes;
+    int recovery =
+        (process ? recoveryProcessBytes : recoveryBytes)
+            - (process ? retainedRecoveryBytes : usage == null ? 0 : usage.recoveryBytes);
+    return switch (priority) {
+      case RECOVERY -> maximum;
+      case SAFETY -> maximum - recovery;
+      case NORMAL -> maximum - recovery - reservedBytes;
+    };
   }
 
   public static EntityAdmission forIngressProducers(int maximumActorProcesses) {
@@ -69,7 +121,9 @@ public final class EntityAdmission {
         Math.max(1, 16 / maximumActorProcesses),
         Math.max(1, 32768 / maximumActorProcesses),
         4096,
-        33554432);
+        33554432,
+        1,
+        Math.max(512, 32768 / maximumActorProcesses));
   }
 
   public synchronized Ticket acquire(String entity, Priority priority, int encodedBytes) {
@@ -80,14 +134,20 @@ public final class EntityAdmission {
         || encodedBytes < 1
         || encodedBytes > 98304)
       throw new IllegalArgumentException("Invalid admitted entity request");
-    boolean safety = priority == Priority.SAFETY;
     var usage = entities.get(entity);
     int n = usage == null ? 0 : usage.count;
     int b = usage == null ? 0 : usage.bytes;
-    if (n >= (safety ? maximumCount : maximumCount - reservedCount)
-        || encodedBytes > (safety ? maximumBytes : maximumBytes - reservedBytes) - b
-        || count >= (safety ? processCount : processCount - reservedCount)
-        || encodedBytes > (safety ? processBytes : processBytes - reservedBytes) - bytes)
+    if (n >= countLimit(priority, false, usage)
+        || encodedBytes > byteLimit(priority, false, usage) - b
+        || count >= countLimit(priority, true, usage)
+        || encodedBytes > byteLimit(priority, true, usage) - bytes
+        || priority == Priority.RECOVERY
+            && ((usage != null
+                    && (usage.recoveryCount >= recoveryCount
+                        || encodedBytes > recoveryBytes - usage.recoveryBytes))
+                || encodedBytes > recoveryBytes
+                || retainedRecoveryCount >= recoveryProcessCount
+                || encodedBytes > recoveryProcessBytes - retainedRecoveryBytes))
       throw new Overloaded();
     if (usage == null) {
       usage = new Usage();
@@ -97,6 +157,12 @@ public final class EntityAdmission {
     usage.bytes += encodedBytes;
     count++;
     bytes += encodedBytes;
+    if (priority == Priority.RECOVERY) {
+      usage.recoveryCount++;
+      usage.recoveryBytes += encodedBytes;
+      retainedRecoveryCount++;
+      retainedRecoveryBytes += encodedBytes;
+    }
     return new Ticket(entity, usage, encodedBytes, priority);
   }
 
@@ -120,18 +186,28 @@ public final class EntityAdmission {
           throw new IllegalArgumentException("Invalid full envelope charge");
         int delta = encodedBytes - size;
         if (delta <= 0) return;
-        boolean safety = priority == Priority.SAFETY;
-        if (delta > (safety ? maximumBytes : maximumBytes - reservedBytes) - usage.bytes
-            || delta > (safety ? processBytes : processBytes - reservedBytes) - bytes)
+        if (delta > byteLimit(priority, false, usage) - usage.bytes
+            || delta > byteLimit(priority, true, usage) - bytes
+            || priority == Priority.RECOVERY
+                && (delta > recoveryBytes - usage.recoveryBytes
+                    || delta > recoveryProcessBytes - retainedRecoveryBytes))
           throw new Overloaded();
         usage.bytes += delta;
         bytes += delta;
+        if (priority == Priority.RECOVERY) {
+          usage.recoveryBytes += delta;
+          retainedRecoveryBytes += delta;
+        }
         size = encodedBytes;
       }
     }
 
     public void releaseAfter(CompletionStage<?> physical) {
-      Objects.requireNonNull(physical).whenComplete((done, failure) -> close());
+      Objects.requireNonNull(physical)
+          .whenComplete(
+              (done, failure) -> {
+                if (failure == null) close();
+              });
     }
 
     public void close() {
@@ -142,6 +218,12 @@ public final class EntityAdmission {
           usage.bytes -= size;
           count--;
           bytes -= size;
+          if (priority == Priority.RECOVERY) {
+            usage.recoveryCount--;
+            usage.recoveryBytes -= size;
+            retainedRecoveryCount--;
+            retainedRecoveryBytes -= size;
+          }
           if (usage.count == 0) entities.remove(entity, usage);
         }
       }

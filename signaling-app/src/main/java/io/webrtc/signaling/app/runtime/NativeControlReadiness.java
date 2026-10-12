@@ -6,14 +6,23 @@ import org.springframework.context.SmartLifecycle;
 public final class NativeControlReadiness implements SmartLifecycle {
   private final NativeControlBusinessEnrollment inputs;
   private volatile boolean running, draining;
+  private java.util.function.BooleanSupplier compatibility = () -> false;
+  public void compatibility(java.util.function.BooleanSupplier compatibility) { this.compatibility = java.util.Objects.requireNonNull(compatibility); }
+  private final boolean transferInstalled;
 
   NativeControlReadiness(NativeControlBusinessEnrollment inputs) {
+    this(inputs, false);
+  }
+
+  NativeControlReadiness(NativeControlBusinessEnrollment inputs, boolean transferInstalled) {
     this.inputs = inputs;
+    this.transferInstalled = transferInstalled;
   }
 
   public boolean safe() {
     try {
-      return !draining
+      return compatibility.getAsBoolean() && transferInstalled
+          && !draining
           && inputs.clock().valid()
           && inputs.securityFresh().getAsBoolean()
           && inputs.clock().valid()

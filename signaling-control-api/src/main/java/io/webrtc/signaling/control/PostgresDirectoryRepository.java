@@ -45,15 +45,21 @@ public final class PostgresDirectoryRepository implements DirectoryRepository {
 
   @Override
   public CompletionStage<Optional<HomeRoute>> read(int bucket) {
+    return readTracked(bucket).logical();
+  }
+
+  @Override
+  public DbOperation<Optional<HomeRoute>> readTracked(int bucket) {
     bucket(bucket);
-    return regional.submit(
+    return regional.submitTracked(
         DbClass.RECOVERY,
         BUDGET,
         c -> {
           writer();
           try (var q =
               c.prepareStatement(
-                  "SELECT cell_id,directory_epoch,wss_url FROM directory_bucket WHERE bucket_id=?")) {
+                  "SELECT cell_id,directory_epoch,wss_url FROM directory_bucket WHERE"
+                      + " bucket_id=?")) {
             q.setInt(1, bucket);
             try (var r = q.executeQuery()) {
               Optional<HomeRoute> route =
@@ -70,20 +76,27 @@ public final class PostgresDirectoryRepository implements DirectoryRepository {
 
   @Override
   public CompletionStage<Boolean> compareAndPublish(HomeRoute previous, HomeRoute next) {
+    return compareAndPublishTracked(previous, next).logical();
+  }
+
+  @Override
+  public DbOperation<Boolean> compareAndPublishTracked(HomeRoute previous, HomeRoute next) {
     Objects.requireNonNull(previous);
     Objects.requireNonNull(next);
     if (previous.bucket() != next.bucket()
         || next.epoch() <= previous.epoch()
         || next.wssUrl().length() > 512)
       throw new IllegalArgumentException("Publication must advance the same bucket");
-    return regional.submit(
+    return regional.submitTracked(
         DbClass.CRITICAL,
         BUDGET,
         c -> {
           writer();
           try (var q =
               c.prepareStatement(
-                  "UPDATE directory_bucket SET cell_id=?,directory_epoch=?,wss_url=?,updated_at=clock_timestamp() WHERE bucket_id=? AND cell_id=? AND directory_epoch=? AND wss_url=?")) {
+                  "UPDATE directory_bucket SET"
+                      + " cell_id=?,directory_epoch=?,wss_url=?,updated_at=clock_timestamp() WHERE"
+                      + " bucket_id=? AND cell_id=? AND directory_epoch=? AND wss_url=?")) {
             q.setString(1, next.cell());
             q.setLong(2, next.epoch());
             q.setString(3, next.wssUrl());

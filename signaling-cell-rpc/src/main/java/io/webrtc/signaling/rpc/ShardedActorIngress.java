@@ -9,6 +9,8 @@ import io.webrtc.signaling.storage.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.apache.pekko.actor.typed.*;
 import org.apache.pekko.actor.typed.javadsl.Adapter;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding;
@@ -33,6 +35,33 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
   private final Clock clock;
   private final EntityAdmission admission;
   private final ApplicationSerializer serializer;
+  private volatile Consumer<String> compatibility =
+      feature -> {
+        throw new DbOverloadedException();
+      };
+  private boolean compatibilityInstalled;
+  private volatile java.util.function.BooleanSupplier traceEligibility = () -> false;
+
+  public void installTraceEligibility(java.util.function.BooleanSupplier eligibility) {
+    traceEligibility = Objects.requireNonNull(eligibility);
+  }
+  private io.webrtc.signaling.observability.TraceContext actorTrace() {
+    try {
+      return traceEligibility.getAsBoolean() ? io.webrtc.signaling.observability.TraceContext.current() : null;
+    } catch (RuntimeException unavailable) { return null; }
+  }
+
+
+  public synchronized void installCompatibilityGuard(Consumer<String> guard) {
+    if (compatibilityInstalled)
+      throw new IllegalStateException("Actor compatibility guard already installed");
+    compatibility = Objects.requireNonNull(guard);
+    compatibilityInstalled = true;
+  }
+
+  public synchronized boolean compatibilityInstalled() {
+    return compatibilityInstalled;
+  }
 
   public ShardedActorIngress(ActorSystem<?> system, Clock clock) {
     this(
@@ -68,6 +97,17 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
       Instant deadline,
       Class<T> type,
       WireSend<T> send) {
+    return ask(entity, priority, bytes, deadline, type, send, witness -> {});
+  }
+
+  private <T> RpcOperation<T> ask(
+      String entity,
+      EntityAdmission.Priority priority,
+      int bytes,
+      Instant deadline,
+      Class<T> type,
+      WireSend<T> send,
+      Consumer<CompletionReceipt.PhysicalOwner> witness) {
     synchronized (physicalState) {
       if (physicalState.draining) throw new EntityAdmission.Overloaded();
       int producers = 0;
@@ -81,7 +121,8 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
                 system,
                 remaining(deadline),
                 type,
-                (reply, receipt) -> send.send(reply, receipt, ticket));
+                (reply, receipt) -> send.send(reply, receipt, ticket),
+                witness);
         ticket.releaseAfter(result.physicalCompletion());
         var physical = result.physicalCompletion().toCompletableFuture();
         physicalState.active.add(physical);
@@ -130,6 +171,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
       String destination,
       Instant deadline,
       int bytes) {
+    var trace = actorTrace();
     return ask(
         "call:" + r.call().value(),
         Set.of("RENEW", "RELEASE", "CONFIRM").contains(action.action())
@@ -143,9 +185,80 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
                 ticket,
                 charge ->
                     new CallActor.GrantToHome(
-                        r, action, destination, reply, deadline, charge, receipt),
+                        r, action, destination, reply, deadline, charge, receipt, trace),
                 sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, r.call().value())::tell,
                 serializer));
+  }
+
+  public record RecoveryWake(RpcOperation<Boolean> operation, Consumer<Duration> reconciliation) {
+    public void reconcile(Duration budget) {
+      reconciliation.accept(budget);
+    }
+  }
+
+  /** Reconciliation addresses the original collector and actual hosting-process witness. */
+  public RecoveryWake recoveryWake(
+      io.webrtc.signaling.protocol.Identity.CallId call, Instant deadline) {
+    compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_WAKE_RECEIPT_V1);
+    compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RECOVERY_RECEIPT_V1);
+    var original = new AtomicReference<CompletionReceipt>();
+    var provider = new AtomicReference<ActorRef<RecoveryWakeRegistry.Query>>();
+    var retained = new AtomicReference<EntityAdmission.Ticket>();
+    var finished = new java.util.concurrent.atomic.AtomicBoolean();
+    var operation =
+        ask(
+            "call:" + call.value(),
+            EntityAdmission.Priority.RECOVERY,
+            256,
+            deadline,
+            Boolean.class,
+            (reply, receipt, ticket) -> {
+              original.set(receipt);
+              retained.set(ticket);
+              NativeEnvelopeAdmission.send(
+                  ticket,
+                  charge -> new CallActor.WakeCall(call, reply, deadline, charge, receipt),
+                  sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, call.value())::tell,
+                  serializer);
+            },
+            witness -> {
+              provider.set(witness.owner());
+              if (finished.get())
+                witness.owner().tell(new RecoveryWakeRegistry.Acknowledge(call, original.get()));
+            });
+    operation
+        .physicalCompletion()
+        .whenComplete(
+            (done, failure) -> {
+              if (failure == null) {
+                finished.set(true);
+                var owner = provider.get();
+                if (owner != null)
+                  owner.tell(new RecoveryWakeRegistry.Acknowledge(call, original.get()));
+              }
+            });
+    return new RecoveryWake(
+        operation,
+        budget -> {
+          if (finished.get()) return;
+          var receipt = original.get();
+          if (receipt == null) return;
+          var owner = provider.get();
+          if (owner != null) owner.tell(new RecoveryWakeRegistry.Reconcile(call, receipt));
+          else {
+            compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RECOVERY_RECEIPT_V1);
+            NativeEnvelopeAdmission.send(
+                retained.get(),
+                charge -> new CallActor.ReconcileWake(call, receipt, clock.instant().plus(budget)),
+                sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, call.value())::tell,
+                serializer);
+          }
+        });
+  }
+
+  public RpcOperation<Boolean> wakeTracked(
+      io.webrtc.signaling.protocol.Identity.CallId call, Instant deadline) {
+    return recoveryWake(call, deadline).operation();
   }
 
   public CompletionStage<UserCommand.Result> user(
@@ -155,12 +268,18 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
 
   public RpcOperation<UserCommand.Result> userTracked(
       UserCommand.Operation operation, Instant deadline, int bytes) {
+    var trace = actorTrace();
+    if (operation instanceof UserCommand.QueryProof) compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.HOME_PROOF_HIGH_WATER_V1);
+    if (operation instanceof UserCommand.Renew) compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RENEWAL_V1);
+    if (operation instanceof UserCommand.QueryProof proof && proof.renewalProjection())
+      compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RENEWAL_V1);
     var priority =
         operation instanceof UserCommand.Renew
                 || operation instanceof UserCommand.Release
                 || operation instanceof UserCommand.Close
                 || operation instanceof UserCommand.Refresh
                 || operation instanceof UserCommand.Activate
+                || operation instanceof UserCommand.QueryProof proof && proof.renewalProjection()
             ? EntityAdmission.Priority.SAFETY
             : EntityAdmission.Priority.NORMAL;
     return ask(
@@ -172,7 +291,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
         (reply, receipt, ticket) ->
             NativeEnvelopeAdmission.send(
                 ticket,
-                charge -> new UserCommand.Mutate(operation, reply, deadline, charge, receipt),
+                charge -> new UserCommand.Mutate(operation, reply, deadline, charge, receipt, trace),
                 sharding.entityRefFor(ShardingBootstrap.USER_TYPE, operation.user().value())::tell,
                 serializer));
   }
@@ -184,6 +303,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
 
   public RpcOperation<CallCommandService.Outcome> callTracked(
       CallCommand command, String proof, Instant deadline, int bytes) {
+    var trace = actorTrace();
     if (command.callId() == null)
       throw new IllegalArgumentException("Candidate call must be selected before shard routing");
     var priority =
@@ -200,7 +320,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
         (reply, receipt, ticket) ->
             NativeEnvelopeAdmission.send(
                 ticket,
-                charge -> new CallActor.Execute(command, proof, reply, deadline, charge, receipt),
+                charge -> new CallActor.Execute(command, proof, reply, deadline, charge, receipt, trace),
                 sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, command.callId().value())::tell,
                 serializer));
   }
@@ -212,6 +332,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
 
   public RpcOperation<CallWorkflowService.Outcome> progressTracked(
       CallWorkflowService.Transition transition, Instant deadline, int bytes) {
+    var trace = actorTrace();
     return ask(
         "call:" + transition.call().value(),
         transition.step() == CallWorkflowService.Step.TERMINATE
@@ -223,7 +344,7 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
         (reply, receipt, ticket) ->
             NativeEnvelopeAdmission.send(
                 ticket,
-                charge -> new CallActor.Progress(transition, reply, deadline, charge, receipt),
+                charge -> new CallActor.Progress(transition, reply, deadline, charge, receipt, trace),
                 sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, transition.call().value())::tell,
                 serializer));
   }

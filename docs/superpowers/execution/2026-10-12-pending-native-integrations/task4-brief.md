@@ -1,0 +1,17 @@
+# Task4 implementer brief: durable trusted recovery accounting
+
+Binding plan: docs/superpowers/plans/2026-10-12-pending-native-integrations.md Task4; spec49.3. Implement source, not qualification evidence. You are not alone; preserve others. No tests/build/commit/spawn. GitNexus upstream impact before each existing symbol edit, report HIGH/CRITICAL before mutation. Own new storage recovery accounting/V017, native enrollment/configuration/hooks, recovery metrics additions, docs; coordinate existing compatibility/WAL files rather than overwrite them.
+
+Implement a concrete SQL journal and native producers, not another supplier-only placeholder. Trusted operator/provider enrollment creates a bounded complete pre-fault cohort, seals it, then records actual fault start/deadlines. Never infer complete denominator/fault start from a scan, takeover or ordinary hydration. Missing enrollment remains UNKNOWN. Controlled faults can use this contract; unplanned faults require a real external trusted cohort source. No public client cohort API.
+
+Capture baseline from authority-guarded actual call/participant facts in bounded pages and explicit topology scope; incomplete capture/domain epoch change invalidates sealing. Trusted eligibility must be bound to those facts. Scope memberships privacy-preserving via explicit enrolled HMAC key, not raw user/network/payload/JWT/SDP/ICE. Do not fabricate key values/provider facts. Enrollment can be absent, in which case accounting unknown, not zero success.
+
+Durable unique cohort/member/SLI keys admit denominator exactly once, preserve actual fault start and finite deadline across retries/restart. Global/cross-process count and byte admission limits, no eviction of unresolved cohorts; index keyset paths. Use admitted SQL tracked original physical completion and bounded nonblocking native hooks; overflow/failure must expose accounting UNKNOWN rather than silently losing admitted denominator. Keep original authority result unchanged.
+
+Four separate SLIs: convergence authorized guarded rehydration OR correct committed terminal; preservation pre-fault CONNECTING/ESTABLISHED remains valid usable without forced terminal; reattachment eligible disconnected participant restores full authorized route plus genuine matching application receipt; media pre-fault healthy eligible telemetry and valid current round actual connected/recovered observations. Socket write, snapshot and transport ACK are insufficient. Never extend/reset leases/deadlines for metric success.
+
+Wire actual committed/native read outcomes and full route application receipts. Use typed trusted domain facts; don't turn arbitrary public claims into success. Active/media require valid owner/home/activation/current round checks and authoritative both-peer usability, not merely one client report. Repeated outcome idempotent, once success never double increments. Only count within actual deadline.
+
+Emit durable cumulative eligible/successful totals using fixed bounded labels and monotonic polling; avoid re-emitting counters on restart or double counting across pods. Existing SignalingMetrics recovery counters currently process-local so inspect and add explicit durable observation contract without changing old historical evidence. Missing totals UNKNOWN.
+
+Document external trusted fault source/privacy key and absent deployment/runtime fault/media acceptance. Report exact files, impacts, bounds, unsupported inputs and source limitations in .superpowers/sdd/2026-10-12-pending-native-integrations/task4-report.md.

@@ -144,6 +144,7 @@ public final class PostgresShardLease extends Lease {
     private final BooleanSupplier clock;
     private final LongSupplier nanos;
     final AtomicReference<Held> held = new AtomicReference<>();
+    private volatile long lastPublishedNanos;
     private Held retired;
     private Pending pending;
     private boolean draining, acquisitionShed;
@@ -183,6 +184,10 @@ public final class PostgresShardLease extends Lease {
       return current != null && clock.getAsBoolean() && nanos.getAsLong() - current.until() < 0
           ? Optional.of(current.grant())
           : Optional.empty();
+    }
+
+    long renewalAgeNanos() {
+      return held.get() == null || lastPublishedNanos == 0 ? -1 : Math.max(0, nanos.getAsLong() - lastPublishedNanos);
     }
 
     synchronized void shedNewAcquisition() {
@@ -266,6 +271,7 @@ public final class PostgresShardLease extends Lease {
               - Duration.ofSeconds(5).toNanos();
       if (!clock.getAsBoolean() || nanos.getAsLong() - until >= 0) return false;
       held.set(new Held(grant, until, p.tenure));
+      lastPublishedNanos = p.start;
       retired = null;
       cancel(expiry);
       expiry =

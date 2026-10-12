@@ -147,28 +147,41 @@ public final class RevocationReconciler implements SessionRegistryService.Native
             throw new AuthoritySql.FencedException();
           try (var q = c.createStatement()) {
             q.execute(
-                "INSERT INTO security_progress(singleton_id,source_offset,checked_at,source_checked_at) VALUES(1,0,'epoch','epoch') ON CONFLICT DO NOTHING");
+                "INSERT INTO"
+                    + " security_progress(singleton_id,source_offset,checked_at,source_checked_at)"
+                    + " VALUES(1,0,'epoch','epoch') ON CONFLICT DO NOTHING");
           }
           long current;
           try (var q = c.createStatement();
               var r =
                   q.executeQuery(
-                      "SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE NOWAIT")) {
+                      "SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE"
+                          + " NOWAIT")) {
             r.next();
             current = r.getLong(1);
           }
           if (batch.fromOffset() < current && batch.highWater() <= current) return current;
           if (batch.fromOffset() != current) throw new AuthoritySql.FencedException();
+          var activeBuckets = new HashSet<Integer>();
           for (int bucket :
               new TreeSet<>(
                   batch.events().stream()
                       .map(e -> SessionRegistryService.bucket(e.userId()))
-                      .toList())) WorkerFence.bucket(c, bucket);
-          AuthoritySql.userGuards(c, batch.events().stream().map(e -> e.userId().value()).toList());
+                      .toList()))
+            if (WorkerFence.securityBucket(c, bucket)) activeBuckets.add(bucket);
+          AuthoritySql.userGuards(
+              c,
+              batch.events().stream()
+                  .filter(e -> activeBuckets.contains(SessionRegistryService.bucket(e.userId())))
+                  .map(e -> e.userId().value())
+                  .toList());
           for (var event : batch.events()) {
             try (var q =
                 c.prepareStatement(
-                    "INSERT INTO security_epoch(issuer,subject_key,epoch,source_offset,committed_at) VALUES(?,?,?,?,?) ON CONFLICT(issuer,subject_key) DO UPDATE SET epoch=GREATEST(security_epoch.epoch,EXCLUDED.epoch),source_offset=GREATEST(security_epoch.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(security_epoch.committed_at,EXCLUDED.committed_at)")) {
+                    "INSERT INTO"
+                        + " security_epoch(issuer,subject_key,epoch,source_offset,committed_at)"
+                        + " VALUES(?,?,?,?,?) ON CONFLICT(issuer,subject_key) DO UPDATE SET"
+                        + " epoch=GREATEST(security_epoch.epoch,EXCLUDED.epoch),source_offset=GREATEST(security_epoch.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(security_epoch.committed_at,EXCLUDED.committed_at)")) {
               q.setString(1, event.issuer());
               q.setString(2, subject(event.userId(), event.jti()));
               q.setLong(3, event.epoch());
@@ -176,10 +189,15 @@ public final class RevocationReconciler implements SessionRegistryService.Native
               q.setTimestamp(5, Timestamp.from(event.committedAt()));
               q.executeUpdate();
             }
+            // Frozen source state is immutable copy input; security epochs/progress still
+            // commit atomically with ACTIVE users so this event cannot poison the feed.
+            if (!activeBuckets.contains(SessionRegistryService.bucket(event.userId()))) continue;
             String scope = event.jti() == null ? "" : " AND jti=?";
             try (var q =
                 c.prepareStatement(
-                    "UPDATE session_registry SET closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE issuer=? AND user_id=? AND security_epoch<=? AND closed_at IS NULL"
+                    "UPDATE session_registry SET"
+                        + " closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE issuer=?"
+                        + " AND user_id=? AND security_epoch<=? AND closed_at IS NULL"
                         + scope)) {
               q.setString(1, event.issuer());
               q.setString(2, event.userId().value());
@@ -191,7 +209,10 @@ public final class RevocationReconciler implements SessionRegistryService.Native
           for (var key : batch.retiredKeys())
             try (var q =
                 c.prepareStatement(
-                    "INSERT INTO retired_signing_key(issuer,signing_key_id,source_offset,committed_at) VALUES(?,?,?,?) ON CONFLICT(issuer,signing_key_id) DO UPDATE SET source_offset=GREATEST(retired_signing_key.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(retired_signing_key.committed_at,EXCLUDED.committed_at)")) {
+                    "INSERT INTO"
+                        + " retired_signing_key(issuer,signing_key_id,source_offset,committed_at)"
+                        + " VALUES(?,?,?,?) ON CONFLICT(issuer,signing_key_id) DO UPDATE SET"
+                        + " source_offset=GREATEST(retired_signing_key.source_offset,EXCLUDED.source_offset),committed_at=GREATEST(retired_signing_key.committed_at,EXCLUDED.committed_at)")) {
               q.setString(1, key.issuer());
               q.setString(2, key.signingKeyId());
               q.setLong(3, key.sourceOffset());
@@ -200,7 +221,10 @@ public final class RevocationReconciler implements SessionRegistryService.Native
             }
           try (var q =
               c.prepareStatement(
-                  "UPDATE security_progress SET source_offset=?,checked_at=clock_timestamp(),source_checked_at=CASE WHEN ? THEN ? ELSE 'epoch'::timestamptz END WHERE singleton_id=1 AND source_offset=?")) {
+                  "UPDATE security_progress SET"
+                      + " source_offset=?,checked_at=clock_timestamp(),source_checked_at=CASE WHEN"
+                      + " ? THEN ? ELSE 'epoch'::timestamptz END WHERE singleton_id=1 AND"
+                      + " source_offset=?")) {
             q.setLong(1, batch.highWater());
             q.setBoolean(2, batch.caughtUp());
             q.setTimestamp(3, Timestamp.from(batch.checkedAt()));
@@ -242,7 +266,10 @@ public final class RevocationReconciler implements SessionRegistryService.Native
     String expiry = tokenExpiresAt == null ? "" : " AND ?>clock_timestamp()";
     try (var q =
         c.prepareStatement(
-            "SELECT NOT pg_is_in_recovery() AND checked_at<=clock_timestamp() AND source_checked_at<=clock_timestamp() AND LEAST(checked_at,source_checked_at)>clock_timestamp()-(? * interval '1 millisecond')"
+            "SELECT NOT pg_is_in_recovery() AND checked_at<=clock_timestamp() AND"
+                + " source_checked_at<=clock_timestamp() AND"
+                + " LEAST(checked_at,source_checked_at)>clock_timestamp()-(? * interval '1"
+                + " millisecond')"
                 + expiry
                 + " FROM security_progress WHERE singleton_id=1")) {
       q.setLong(1, freshness.toMillis());
@@ -258,7 +285,12 @@ public final class RevocationReconciler implements SessionRegistryService.Native
       throws SQLException {
     try (var q =
         c.prepareStatement(
-            "SELECT p.checked_at<=clock_timestamp() AND p.source_checked_at<=clock_timestamp() AND LEAST(p.checked_at,p.source_checked_at)>clock_timestamp()-(? * interval '1 millisecond') AND NOT EXISTS (SELECT 1 FROM retired_signing_key k WHERE k.issuer=? AND k.signing_key_id=?) AND NOT EXISTS (SELECT 1 FROM security_epoch e WHERE e.issuer=? AND e.subject_key IN (?,?) AND e.epoch>=?) FROM security_progress p WHERE singleton_id=1")) {
+            "SELECT p.checked_at<=clock_timestamp() AND p.source_checked_at<=clock_timestamp() AND"
+                + " LEAST(p.checked_at,p.source_checked_at)>clock_timestamp()-(? * interval '1"
+                + " millisecond') AND NOT EXISTS (SELECT 1 FROM retired_signing_key k WHERE"
+                + " k.issuer=? AND k.signing_key_id=?) AND NOT EXISTS (SELECT 1 FROM security_epoch"
+                + " e WHERE e.issuer=? AND e.subject_key IN (?,?) AND e.epoch>=?) FROM"
+                + " security_progress p WHERE singleton_id=1")) {
       q.setLong(1, freshness.toMillis());
       q.setString(2, key.issuer());
       q.setString(3, signingKeyId);
@@ -286,7 +318,8 @@ public final class RevocationReconciler implements SessionRegistryService.Native
           try (var q = c.createStatement();
               var r =
                   q.executeQuery(
-                      "SELECT source_offset,LEAST(checked_at,source_checked_at) FROM security_progress WHERE singleton_id=1")) {
+                      "SELECT source_offset,LEAST(checked_at,source_checked_at) FROM"
+                          + " security_progress WHERE singleton_id=1")) {
             return r.next()
                 ? new RevocationState.Progress(r.getLong(1), r.getTimestamp(2).toInstant())
                 : new RevocationState.Progress(0, Instant.EPOCH);

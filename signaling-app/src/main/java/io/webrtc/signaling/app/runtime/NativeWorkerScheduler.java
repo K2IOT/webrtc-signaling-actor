@@ -1,5 +1,7 @@
 package io.webrtc.signaling.app.runtime;
 
+import io.webrtc.signaling.observability.OperationObservation;
+import io.webrtc.signaling.observability.SignalingMetrics.Outcome;
 import io.webrtc.signaling.rpc.RpcOperation;
 import java.time.Duration;
 import java.util.*;
@@ -31,7 +33,7 @@ public final class NativeWorkerScheduler implements AutoCloseable {
       Objects.requireNonNull(priority);
       Objects.requireNonNull(period);
       Objects.requireNonNull(run);
-      if (period.compareTo(Duration.ofMillis(100)) < 0
+      if (period.compareTo(Duration.ofMillis(name.equals("control_outbox") ? 20 : 100)) < 0
           || period.compareTo(Duration.ofSeconds(30)) > 0)
         throw new IllegalArgumentException("Worker period outside bound");
     }
@@ -41,6 +43,8 @@ public final class NativeWorkerScheduler implements AutoCloseable {
 
   private static final class Invocation {
     final long start = System.nanoTime();
+    OperationObservation.Receipt observation;
+    boolean executed;
     final CompletableFuture<Void> physical = new CompletableFuture<>();
     final CompletableFuture<Status> logical = new CompletableFuture<>();
   }
@@ -48,6 +52,8 @@ public final class NativeWorkerScheduler implements AutoCloseable {
   private static final class Slot {
     final Job job;
     ScheduledFuture<?> periodic;
+    ScheduledFuture<?> wakeTimer;
+    boolean wakePending;
     Invocation active;
 
     Slot(Job job) {
@@ -57,6 +63,9 @@ public final class NativeWorkerScheduler implements AutoCloseable {
 
   private final List<Slot> slots;
   private final Consumer<Event> events;
+  private Function<String, OperationObservation.Receipt> observations =
+      name -> OperationObservation.NONE.start(null);
+  private final List<Supplier<CompletionStage<Void>>> ownerDrains;
   private final ScheduledThreadPoolExecutor timers =
       new ScheduledThreadPoolExecutor(
           1, Thread.ofPlatform().daemon().name("native-worker-timer").factory());
@@ -66,6 +75,14 @@ public final class NativeWorkerScheduler implements AutoCloseable {
   private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
   public NativeWorkerScheduler(List<Job> jobs, Consumer<Event> events) {
+    this(jobs, events, List.of());
+  }
+
+  public NativeWorkerScheduler(
+      List<Job> jobs, Consumer<Event> events, List<Supplier<CompletionStage<Void>>> ownerDrains) {
+    if (ownerDrains == null || ownerDrains.size() > 16)
+      throw new IllegalArgumentException("Worker lifecycle owners exceed bound");
+    this.ownerDrains = List.copyOf(ownerDrains);
     if (jobs == null
         || jobs.isEmpty()
         || jobs.size() > 16
@@ -85,7 +102,17 @@ public final class NativeWorkerScheduler implements AutoCloseable {
                       if (left <= 0 || !executor.awaitTermination(left, TimeUnit.NANOSECONDS))
                         throw new TimeoutException("Native worker executor termination unproven");
                     }
-                    drained.complete(null);
+                    CompletableFuture.allOf(
+                            this.ownerDrains.stream()
+                                .map(
+                                    owner ->
+                                        Objects.requireNonNull(owner.get()).toCompletableFuture())
+                                .toArray(CompletableFuture[]::new))
+                        .whenComplete(
+                            (v, error) -> {
+                              if (error == null) drained.complete(null);
+                              else drained.completeExceptionally(error);
+                            });
                   } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     drained.completeExceptionally(interrupted);
@@ -93,6 +120,22 @@ public final class NativeWorkerScheduler implements AutoCloseable {
                     drained.completeExceptionally(unknown);
                   }
                 }));
+  }
+
+  public synchronized NativeWorkerScheduler observe(
+      Function<String, OperationObservation.Receipt> observer) {
+    if (started) throw new IllegalStateException("Worker observations must precede start");
+    observations = Objects.requireNonNull(observer);
+    return this;
+  }
+
+  public synchronized boolean installedJobs(Set<String> required) {
+    return started
+        && !draining
+        && slots.stream()
+            .map(slot -> slot.job.name())
+            .collect(java.util.stream.Collectors.toSet())
+            .containsAll(required);
   }
 
   public synchronized void start() {
@@ -104,16 +147,61 @@ public final class NativeWorkerScheduler implements AutoCloseable {
               () -> tick(slot), 0, slot.job.period().toNanos(), TimeUnit.NANOSECONDS);
   }
 
+  /**
+   * One coalesced wake per fixed slot, retained behind that slot's original physical invocation.
+   */
+  public synchronized void wake(String name) {
+    var slot =
+        slots.stream()
+            .filter(s -> s.job.name().equals(name))
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Unknown worker"));
+    if (draining || shed && slot.job.priority() != Priority.SAFETY) return;
+    slot.wakePending = true;
+    scheduleWake(slot);
+  }
+
+  private void scheduleWake(Slot slot) {
+    if (!started
+        || draining
+        || slot.active != null
+        || slot.wakeTimer != null
+        || shed && slot.job.priority() != Priority.SAFETY) return;
+    slot.wakeTimer =
+        timers.schedule(
+            () -> {
+              synchronized (this) {
+                slot.wakeTimer = null;
+                if (!slot.wakePending) return;
+              }
+              tick(slot);
+            },
+            0,
+            TimeUnit.NANOSECONDS);
+  }
+
   private void tick(Slot slot) {
     Invocation invocation;
     synchronized (this) {
       if (draining || shed && slot.job.priority() != Priority.SAFETY || slot.active != null) return;
       invocation = new Invocation();
       slot.active = invocation;
+      slot.wakePending = false;
+    }
+    try {
+      invocation.observation = OperationObservation.safeReceipt(observations.apply(slot.job.name()));
+    } catch (RuntimeException ignored) {
+      invocation.observation = OperationObservation.NONE.start(null);
     }
     invocation.logical.whenComplete(
         (status, error) -> {
           try {
+            invocation.observation.logical(
+                switch (status) {
+                  case COMPLETED -> Outcome.READ;
+                  case UNKNOWN -> Outcome.OUTCOME_UNKNOWN;
+                  case OVERLOADED -> Outcome.BACKPRESSURE;
+                });
             events.accept(
                 new Event(
                     slot.job.name(), status, Math.max(0, System.nanoTime() - invocation.start)));
@@ -136,7 +224,8 @@ public final class NativeWorkerScheduler implements AutoCloseable {
     try {
       tasks.execute(
           () -> {
-            try {
+            try (var scope = invocation.observation.activate()) {
+              invocation.observation.queue(Math.max(0, System.nanoTime() - invocation.start));
               long remaining = BUDGET_NANOS - (System.nanoTime() - invocation.start);
               if (remaining <= 0) {
                 invocation.logical.complete(Status.OVERLOADED);
@@ -144,6 +233,7 @@ public final class NativeWorkerScheduler implements AutoCloseable {
                 retire(slot, invocation);
                 return;
               }
+              invocation.executed = true;
               var operation =
                   Objects.requireNonNull(slot.job.run().apply(Duration.ofNanos(remaining)));
               operation
@@ -181,6 +271,12 @@ public final class NativeWorkerScheduler implements AutoCloseable {
       if (slot.active != invocation) return;
       slot.active = null;
       complete = draining && slots.stream().allMatch(s -> s.active == null);
+      if (slot.wakePending) scheduleWake(slot);
+    }
+    try {
+      invocation.observation.physical(invocation.executed);
+    } catch (RuntimeException ignored) {
+      /* Independent observation only. */
     }
     invocation.physical.complete(null);
     if (complete) {
@@ -192,8 +288,11 @@ public final class NativeWorkerScheduler implements AutoCloseable {
   public synchronized void shedNormal() {
     shed = true;
     for (var slot : slots)
-      if (slot.job.priority() != Priority.SAFETY && slot.periodic != null)
-        slot.periodic.cancel(false);
+      if (slot.job.priority() != Priority.SAFETY) {
+        if (slot.periodic != null) slot.periodic.cancel(false);
+        if (slot.wakeTimer != null) slot.wakeTimer.cancel(false);
+        slot.wakePending = false;
+      }
   }
 
   public synchronized CompletionStage<Void> settleAdmitted() {
@@ -209,7 +308,11 @@ public final class NativeWorkerScheduler implements AutoCloseable {
     boolean complete;
     synchronized (this) {
       draining = true;
-      for (var slot : slots) if (slot.periodic != null) slot.periodic.cancel(false);
+      for (var slot : slots) {
+        if (slot.periodic != null) slot.periodic.cancel(false);
+        if (slot.wakeTimer != null) slot.wakeTimer.cancel(false);
+        slot.wakePending = false;
+      }
       tasks.shutdown();
       complete = slots.stream().allMatch(s -> s.active == null);
     }

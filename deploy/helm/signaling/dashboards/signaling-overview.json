@@ -38,7 +38,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket[5m])))"
+          "expr": "histogram_quantile(0.95, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket{operation=~\"AUTH|BOOTSTRAP|AUTH_REFRESH|REGISTER_SESSION|SESSION_CLOSE|INVITE|ACCEPT|REJECT|DECLINE_ALL|CANCEL|HANGUP|SYNC_CALL|GET_COMMAND_RESULT|RESUME|NEGOTIATE_REQUEST|MEDIA_CONNECTED|MEDIA_DISCONNECTED|ICE_RESTARTING|MEDIA_FAILED|MEDIA_RECOVERED|EVENT_RECEIVED\"}[5m])))"
         }
       ]
     },
@@ -59,7 +59,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket[5m])))"
+          "expr": "histogram_quantile(0.99, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket{operation=~\"AUTH|BOOTSTRAP|AUTH_REFRESH|REGISTER_SESSION|SESSION_CLOSE|INVITE|ACCEPT|REJECT|DECLINE_ALL|CANCEL|HANGUP|SYNC_CALL|GET_COMMAND_RESULT|RESUME|NEGOTIATE_REQUEST|MEDIA_CONNECTED|MEDIA_DISCONNECTED|ICE_RESTARTING|MEDIA_FAILED|MEDIA_RECOVERED|EVENT_RECEIVED\"}[5m])))"
         }
       ]
     },
@@ -80,7 +80,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.999, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket[5m])))"
+          "expr": "histogram_quantile(0.999, sum by (le,operation,cell) (rate(signaling_operation_latency_seconds_bucket{operation=~\"AUTH|BOOTSTRAP|AUTH_REFRESH|REGISTER_SESSION|SESSION_CLOSE|INVITE|ACCEPT|REJECT|DECLINE_ALL|CANCEL|HANGUP|SYNC_CALL|GET_COMMAND_RESULT|RESUME|NEGOTIATE_REQUEST|MEDIA_CONNECTED|MEDIA_DISCONNECTED|ICE_RESTARTING|MEDIA_FAILED|MEDIA_RECOVERED|EVENT_RECEIVED\"}[5m])))"
         }
       ]
     },
@@ -101,7 +101,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(signaling_operation_total{result_class=\"SERVICE_FAILURE\"}[5m])) / clamp_min(sum(rate(signaling_operation_total{outcome!~\"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION\"}[5m])),0.001)"
+          "expr": "sum(rate(signaling_operation_total{operation=~\"AUTH|BOOTSTRAP|AUTH_REFRESH|REGISTER_SESSION|SESSION_CLOSE|INVITE|ACCEPT|REJECT|DECLINE_ALL|CANCEL|HANGUP|SYNC_CALL|GET_COMMAND_RESULT|RESUME|NEGOTIATE_REQUEST|MEDIA_CONNECTED|MEDIA_DISCONNECTED|ICE_RESTARTING|MEDIA_FAILED|MEDIA_RECOVERED|EVENT_RECEIVED\",result_class=\"SERVICE_FAILURE\"}[5m])) / clamp_min(sum(rate(signaling_operation_total{operation=~\"AUTH|BOOTSTRAP|AUTH_REFRESH|REGISTER_SESSION|SESSION_CLOSE|INVITE|ACCEPT|REJECT|DECLINE_ALL|CANCEL|HANGUP|SYNC_CALL|GET_COMMAND_RESULT|RESUME|NEGOTIATE_REQUEST|MEDIA_CONNECTED|MEDIA_DISCONNECTED|ICE_RESTARTING|MEDIA_FAILED|MEDIA_RECOVERED|EVENT_RECEIVED\",outcome!~\"USER_BUSY|CALL_ENDED|TOKEN_EXPIRED|FORBIDDEN|STALE_VERSION\"}[5m])),0.001)"
         }
       ]
     },

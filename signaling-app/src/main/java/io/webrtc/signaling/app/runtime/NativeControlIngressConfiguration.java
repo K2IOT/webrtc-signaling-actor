@@ -57,11 +57,11 @@ public class NativeControlIngressConfiguration {
   PrivateHealthServer nativeControlHealth(
       NativeControlIngressEnrollment inputs,
       NativeControlReadiness readiness,
-      NativeControlProcess process)
+      NativeControlProcess process, NativeTelemetry telemetry)
       throws Exception {
     var health =
         new PrivateHealthServer(
-            inputs.healthAddress(), inputs.live(), readiness::ready, inputs.metrics());
+            inputs.healthAddress(), inputs.live(), readiness::ready, telemetry::scrape);
     process.installHealth(health);
     try {
       health.start().toCompletableFuture().get(2, TimeUnit.SECONDS);
