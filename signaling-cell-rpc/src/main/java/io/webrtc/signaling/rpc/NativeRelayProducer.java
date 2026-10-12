@@ -56,6 +56,12 @@ public final class NativeRelayProducer
   private final NegotiationRelay sdp;
   private final Map<CallId, State> states = new ConcurrentHashMap<>();
   private volatile boolean closed;
+  private Predicate<String> initialIceReceipts = cell -> false;
+
+  public NativeRelayProducer initialIceReceipts(Predicate<String> permitted) {
+    initialIceReceipts = Objects.requireNonNull(permitted);
+    return this;
+  }
 
   public NativeRelayProducer(
       NativeRelayRoundCache rounds,
@@ -167,6 +173,9 @@ public final class NativeRelayProducer
       payload =
           JSON.readValue(wire.getPayload().toByteArray(), RpcBusinessHandler.CallPayload.class);
       var command = payload.command();
+      if (InitialIceReceipt.requiresCapability(command)
+          && !initialIceReceipts.test(command.callId().coordinatorCell()))
+        throw new IllegalStateException("Initial ICE receipt capability unavailable");
       if (!RelaySessionAuthorizationProof.supports(command)
           || !wire.getOperationId().equals(command.requestId().value().toString())
           || !wire.getCallId().equals(command.callId().value())
@@ -249,6 +258,23 @@ public final class NativeRelayProducer
                           current.authorization().recipient(),
                           current.authorization().callVersion(),
                           current.authorizationUntil());
+                  if (command.type() == SignalEnvelope.Type.INITIAL_ICE_RECEIPT) {
+                    try {
+                      var target =
+                          JSON.readTree(command.payloadJson())
+                              .path("senderSessionIncarnation")
+                              .asText();
+                      if (!current
+                          .authorization()
+                          .recipient()
+                          .incarnation()
+                          .value()
+                          .toString()
+                          .equals(target)) throw new IllegalStateException("STALE_ICE_RECEIPT");
+                    } catch (java.io.IOException invalid) {
+                      throw new IllegalArgumentException("Invalid receipt");
+                    }
+                  }
                   return invoke(
                           scope,
                           () -> network.send(current.destination(), delivery, remaining(end)))

@@ -17,13 +17,24 @@ final class CompatibilityObservationService
   private final Supplier<CellRpcServer.Peer> peer;
   private final Supplier<CompatibilityObservationReply> source;
 
-  CompatibilityObservationService(String cell, String gateway, String boot, RpcAdmission admission,
-      Supplier<CellRpcServer.Peer> peer, Supplier<CompatibilityObservationReply> source) {
-    this.cell = cell; this.gateway = gateway; this.boot = boot;
-    this.admission = admission; this.peer = peer; this.source = source;
+  CompatibilityObservationService(
+      String cell,
+      String gateway,
+      String boot,
+      RpcAdmission admission,
+      Supplier<CellRpcServer.Peer> peer,
+      Supplier<CompatibilityObservationReply> source) {
+    this.cell = cell;
+    this.gateway = gateway;
+    this.boot = boot;
+    this.admission = admission;
+    this.peer = peer;
+    this.source = source;
   }
 
-  @Override public void observeCompatibility(CompatibilityObservationRequest request,
+  @Override
+  public void observeCompatibility(
+      CompatibilityObservationRequest request,
       StreamObserver<CompatibilityObservationReply> reply) {
     RpcAdmission.Ticket ticket = null;
     try {
@@ -32,26 +43,36 @@ final class CompatibilityObservationService
       // Identity extraction already checks environment and the trusted actor/gateway role catalog.
       if (caller == null || !(caller.role().equals("actor") || caller.role().equals("gateway")))
         throw Status.PERMISSION_DENIED.asRuntimeException();
-      if (deadline == null || deadline.isExpired() || request.getSerializedSize() > 1024
-          || !cell.equals(request.getDestinationCell()) || !gateway.equals(request.getGatewayId())
+      if (deadline == null
+          || deadline.isExpired()
+          || request.getSerializedSize() > 1024
+          || !cell.equals(request.getDestinationCell())
+          || !gateway.equals(request.getGatewayId())
           || !boot.equals(request.getBootId())) throw Status.INVALID_ARGUMENT.asRuntimeException();
       UUID.fromString(request.getNonce());
       ticket = admission.acquire(RpcAdmission.Lane.CONTROL, request.getSerializedSize());
       var facts = Objects.requireNonNull(source.get());
       long now = Instant.now().toEpochMilli();
-      if (!cell.equals(facts.getSourceCell()) || !gateway.equals(facts.getGatewayId())
-          || !boot.equals(facts.getBootId()) || facts.getActorsCount() > 7
-          || facts.getSerializedSize() > 16384 || facts.getObservedAtMs() > now
-          || facts.getObservedAtMs() < now - 5000 || facts.getValidUntilMs() <= now
+      if (!cell.equals(facts.getSourceCell())
+          || !gateway.equals(facts.getGatewayId())
+          || !boot.equals(facts.getBootId())
+          || facts.getActorsCount() > 7
+          || facts.getSerializedSize() > 16384
+          || facts.getObservedAtMs() > now
+          || facts.getObservedAtMs() < now - 5000
+          || facts.getValidUntilMs() <= now
           || facts.getValidUntilMs() > facts.getObservedAtMs() + 5000)
         throw Status.UNAVAILABLE.asRuntimeException();
       reply.onNext(facts.toBuilder().setNonce(request.getNonce()).build());
       reply.onCompleted();
     } catch (RuntimeException unavailable) {
-      reply.onError(Status.fromThrowable(unavailable).getCode() == Status.Code.UNKNOWN
-          ? Status.UNAVAILABLE.asRuntimeException() : unavailable);
+      reply.onError(
+          Status.fromThrowable(unavailable).getCode() == Status.Code.UNKNOWN
+              ? Status.UNAVAILABLE.asRuntimeException()
+              : unavailable);
     } finally {
-      // The producer only reads immutable cached facts; its synchronous return is physical completion.
+      // The producer only reads immutable cached facts; its synchronous return is physical
+      // completion.
       if (ticket != null) ticket.close();
     }
   }

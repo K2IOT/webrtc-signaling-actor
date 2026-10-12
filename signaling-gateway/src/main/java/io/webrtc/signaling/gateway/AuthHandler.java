@@ -14,6 +14,8 @@ import java.util.concurrent.*;
 
 /** AUTH_OK is emitted only after committed native registration and a still-current gateway boot. */
 public final class AuthHandler extends ChannelInboundHandlerAdapter {
+  static final io.netty.util.AttributeKey<Boolean> INITIAL_ICE_RECEIPTS =
+      io.netty.util.AttributeKey.valueOf("signaling.initialIceReceiptsV1");
   private final ConnectionRegistry registry;
   private final GatewayServices services;
   private final Clock clock;
@@ -135,6 +137,10 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
           () -> {
             try {
               var command = protocol.bind(envelope, sender);
+              if (InitialIceReceipt.requiresCapability(command)
+                  && (!Boolean.TRUE.equals(ctx.channel().attr(INITIAL_ICE_RECEIPTS).get())
+                      || !services.supportsInitialIceReceipts()))
+                throw new IllegalStateException("Unnegotiated initial ICE receipts");
               var result =
                   services.command(command, committedRoute, originalToken, remaining(frame));
               respond(ctx, frame, result, false);
@@ -169,6 +175,11 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
             services.close(nativeRoute);
         };
     try {
+      boolean receiptRequested =
+          new ObjectMapper()
+              .readTree(frame.envelope().payloadJson())
+              .path("initialIceReceiptsV1")
+              .asBoolean(false);
       String token =
           new ObjectMapper().readTree(frame.envelope().payloadJson()).path("token").asText();
       var checked =
@@ -250,6 +261,9 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                         }
                         route = value.getValue();
                         verifiedToken = token;
+                        boolean receiptEnabled =
+                            receiptRequested && services.supportsInitialIceReceipts();
+                        ctx.channel().attr(INITIAL_ICE_RECEIPTS).set(receiptEnabled);
                         authTimeout.cancel(false);
                         ctx.fireUserEventTriggered(
                             new GatewayServer.Authenticated(registry.binding(connection)));
@@ -259,7 +273,11 @@ public final class AuthHandler extends ChannelInboundHandlerAdapter {
                                     + route.incarnation().value()
                                     + "\",\"connectionGeneration\":\""
                                     + route.connectionGeneration()
-                                    + "\"}"));
+                                    + "\""
+                                    + (receiptRequested
+                                        ? ",\"initialIceReceiptsV1\":" + receiptEnabled
+                                        : "")
+                                    + "}"));
                       } catch (RuntimeException invalid) {
                         failed.set(true);
                         closeOnce.accept(committed.get());

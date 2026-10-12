@@ -13,18 +13,23 @@ public interface RuntimeCapabilities {
   String NATIVE_CONTROL_RECEIPT_V1 = "native-control-receipt-v1";
   String HOME_PROOF_HIGH_WATER_V1 = "home-proof-high-water-v1";
   String NATIVE_ACTOR_TRACE_V1 = "native-actor-trace-v1";
+  String NATIVE_INITIAL_ICE_RECEIPT_V1 = "native-initial-ice-receipt-v1";
   RuntimeCapabilities DENY = (cell, feature) -> false;
 
   boolean permits(String cell, String feature);
 
   /** New durable feature admission may be disabled while existing original owners settle. */
-  default boolean permitsNew(String cell, String feature) { return permits(cell, feature); }
+  default boolean permitsNew(String cell, String feature) {
+    return permits(cell, feature);
+  }
 
-  default boolean permitsGateway(String cell, String gatewayId, java.util.UUID bootId, String feature) {
+  default boolean permitsGateway(
+      String cell, String gatewayId, java.util.UUID bootId, String feature) {
     return false;
   }
 
-  default void requireGateway(String cell, String gatewayId, java.util.UUID bootId, String feature) {
+  default void requireGateway(
+      String cell, String gatewayId, java.util.UUID bootId, String feature) {
     if (!permitsGateway(cell, gatewayId, bootId, feature))
       throw new IllegalStateException("Native gateway capability unavailable: " + feature);
   }

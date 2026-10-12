@@ -37,6 +37,14 @@ public final class NativeOutboxDelivery implements OutboxDispatcher.Delivery {
   private final CellRpcClient homeRpc;
   private final GatewayRelayRpcClient gateways;
   private final BooleanSupplier ready;
+  private java.util.function.Supplier<RecoveryOutcomeSink> recoveryOutcomes =
+      () -> RecoveryOutcomeSink.NONE;
+
+  public NativeOutboxDelivery recoveryOutcomes(
+      java.util.function.Supplier<RecoveryOutcomeSink> sink) {
+    recoveryOutcomes = Objects.requireNonNull(sink);
+    return this;
+  }
 
   private record Verified(OutboxRepository.Claim claim, long deadline) {}
 
@@ -244,6 +252,21 @@ public final class NativeOutboxDelivery implements OutboxDispatcher.Delivery {
                                                 new Verified(
                                                     claim, now + TimeUnit.SECONDS.toNanos(2)));
                                           }
+                                          var sink = recoveryOutcomes.get();
+                                          var participant =
+                                              new AuthenticatedSession(
+                                                  route.user(),
+                                                  route.key(),
+                                                  route.incarnation(),
+                                                  route.connectionGeneration(),
+                                                  route.connectionId());
+                                          RecoveryOutcomeSink.safely(
+                                              sink,
+                                              () ->
+                                                  sink.application(
+                                                      claim.callId(),
+                                                      claim.version(),
+                                                      participant));
                                           return value;
                                         });
                               } catch (Exception unavailable) {

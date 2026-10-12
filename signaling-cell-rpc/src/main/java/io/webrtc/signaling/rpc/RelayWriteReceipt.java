@@ -20,7 +20,8 @@ public record RelayWriteReceipt(
                 SignalEnvelope.Type.OFFER,
                 SignalEnvelope.Type.ANSWER,
                 SignalEnvelope.Type.ICE_CANDIDATES,
-                SignalEnvelope.Type.END_OF_CANDIDATES)
+                SignalEnvelope.Type.END_OF_CANDIDATES,
+                SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
             .contains(type)
         || callVersion < 1
         || negotiationId < 1

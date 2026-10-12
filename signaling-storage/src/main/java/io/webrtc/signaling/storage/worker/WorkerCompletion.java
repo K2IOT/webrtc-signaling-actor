@@ -32,14 +32,15 @@ final class WorkerCompletion {
           synchronized (retained) {
             cleanup = retained.toArray(CompletableFuture[]::new);
           }
-          CompletableFuture.allOf(cleanup).whenComplete(
-              (done, error) -> {
-                if (error != null) physical.completeExceptionally(error);
-                else {
-                  release.run();
-                  physical.complete(DbOperation.PhysicalCompletion.FINISHED);
-                }
-              });
+          CompletableFuture.allOf(cleanup)
+              .whenComplete(
+                  (done, error) -> {
+                    if (error != null) physical.completeExceptionally(error);
+                    else {
+                      release.run();
+                      physical.complete(DbOperation.PhysicalCompletion.FINISHED);
+                    }
+                  });
         });
     return new DbOperation<>(logical, physical.minimalCompletionStage());
   }

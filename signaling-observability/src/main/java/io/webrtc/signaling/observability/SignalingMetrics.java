@@ -86,7 +86,11 @@ public final class SignalingMetrics implements AutoCloseable {
   }
 
   /** Guarded scanner-wake attempts; independent of fault-cohort recovery SLIs. */
-  public enum HydrationOutcome { HYDRATED, NOT_HYDRATED, OUTCOME_UNKNOWN }
+  public enum HydrationOutcome {
+    HYDRATED,
+    NOT_HYDRATED,
+    OUTCOME_UNKNOWN
+  }
 
   public enum RecoverySli {
     WORKFLOW_CONVERGENCE,
@@ -149,7 +153,8 @@ public final class SignalingMetrics implements AutoCloseable {
     Gauge.builder("signaling.build.info", () -> 1)
         .tag("configuration_fingerprint", configurationFingerprint)
         .register(registry);
-    for (var operation : Operation.values()) measurements.put(operation, new java.util.concurrent.ConcurrentHashMap<>());
+    for (var operation : Operation.values())
+      measurements.put(operation, new java.util.concurrent.ConcurrentHashMap<>());
     for (var outcome : RelayOutcome.values())
       relay.put(
           outcome,
@@ -181,53 +186,62 @@ public final class SignalingMetrics implements AutoCloseable {
     for (var kind : Lag.values()) {
       var value = new AtomicLong(-1);
       lags.put(kind, value);
-      Gauge.builder("signaling.progress.lag.seconds", value, n -> n.longValue() < 0 ? Double.NaN : n.doubleValue() / 1e9)
+      Gauge.builder(
+              "signaling.progress.lag.seconds",
+              value,
+              n -> n.longValue() < 0 ? Double.NaN : n.doubleValue() / 1e9)
           .tag("kind", kind.name())
           .register(registry);
     }
     for (var pool : Pool.values()) {
       var values = new AtomicInteger[] {new AtomicInteger(-1), new AtomicInteger(-1)};
       pools.put(pool, values);
-      Gauge.builder("signaling.db.pool.active", values[0], n -> n.get() < 0 ? Double.NaN : n.doubleValue())
+      Gauge.builder(
+              "signaling.db.pool.active",
+              values[0],
+              n -> n.get() < 0 ? Double.NaN : n.doubleValue())
           .tag("pool", pool.name())
           .register(registry);
-      Gauge.builder("signaling.db.pool.pending", values[1], n -> n.get() < 0 ? Double.NaN : n.doubleValue())
+      Gauge.builder(
+              "signaling.db.pool.pending",
+              values[1],
+              n -> n.get() < 0 ? Double.NaN : n.doubleValue())
           .tag("pool", pool.name())
           .register(registry);
     }
   }
 
   private Measurement measurement(Operation operation, Outcome outcome) {
-        String classification = outcome.serviceFailure() ? "SERVICE_FAILURE" : "BUSINESS";
-        var timer =
-            io.micrometer.core.instrument.Timer.builder("signaling.operation.latency")
-                .tags(
-                    "operation",
-                    operation.name(),
-                    "result_class",
-                    classification,
-                    "outcome",
-                    outcome.name())
-                .publishPercentileHistogram(false)
-                .minimumExpectedValue(Duration.ofNanos(1000))
-                .maximumExpectedValue(Duration.ofSeconds(2))
-                .serviceLevelObjectives(
-                    Duration.ofMillis(1),
-                    Duration.ofMillis(20),
-                    Duration.ofMillis(100),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(2))
-                .register(registry);
-        var count =
-            Counter.builder("signaling.operation")
-                .tags(
-                    "operation",
-                    operation.name(),
-                    "result_class",
-                    classification,
-                    "outcome",
-                    outcome.name())
-                .register(registry);
+    String classification = outcome.serviceFailure() ? "SERVICE_FAILURE" : "BUSINESS";
+    var timer =
+        io.micrometer.core.instrument.Timer.builder("signaling.operation.latency")
+            .tags(
+                "operation",
+                operation.name(),
+                "result_class",
+                classification,
+                "outcome",
+                outcome.name())
+            .publishPercentileHistogram(false)
+            .minimumExpectedValue(Duration.ofNanos(1000))
+            .maximumExpectedValue(Duration.ofSeconds(2))
+            .serviceLevelObjectives(
+                Duration.ofMillis(1),
+                Duration.ofMillis(20),
+                Duration.ofMillis(100),
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(2))
+            .register(registry);
+    var count =
+        Counter.builder("signaling.operation")
+            .tags(
+                "operation",
+                operation.name(),
+                "result_class",
+                classification,
+                "outcome",
+                outcome.name())
+            .register(registry);
     return new Measurement(timer, count);
   }
 
@@ -235,7 +249,9 @@ public final class SignalingMetrics implements AutoCloseable {
     Objects.requireNonNull(elapsed);
     if (elapsed.isNegative()) throw new IllegalArgumentException("Negative duration");
     var measure =
-        measurements.get(Objects.requireNonNull(operation)).computeIfAbsent(Objects.requireNonNull(outcome), key -> measurement(operation, key));
+        measurements
+            .get(Objects.requireNonNull(operation))
+            .computeIfAbsent(Objects.requireNonNull(outcome), key -> measurement(operation, key));
     measure.count().increment();
     measure.timer().record(elapsed);
     if (outcome.serviceFailure()) failures.increment();
@@ -258,14 +274,24 @@ public final class SignalingMetrics implements AutoCloseable {
   }
 
   public void recoveryHydration(HydrationOutcome outcome, Duration elapsed) {
-    Objects.requireNonNull(outcome); Objects.requireNonNull(elapsed);
+    Objects.requireNonNull(outcome);
+    Objects.requireNonNull(elapsed);
     if (elapsed.isNegative()) throw new IllegalArgumentException("Negative hydration duration");
-    hydration.computeIfAbsent(outcome, key -> io.micrometer.core.instrument.Timer.builder(
-        "signaling.recovery.hydration")
-        .tag("outcome", key.name()).publishPercentileHistogram(false)
-        .serviceLevelObjectives(Duration.ofMillis(100), Duration.ofSeconds(1),
-            Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(30))
-        .register(registry)).record(elapsed);
+    hydration
+        .computeIfAbsent(
+            outcome,
+            key ->
+                io.micrometer.core.instrument.Timer.builder("signaling.recovery.hydration")
+                    .tag("outcome", key.name())
+                    .publishPercentileHistogram(false)
+                    .serviceLevelObjectives(
+                        Duration.ofMillis(100),
+                        Duration.ofSeconds(1),
+                        Duration.ofSeconds(2),
+                        Duration.ofSeconds(5),
+                        Duration.ofSeconds(30))
+                    .register(registry))
+        .record(elapsed);
   }
 
   public void recovery(RecoverySli sli, boolean eligible, boolean successful) {
@@ -287,15 +313,24 @@ public final class SignalingMetrics implements AutoCloseable {
     lags.get(Objects.requireNonNull(kind)).set(value.toNanos());
   }
 
-  public void lagUnknown(Lag kind) { lags.get(kind).set(-1); }
+  public void lagUnknown(Lag kind) {
+    lags.get(kind).set(-1);
+  }
 
   public void participantLease(Duration sourceAge, Duration slack) {
     io.micrometer.core.instrument.Timer.builder("signaling.participant.source.age")
-        .serviceLevelObjectives(Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(5))
-        .register(registry).record(sourceAge);
+        .serviceLevelObjectives(
+            Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(5))
+        .register(registry)
+        .record(sourceAge);
     io.micrometer.core.instrument.Timer.builder("signaling.participant.lease.slack")
-        .serviceLevelObjectives(Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(10), Duration.ofSeconds(30))
-        .register(registry).record(slack);
+        .serviceLevelObjectives(
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            Duration.ofSeconds(10),
+            Duration.ofSeconds(30))
+        .register(registry)
+        .record(slack);
   }
 
   public void pool(Pool pool, int active, int pending) {
@@ -307,7 +342,9 @@ public final class SignalingMetrics implements AutoCloseable {
   }
 
   public void poolUnknown(Pool pool) {
-    var values = pools.get(pool); values[0].set(-1); values[1].set(-1);
+    var values = pools.get(pool);
+    values[0].set(-1);
+    values[1].set(-1);
   }
 
   public long businessOutcomes() {
@@ -320,9 +357,19 @@ public final class SignalingMetrics implements AutoCloseable {
 
   public void physical(Operation operation, boolean finished, Duration elapsed) {
     io.micrometer.core.instrument.Timer.builder("signaling.operation.physical.lifetime")
-        .tags("operation", operation.name(), "physical_outcome", finished ? "FINISHED" : "NOT_STARTED")
-        .serviceLevelObjectives(Duration.ofMillis(20), Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(15), Duration.ofSeconds(65))
-        .register(registry).record(elapsed);
+        .tags(
+            "operation",
+            operation.name(),
+            "physical_outcome",
+            finished ? "FINISHED" : "NOT_STARTED")
+        .serviceLevelObjectives(
+            Duration.ofMillis(20),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(2),
+            Duration.ofSeconds(15),
+            Duration.ofSeconds(65))
+        .register(registry)
+        .record(elapsed);
   }
 
   public void timing(Operation operation, String kind, Duration elapsed) {
@@ -330,13 +377,21 @@ public final class SignalingMetrics implements AutoCloseable {
       throw new IllegalArgumentException("Invalid timing kind");
     io.micrometer.core.instrument.Timer.builder("signaling.operation.stage.latency")
         .tags("operation", operation.name(), "kind", kind)
-        .serviceLevelObjectives(Duration.ofMillis(1), Duration.ofMillis(20), Duration.ofMillis(100), Duration.ofSeconds(1), Duration.ofSeconds(2))
-        .register(registry).record(elapsed);
+        .serviceLevelObjectives(
+            Duration.ofMillis(1),
+            Duration.ofMillis(20),
+            Duration.ofMillis(100),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(2))
+        .register(registry)
+        .record(elapsed);
   }
 
   public void pendingPhysical(Operation operation, java.util.function.IntSupplier pending) {
     Gauge.builder("signaling.operation.physical.pending", pending, p -> p.getAsInt())
-        .tag("operation", operation.name()).strongReference(true).register(registry);
+        .tag("operation", operation.name())
+        .strongReference(true)
+        .register(registry);
   }
 
   public String scrape() {

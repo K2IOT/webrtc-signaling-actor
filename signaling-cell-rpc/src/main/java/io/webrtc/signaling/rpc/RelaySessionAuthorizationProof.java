@@ -104,7 +104,8 @@ public final class RelaySessionAuthorizationProof {
                 io.webrtc.signaling.protocol.SignalEnvelope.Type.OFFER,
                 io.webrtc.signaling.protocol.SignalEnvelope.Type.ANSWER,
                 io.webrtc.signaling.protocol.SignalEnvelope.Type.ICE_CANDIDATES,
-                io.webrtc.signaling.protocol.SignalEnvelope.Type.END_OF_CANDIDATES)
+                io.webrtc.signaling.protocol.SignalEnvelope.Type.END_OF_CANDIDATES,
+                io.webrtc.signaling.protocol.SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
             .contains(command.type());
   }
 

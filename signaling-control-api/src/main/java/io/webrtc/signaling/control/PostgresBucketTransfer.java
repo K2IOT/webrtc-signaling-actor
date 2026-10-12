@@ -486,7 +486,7 @@ public final class PostgresBucketTransfer implements BucketTransferService.Autho
               + ")"
               + (fields[i].equals("request_id") ? "::uuid" : " COLLATE \"C\""));
     return "EXISTS(SELECT 1 FROM (SELECT ?::jsonb AS cursor_value,?::boolean AS first_page) x WHERE"
-               + " first_page OR ("
+        + " first_page OR ("
         + ORDERS[dataset]
         + ")>("
         + String.join(",", right)

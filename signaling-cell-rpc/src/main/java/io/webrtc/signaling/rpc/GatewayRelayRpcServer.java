@@ -93,20 +93,31 @@ public final class GatewayRelayRpcServer implements AutoCloseable {
   private Server server;
   private volatile boolean draining;
   private volatile RuntimeCapabilities capabilities = RuntimeCapabilities.DENY;
-  private volatile java.util.function.Supplier<CompatibilityObservationReply> compatibilityFacts = () -> null;
+  private volatile java.util.function.Supplier<CompatibilityObservationReply> compatibilityFacts =
+      () -> null;
 
-  public GatewayRelayRpcServer compatibilityFacts(java.util.function.Supplier<CompatibilityObservationReply> source) {
+  public GatewayRelayRpcServer compatibilityFacts(
+      java.util.function.Supplier<CompatibilityObservationReply> source) {
     Objects.requireNonNull(source);
-    compatibilityFacts = () -> {
-      var facts = source.get();
-      return facts == null ? null : facts.toBuilder().setSourceCell(cell).setGatewayId(gateway).setBootId(boot.toString()).build();
-    };
+    compatibilityFacts =
+        () -> {
+          var facts = source.get();
+          return facts == null
+              ? null
+              : facts.toBuilder()
+                  .setSourceCell(cell)
+                  .setGatewayId(gateway)
+                  .setBootId(boot.toString())
+                  .build();
+        };
     return this;
   }
 
   private volatile OperationObservation observations = OperationObservation.NONE;
 
-  public CompatibilityObservationReply localCompatibilityFacts() { return compatibilityFacts.get(); }
+  public CompatibilityObservationReply localCompatibilityFacts() {
+    return compatibilityFacts.get();
+  }
 
   public GatewayRelayRpcServer compatibility(RuntimeCapabilities capabilities) {
     this.capabilities = Objects.requireNonNull(capabilities);
@@ -161,12 +172,20 @@ public final class GatewayRelayRpcServer implements AutoCloseable {
                   public <Q, A> Executor getExecutor(ServerCall<Q, A> call, Metadata headers) {
                     return call.getMethodDescriptor()
                             .getFullMethodName()
-                            .equals(GatewayRelayIngressGrpc.getDeliverRelayMethod().getFullMethodName())
+                            .equals(
+                                GatewayRelayIngressGrpc.getDeliverRelayMethod().getFullMethodName())
                         ? cpu
                         : controlCpu;
                   }
                 })
-            .addService(new CompatibilityObservationService(cell, gateway, boot.toString(), admission, PEER::get, () -> compatibilityFacts.get()))
+            .addService(
+                new CompatibilityObservationService(
+                    cell,
+                    gateway,
+                    boot.toString(),
+                    admission,
+                    PEER::get,
+                    () -> compatibilityFacts.get()))
             .intercept(NativeRpcTelemetry.server())
             .intercept(
                 new ServerInterceptor() {

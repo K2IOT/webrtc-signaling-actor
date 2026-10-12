@@ -28,6 +28,7 @@ class NativeRuntimeStartupTest {
                   .setActiveProfiles(plane.name().toLowerCase(java.util.Locale.ROOT));
             })
         .withPropertyValues(
+            "CELL_ID=c001",
             "signaling.identity.issuer=TEST_ONLY_ISSUER",
             "signaling.identity.audience=TEST_ONLY_AUDIENCE")
         .run(

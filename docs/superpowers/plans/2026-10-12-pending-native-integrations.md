@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Execution update (2026-10-12):** User explicitly selected inline execution without subagents and subsequently authorized tests/faults, including Docker provisioning on Ubuntu24.04. This supersedes the initial delegation/no-test restrictions below. Current implementation and runtime status are recorded in the execution ledger; historical checkboxes are not acceptance evidence. Production/P2 remains NOT_QUALIFIED.
+
 **Goal:** Replace remaining repository integration placeholders with bounded native producers, collectors and client behavior, while retaining unavailable deployment inputs as explicit dependencies.
 
 **Architecture:** Read-only mTLS observation endpoints bootstrap independently of business capability gates. Native SQL observation and durable recovery accounting retain original physical ownership; browser persistence and media recovery preserve exact intent/session/round identity. New initial-ICE receipts are additive and capability gated; provider receipt meanings are never invented.

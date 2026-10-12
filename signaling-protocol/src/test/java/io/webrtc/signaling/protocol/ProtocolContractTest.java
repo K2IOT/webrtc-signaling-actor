@@ -54,6 +54,40 @@ class ProtocolContractTest {
   }
 
   @Test
+  void initialIceReceiptIsStrictBoundedVolatileAndAuthenticated() {
+    String payload =
+        "{\"receiptVersion\":1,\"senderSessionIncarnation\":\""
+            + sender.incarnation().value()
+            + "\",\"highestContiguous\":\"0\",\"missingRanges\":[[\"1\",\"2\"]],\"endReceived\":false}";
+    var command = validator.bind(decode(frame("INITIAL_ICE_RECEIPT", payload)), sender);
+    assertThat(command.type()).isEqualTo(SignalEnvelope.Type.INITIAL_ICE_RECEIPT);
+    assertThat(command.sender()).isEqualTo(sender);
+    assertThat(InitialIceReceipt.requiresCapability(command)).isTrue();
+    for (String bad :
+        java.util.List.of(
+            payload.replace("\"0\"", "0"),
+            payload.replace("\"0\"", "\"9223372036854775808\""),
+            payload.replace("[[\"1\",\"2\"]]", "[[\"2\",\"1\"]]"),
+            payload.replace("[[\"1\",\"2\"]]", "[[\"1\",\"2\"],[\"2\",\"3\"]]"),
+            payload.replace("false", "true"),
+            payload.replace("\"receiptVersion\":1", "\"receiptVersion\":2"),
+            payload.replace("false}", "false,\"jwt\":\"TEST_ONLY_PRIVATE\"}"))) {
+      assertThatThrownBy(() -> validator.bind(decode(frame("INITIAL_ICE_RECEIPT", bad)), sender))
+          .isInstanceOf(IllegalArgumentException.class);
+    }
+    String tooMany =
+        payload.replace(
+            "[[\"1\",\"2\"]]",
+            "["
+                + java.util.stream.IntStream.rangeClosed(1, 33)
+                    .mapToObj(n -> "[\"" + n + "\",\"" + n + "\"]")
+                    .collect(java.util.stream.Collectors.joining(","))
+                + "]");
+    assertThatThrownBy(() -> validator.bind(decode(frame("INITIAL_ICE_RECEIPT", tooMany)), sender))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void derivesInviteScopeAndIdentityFromAuthenticatedContext() {
     var command = validator.bind(decode(frame("INVITE", "{\"targetUserId\":\"bob\"}")), sender);
     assertThat(command.scope().value()).isEqualTo("INVITE");

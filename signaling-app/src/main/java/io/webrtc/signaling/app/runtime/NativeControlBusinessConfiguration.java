@@ -29,15 +29,20 @@ public class NativeControlBusinessConfiguration {
       NativeControlBusinessEnrollment inputs,
       DirectoryService directory,
       NativeControlReadiness readiness,
-      BoundedTokenVerifier tokens, NativeTelemetry telemetry) {
+      BoundedTokenVerifier tokens,
+      NativeTelemetry telemetry) {
     if (tokens != inputs.tokens())
       throw new IllegalArgumentException("Native control verifier ownership differs");
     return new BootstrapController(
-        directory, tokens, inputs.cachedSecurity(), Clock.systemUTC(), readiness::safe).observe(telemetry);
+            directory, tokens, inputs.cachedSecurity(), Clock.systemUTC(), readiness::safe)
+        .observe(telemetry);
   }
 
   @Bean
-  NativeControlReadiness nativeControlReadiness(NativeControlProcess process, NativeCompatibility compatibility, NativeControlBusinessEnrollment inputs) {
+  NativeControlReadiness nativeControlReadiness(
+      NativeControlProcess process,
+      NativeCompatibility compatibility,
+      NativeControlBusinessEnrollment inputs) {
     var readiness = process.readiness();
     readiness.compatibility(() -> compatibility.controlReady());
     return readiness;

@@ -155,6 +155,41 @@ class RecoveryEpochIT {
   }
 
   @Test
+  void recoveringTerminalizationCannotBypassJournalOperationOrExclusiveBarrier() throws Exception {
+    try (var f = new LocalInviteAtomicIT.Fixture()) {
+      var caller = f.sender("abort-fence-caller");
+      var target = f.sender("abort-fence-target");
+      f.service()
+          .executeCallCommand(f.invite(caller, target.userId()))
+          .toCompletableFuture()
+          .join();
+      var recovery = new RecoveryEpochService(f.runtime.sql, "c001", p -> true);
+      var op = UUID.randomUUID();
+      done(recovery.begin(permit(11, op)));
+      for (int mode = 0; mode < 4; mode++) {
+        try (var c = f.connection();
+            var q = c.createStatement()) {
+          c.setAutoCommit(false);
+          if (mode != 0) {
+            q.execute(
+                "SELECT set_config('signaling.recovery_abort_operation','"
+                    + (mode == 2 ? UUID.randomUUID() : op)
+                    + "',true)");
+          }
+          if (mode >= 2) AuthoritySql.cellBarrier(c, true);
+          String mutation =
+              mode == 3
+                  ? "UPDATE call_state SET state='TERMINAL',terminal_reason='DISASTER_RESTORE',saga_phase='COMPENSATE',version=version+1,terminal_at=clock_timestamp(),caller_user_id='INJECTED'"
+                  : "UPDATE call_state SET state='TERMINAL',terminal_reason='DISASTER_RESTORE',saga_phase='COMPENSATE',version=version+1,terminal_at=clock_timestamp()";
+          assertThatThrownBy(() -> q.execute(mutation)).isInstanceOf(SQLException.class);
+          c.rollback();
+        }
+      }
+      assertThat(done(recovery.abortBatch(permit(11, op), 128)).remaining()).isZero();
+    }
+  }
+
+  @Test
   void missingUntrustedOrExpiredRecoveryPermitCannotAdvanceNativeEpoch() throws Exception {
     try (var f = new LocalInviteAtomicIT.Fixture()) {
       var recovery = new RecoveryEpochService(f.runtime.sql, "c001", p -> false);

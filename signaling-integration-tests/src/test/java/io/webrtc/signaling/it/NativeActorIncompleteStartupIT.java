@@ -187,6 +187,7 @@ class NativeActorIncompleteStartupIT {
                   (p, g) -> g.gatewayId().equals("gw-1"),
                   e -> CompletableFuture.failedFuture(new AssertionError()))
               .start();
+      ingress.server().compatibility(TestOnlyNativeCapabilities.cells("c001"));
       health =
           new PrivateHealthServer(
               new InetSocketAddress("127.0.0.1", 0),
@@ -200,15 +201,38 @@ class NativeActorIncompleteStartupIT {
       if (completeOwner)
         processClient =
             new CellRpcClient(
-                "test",
-                Map.of("c001", new CellRpcClient.Endpoint("localhost", rpcPort, "localhost")),
-                RpcTlsContexts.clients(
                     "test",
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("ca.crt"),
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("actor.crt"),
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("actor.key")),
-                new RpcAdmission(2, 196608, 2, 196608));
+                    Map.of("c001", new CellRpcClient.Endpoint("localhost", rpcPort, "localhost")),
+                    RpcTlsContexts.clients(
+                        "test",
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("ca.crt"),
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("actor.crt"),
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("actor.key")),
+                    new RpcAdmission(2, 196608, 2, 196608))
+                .compatibility(TestOnlyNativeCapabilities.cells("c001"));
       var actualProcessClient = processClient;
+      var maintenance =
+          completeOwner
+              ? new NativeActorMaintenance(
+                  actors,
+                  new NativeActorMaintenanceEnrollment(
+                      new byte[32],
+                      opaque ->
+                          new DbOperation<>(
+                              CompletableFuture.failedFuture(
+                                  new IllegalStateException("TEST_ONLY detachment not enrolled")),
+                              CompletableFuture.completedFuture(
+                                  DbOperation.PhysicalCompletion.NOT_STARTED))),
+                  actualProcessClient,
+                  gateways)
+              : null;
+      var completeJobs = new ArrayList<>(sources.jobs());
+      if (maintenance != null) completeJobs.addAll(maintenance.jobs());
+      var actualWorkers =
+          completeOwner
+              ? new NativeWorkerScheduler(completeJobs, e -> {}, List.of(maintenance::drain))
+              : workers;
+      if (maintenance != null) maintenance.bindWake(actualWorkers);
       var lease =
           org.apache.pekko.coordination.lease.javadsl.LeaseProvider.get(Adapter.toClassic(system))
               .getLease(
@@ -220,14 +244,15 @@ class NativeActorIncompleteStartupIT {
         assertThat(lease.acquire().toCompletableFuture().join()).isTrue();
         caller =
             new CellRpcClient(
-                "test",
-                Map.of("c001", new CellRpcClient.Endpoint("localhost", rpcPort, "localhost")),
-                RpcTlsContexts.clients(
                     "test",
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("ca.crt"),
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("gateway.crt"),
-                    NativeActorCompositionIT.RelayGatewayFixture.cert("gateway.key")),
-                new RpcAdmission(2, 196608, 2, 196608));
+                    Map.of("c001", new CellRpcClient.Endpoint("localhost", rpcPort, "localhost")),
+                    RpcTlsContexts.clients(
+                        "test",
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("ca.crt"),
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("gateway.crt"),
+                        NativeActorCompositionIT.RelayGatewayFixture.cert("gateway.key")),
+                    new RpcAdmission(2, 196608, 2, 196608))
+                .compatibility(TestOnlyNativeCapabilities.cells("c001"));
         var request =
             new NativeSessionHandler.Request(
                 "REGISTER",
@@ -269,10 +294,11 @@ class NativeActorIncompleteStartupIT {
             owned(registry, "testOnlyActors", NativeActorComposition.class, actors);
             owned(registry, "testOnlyIngress", NativeActorRpcIngress.class, actualIngress);
             owned(registry, "testOnlySources", NativeActorSafetySources.class, sources);
-            owned(registry, "testOnlyWorkers", NativeWorkerScheduler.class, workers);
+            owned(registry, "testOnlyWorkers", NativeWorkerScheduler.class, actualWorkers);
             owned(registry, "testOnlyHealth", PrivateHealthServer.class, actualHealth);
             owned(registry, "testOnlyDatabase", DbBoundary.class, runtime.boundary);
             if (completeOwner) {
+              owned(registry, "testOnlyMaintenance", NativeActorMaintenance.class, maintenance);
               owned(registry, "testOnlyServer", CellRpcServer.class, actualIngress.server());
               owned(registry, "testOnlyClient", CellRpcClient.class, actualProcessClient);
               owned(registry, "testOnlyPools", DbPools.class, runtime.pools);
@@ -287,6 +313,9 @@ class NativeActorIncompleteStartupIT {
                           context.set(
                               application.run(
                                   "--spring.profiles.active=actor",
+                                  "--SIGNALING_DEPLOYMENT_MODE=local-minikube",
+                                  "--SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
+                                  "--CELL_ID=c001",
                                   "--signaling.identity.issuer=TEST_ONLY_ISSUER",
                                   "--signaling.identity.audience=TEST_ONLY_AUDIENCE"))));
       if (heldRpc) {

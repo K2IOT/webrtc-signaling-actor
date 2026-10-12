@@ -4,14 +4,36 @@ import ch.qos.logback.classic.LoggerContext;
 import io.webrtc.signaling.observability.BoundedAsyncLogAppender;
 import org.slf4j.LoggerFactory;
 
-/** Bounded shutdown export follows native work; unresolved stdout writes are never called settled. */
-public final class NativeLogExportOwner implements AutoCloseable, org.springframework.context.SmartLifecycle {
+/**
+ * Bounded shutdown export follows native work; unresolved stdout writes are never called settled.
+ */
+public final class NativeLogExportOwner
+    implements AutoCloseable, org.springframework.context.SmartLifecycle {
   private volatile boolean running;
-  public void start() { running = true; }
-  public boolean isRunning() { return running; }
-  public int getPhase() { return Integer.MIN_VALUE; }
-  public void stop() { close(); }
-  public void stop(Runnable stopped) { Thread.startVirtualThread(() -> { close(); stopped.run(); }); }
+
+  public void start() {
+    running = true;
+  }
+
+  public boolean isRunning() {
+    return running;
+  }
+
+  public int getPhase() {
+    return Integer.MIN_VALUE;
+  }
+
+  public void stop() {
+    close();
+  }
+
+  public void stop(Runnable stopped) {
+    Thread.startVirtualThread(
+        () -> {
+          close();
+          stopped.run();
+        });
+  }
 
   @Override
   public void close() {

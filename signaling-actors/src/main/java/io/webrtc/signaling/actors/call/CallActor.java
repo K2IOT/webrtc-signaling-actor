@@ -83,8 +83,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       Instant deadline,
       int encodedBytes,
       io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
-      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-      io.webrtc.signaling.observability.TraceContext trace)
+      @com.fasterxml.jackson.annotation.JsonInclude(
+              com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+          io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
     public GrantToHome(
         HomeParticipationService.Request request,
@@ -132,8 +133,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       Instant deadline,
       int encodedBytes,
       io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
-      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-      io.webrtc.signaling.observability.TraceContext trace)
+      @com.fasterxml.jackson.annotation.JsonInclude(
+              com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+          io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
     public Progress(
         CallWorkflowService.Transition transition,
@@ -166,8 +168,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       Instant deadline,
       int encodedBytes,
       io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
-      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-      io.webrtc.signaling.observability.TraceContext trace)
+      @com.fasterxml.jackson.annotation.JsonInclude(
+              com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+          io.webrtc.signaling.observability.TraceContext trace)
       implements CallMessage {
     public Execute(
         CallCommand command,
@@ -178,10 +181,16 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
       this(command, proof, replyTo, deadline, encodedBytes, null, null);
     }
 
-    public Execute(CallCommand command, String proof, ActorRef<CallCommandService.Outcome> replyTo,
-        Instant deadline, int encodedBytes, io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
+    public Execute(
+        CallCommand command,
+        String proof,
+        ActorRef<CallCommandService.Outcome> replyTo,
+        Instant deadline,
+        int encodedBytes,
+        io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
       this(command, proof, replyTo, deadline, encodedBytes, receipt, null);
     }
+
     public Execute {
       Objects.requireNonNull(command);
       Objects.requireNonNull(replyTo);
@@ -489,13 +498,15 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
     var token = pending.token;
     var receipt = receipt(pending.request);
     RecoveryWakeRegistry.Entry witness = null;
-    try (var traceScope = io.webrtc.signaling.observability.TraceContext.activate(
-        switch (pending.request) {
-          case Execute execute -> execute.trace();
-          case GrantToHome grant -> grant.trace();
-          case Progress progress -> progress.trace();
-          default -> null;
-        })) {
+    try (var traceScope =
+        io.webrtc.signaling.observability.TraceContext.activate(
+            switch (pending.request) {
+              case null -> null; // Hydration, expiry and renewal are internal physical owners.
+              case Execute execute -> execute.trace();
+              case GrantToHome grant -> grant.trace();
+              case Progress progress -> progress.trace();
+              default -> null;
+            })) {
       if (pending.request instanceof WakeCall && receipt != null)
         witness = RecoveryWakeRegistry.get(getContext().getSystem()).reserve(call, token, receipt);
       var handle = action.get();

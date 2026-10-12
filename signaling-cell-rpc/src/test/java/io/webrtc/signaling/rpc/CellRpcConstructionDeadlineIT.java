@@ -56,22 +56,23 @@ class CellRpcConstructionDeadlineIT {
     var endpoint = new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost");
     var client =
         new CellRpcClient(
-            "test",
-            Map.of("c001", endpoint, "c002", endpoint),
-            cell -> {
-              if (factories.incrementAndGet() > 1) {
-                entered.countDown();
-                try {
-                  if (!release.await(5, TimeUnit.SECONDS))
-                    throw new IllegalStateException("TEST_ONLY_FACTORY_RELEASE_MISSING");
-                } catch (InterruptedException e) {
-                  Thread.currentThread().interrupt();
-                  throw new IllegalStateException(e);
-                }
-              }
-              return tls;
-            },
-            admission);
+                "test",
+                Map.of("c001", endpoint, "c002", endpoint),
+                cell -> {
+                  if (factories.incrementAndGet() > 1) {
+                    entered.countDown();
+                    try {
+                      if (!release.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("TEST_ONLY_FACTORY_RELEASE_MISSING");
+                    } catch (InterruptedException e) {
+                      Thread.currentThread().interrupt();
+                      throw new IllegalStateException(e);
+                    }
+                  }
+                  return tls;
+                },
+                admission)
+            .compatibility(TestOnlyCapabilities.cells("c001", "c002"));
     try {
       var healthy =
           InternalCommand.newBuilder()
@@ -215,21 +216,23 @@ class CellRpcConstructionDeadlineIT {
     try (var tasks = Executors.newVirtualThreadPerTaskExecutor();
         var client =
             new CellRpcClient(
-                "test",
-                Map.of(
-                    "c002", new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
-                cell -> {
-                  entered.countDown();
-                  try {
-                    if (!release.await(3, TimeUnit.SECONDS))
-                      throw new IllegalStateException("TEST_ONLY_FACTORY_RELEASE_MISSING");
-                  } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(interrupted);
-                  }
-                  return tls;
-                },
-                admission)) {
+                    "test",
+                    Map.of(
+                        "c002",
+                        new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
+                    cell -> {
+                      entered.countDown();
+                      try {
+                        if (!release.await(3, TimeUnit.SECONDS))
+                          throw new IllegalStateException("TEST_ONLY_FACTORY_RELEASE_MISSING");
+                      } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                      }
+                      return tls;
+                    },
+                    admission)
+                .compatibility(TestOnlyCapabilities.cells("c001", "c002"))) {
       String operation = UUID.randomUUID().toString(), call = "c002.e1." + UUID.randomUUID();
       var budget = Duration.ofSeconds(1);
       var pending =

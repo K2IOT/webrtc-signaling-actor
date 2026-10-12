@@ -48,7 +48,8 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
               SignalEnvelope.Type.OFFER,
               SignalEnvelope.Type.ANSWER,
               SignalEnvelope.Type.ICE_CANDIDATES,
-              SignalEnvelope.Type.END_OF_CANDIDATES)
+              SignalEnvelope.Type.END_OF_CANDIDATES,
+              SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
           .contains(command.type()))
         throw new IllegalArgumentException("Unsupported active command proof");
     }
@@ -460,7 +461,8 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
                 SignalEnvelope.Type.OFFER,
                 SignalEnvelope.Type.ANSWER,
                 SignalEnvelope.Type.ICE_CANDIDATES,
-                SignalEnvelope.Type.END_OF_CANDIDATES)
+                SignalEnvelope.Type.END_OF_CANDIDATES,
+                SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
             .contains(command.type())) return rejected(c, "UNAUTHORIZED");
         if (command.type() == SignalEnvelope.Type.INVITE && !businessAdmission.getAsBoolean())
           return rejected(c, "OVERLOADED");

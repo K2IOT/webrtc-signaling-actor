@@ -55,11 +55,17 @@ public class NativeActorSchedulingConfiguration {
       NativeActorIngressEnrollment ingress,
       NativeTelemetry telemetry) {
     var maintenance = new NativeActorMaintenance(actors, enrollment, homeRpc, ingress.gateways());
-    telemetry.lagSource(io.webrtc.signaling.observability.SignalingMetrics.Lag.OLDEST_UNRECONCILED, maintenance.recovery()::observedProgressAgeNanos);
-    telemetry.lagSource(io.webrtc.signaling.observability.SignalingMetrics.Lag.RECOVERY_SWEEP, maintenance.recovery()::observedProgressAgeNanos);
-    telemetry.lagSource(io.webrtc.signaling.observability.SignalingMetrics.Lag.ROOT_RENEWAL,
-        () -> io.webrtc.signaling.actors.lease.PostgresShardLeaseProvider.rootRenewalAgeNanos(
-            org.apache.pekko.actor.typed.javadsl.Adapter.toClassic(actors.system())));
+    telemetry.lagSource(
+        io.webrtc.signaling.observability.SignalingMetrics.Lag.OLDEST_UNRECONCILED,
+        maintenance.recovery()::observedProgressAgeNanos);
+    telemetry.lagSource(
+        io.webrtc.signaling.observability.SignalingMetrics.Lag.RECOVERY_SWEEP,
+        maintenance.recovery()::observedProgressAgeNanos);
+    telemetry.lagSource(
+        io.webrtc.signaling.observability.SignalingMetrics.Lag.ROOT_RENEWAL,
+        () ->
+            io.webrtc.signaling.actors.lease.PostgresShardLeaseProvider.rootRenewalAgeNanos(
+                org.apache.pekko.actor.typed.javadsl.Adapter.toClassic(actors.system())));
     return maintenance;
   }
 
@@ -76,7 +82,8 @@ public class NativeActorSchedulingConfiguration {
     jobs.add(compatibility.schemaJob(sql));
     int availableAdditionalJobs = 16 - jobs.size();
     if (enrollment.maintenance().size() > availableAdditionalJobs)
-      throw new IllegalArgumentException("Native mandatory jobs leave " + availableAdditionalJobs + " additional worker slots");
+      throw new IllegalArgumentException(
+          "Native mandatory jobs leave " + availableAdditionalJobs + " additional worker slots");
     jobs.addAll(enrollment.maintenance());
     // Lifecycle registers cleanup before starting this scheduler.
     var scheduler =

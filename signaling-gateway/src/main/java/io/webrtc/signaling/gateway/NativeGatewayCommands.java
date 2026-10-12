@@ -158,7 +158,8 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                   SignalEnvelope.Type.OFFER,
                   SignalEnvelope.Type.ANSWER,
                   SignalEnvelope.Type.ICE_CANDIDATES,
-                  SignalEnvelope.Type.END_OF_CANDIDATES)
+                  SignalEnvelope.Type.END_OF_CANDIDATES,
+                  SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
               .contains(command.type());
       long end =
           System.nanoTime()
@@ -236,6 +237,8 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                   var wire =
                       InternalCommand.newBuilder()
                           .setSchemaMajor(1)
+                          .setSchemaMinor(
+                              command.type() == SignalEnvelope.Type.INITIAL_ICE_RECEIPT ? 1 : 0)
                           .setOperationId(command.requestId().value().toString())
                           .setType(command.type().name())
                           .setSender(sender(command.sender()))
@@ -249,7 +252,11 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                           .build();
                   var operation =
                       switch (command.type()) {
-                        case OFFER, ANSWER, ICE_CANDIDATES, END_OF_CANDIDATES ->
+                        case OFFER,
+                            ANSWER,
+                            ICE_CANDIDATES,
+                            END_OF_CANDIDATES,
+                            INITIAL_ICE_RECEIPT ->
                             CellRpcServer.Operation.RELAY;
                         case SYNC_CALL -> CellRpcServer.Operation.SYNC;
                         default -> CellRpcServer.Operation.EXECUTE;

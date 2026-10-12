@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.protocol.Identity.*;
+import io.webrtc.signaling.protocol.RuntimeCapabilities;
 import io.webrtc.signaling.protocol.internal.*;
 import io.webrtc.signaling.rpc.*;
 import java.io.File;
@@ -85,15 +86,20 @@ class NativeSessionTransportIT {
                       (op, c, p, b) -> CompletableFuture.failedFuture(new AssertionError()),
                       event -> CompletableFuture.failedFuture(new AssertionError()))
                   .sessions(handler)
+                  .compatibility(
+                      (cell, feature) ->
+                          cell.equals("c001") && feature.equals(RuntimeCapabilities.SESSION_S1))
                   .start();
           var client =
               new CellRpcClient(
-                  "test",
-                  Map.of(
-                      "c001", new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
-                  RpcTlsContexts.clients(
-                      "test", cert("ca.crt"), cert("gateway.crt"), cert("gateway.key")),
-                  new RpcAdmission(4, 256 * 1024, 4, 256 * 1024))) {
+                      "test",
+                      Map.of(
+                          "c001",
+                          new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
+                      RpcTlsContexts.clients(
+                          "test", cert("ca.crt"), cert("gateway.crt"), cert("gateway.key")),
+                      new RpcAdmission(4, 256 * 1024, 4, 256 * 1024))
+                  .compatibility(TestOnlyCapabilities.cells("c001"))) {
         var gateway =
             new NativeSessionHandler.GatewayIdentity(
                 "gw-1", UUID.randomUUID(), "c001", 1, "TEST_ONLY_REGION");

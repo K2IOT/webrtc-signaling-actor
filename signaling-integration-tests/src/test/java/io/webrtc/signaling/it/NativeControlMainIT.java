@@ -33,6 +33,7 @@ class NativeControlMainIT {
     var security = new AtomicReference<>(AuthorizationStatus.ALLOWED);
     var fresh = new java.util.concurrent.atomic.AtomicBoolean(true);
     try (var database = new LocalInviteAtomicIT.Fixture();
+        var transferTarget = new LocalInviteAtomicIT.Fixture();
         var clockFixture =
             new NativeGatewayCommandIT.MainGateway(
                 KeyPairGenerator.getInstance("Ed25519").generateKeyPair())) {
@@ -109,6 +110,13 @@ class NativeControlMainIT {
             context -> {
               defaults.forEach(s -> context.getEnvironment().getPropertySources().addLast(s));
               context.getBeanFactory().registerSingleton("TEST_ONLY_business", business);
+              context
+                  .getBeanFactory()
+                  .registerSingleton(
+                      "TEST_ONLY_transfer",
+                      new NativeBucketTransferEnrollment(
+                          new PostgresBucketTransfer.Store(database.runtime.sql, "c001", 1),
+                          new PostgresBucketTransfer.Store(transferTarget.runtime.sql, "c002", 1)));
               context.getBeanFactory().registerSingleton("TEST_ONLY_ingress", inputs);
               context.getBeanFactory().registerSingleton("TEST_ONLY_sql", database.runtime.sql);
               context
@@ -119,6 +127,9 @@ class NativeControlMainIT {
         try (var context =
             application.run(
                 "--spring.profiles.active=control",
+                "--SIGNALING_DEPLOYMENT_MODE=local-minikube",
+                "--SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
+                "--CELL_ID=c001",
                 "--spring.main.web-application-type=reactive",
                 "--signaling.identity.issuer=https://issuer.test",
                 "--signaling.identity.audience=control-test")) {
@@ -149,6 +160,12 @@ class NativeControlMainIT {
                     .header("Authorization", "Bearer " + token(keys, now))
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build();
+            assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+                .isEqualTo(401);
+            context
+                .getBean(NativeControlReadiness.class)
+                .compatibility(
+                    () -> TestOnlyNativeCapabilities.cells("c001").permits("c001", "session-s1"));
             var response = client.send(request, HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(200);
             var body = NativeGatewayCommandIT.JSON.readTree(response.body());

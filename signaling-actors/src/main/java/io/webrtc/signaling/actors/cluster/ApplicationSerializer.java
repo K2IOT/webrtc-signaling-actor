@@ -113,10 +113,14 @@ public final class ApplicationSerializer extends SerializerWithStringManifest {
     byte[] encoded =
         ActorEnvelope.newBuilder()
             .setSchemaMajor(1)
-            .setSchemaMinor((value instanceof UserCommand.Mutate user && user.trace() != null)
-                || (value instanceof CallActor.Execute call && call.trace() != null)
-                || (value instanceof CallActor.GrantToHome grant && grant.trace() != null)
-                || (value instanceof CallActor.Progress progress && progress.trace() != null) ? 1 : 0)
+            .setSchemaMinor(
+                (value instanceof UserCommand.Mutate user && user.trace() != null)
+                        || (value instanceof CallActor.Execute call && call.trace() != null)
+                        || (value instanceof CallActor.GrantToHome grant && grant.trace() != null)
+                        || (value instanceof CallActor.Progress progress
+                            && progress.trace() != null)
+                    ? 1
+                    : 0)
             .setKind(kind)
             .setPayload(encode(json.valueToTree(value), 0, new int[] {0}))
             .build()

@@ -189,7 +189,8 @@ public final class NativeWorkerScheduler implements AutoCloseable {
       slot.wakePending = false;
     }
     try {
-      invocation.observation = OperationObservation.safeReceipt(observations.apply(slot.job.name()));
+      invocation.observation =
+          OperationObservation.safeReceipt(observations.apply(slot.job.name()));
     } catch (RuntimeException ignored) {
       invocation.observation = OperationObservation.NONE.start(null);
     }

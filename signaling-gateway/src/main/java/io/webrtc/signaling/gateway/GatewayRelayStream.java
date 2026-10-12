@@ -71,6 +71,7 @@ public final class GatewayRelayStream {
       binding = registry.binding(delivery.recipient().connectionId());
       if (!authorized(delivery)
           || !current(binding, delivery.recipient())
+          || !receiptAllowed(delivery, binding)
           || binding.channel().pipeline().get(OutboundAdmissionHandler.class) == null)
         throw new IllegalStateException("STALE_BINDING");
       credit =
@@ -133,7 +134,8 @@ public final class GatewayRelayStream {
                           !result.isDone()
                               && System.nanoTime() - end < 0
                               && authorized(delivery)
-                              && current(binding, delivery.recipient());
+                              && current(binding, delivery.recipient())
+                              && receiptAllowed(delivery, binding);
                     } catch (RuntimeException unavailable) {
                       ReferenceCountUtil.release(frame);
                       originalWrite.complete(null);
@@ -207,6 +209,15 @@ public final class GatewayRelayStream {
     // TTL.
     return delivery.authorizationUntil().isAfter(now.plusMillis(255))
         && !delivery.authorizationUntil().isAfter(now.plusMillis(5250));
+  }
+
+  private boolean receiptAllowed(RelayDelivery delivery, ConnectionRegistry.Binding binding) {
+    if (!io.webrtc.signaling.protocol.InitialIceReceipt.requiresCapability(delivery.command()))
+      return true;
+    if (!services.supportsInitialIceReceipts()) return false;
+    return delivery.command().type()
+            != io.webrtc.signaling.protocol.SignalEnvelope.Type.INITIAL_ICE_RECEIPT
+        || Boolean.TRUE.equals(binding.channel().attr(AuthHandler.INITIAL_ICE_RECEIPTS).get());
   }
 
   private boolean current(ConnectionRegistry.Binding binding, AuthenticatedSession recipient) {

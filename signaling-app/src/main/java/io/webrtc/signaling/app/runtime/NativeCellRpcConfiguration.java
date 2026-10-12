@@ -13,11 +13,16 @@ import org.springframework.context.annotation.*;
 public class NativeCellRpcConfiguration {
   @Bean(destroyMethod = "")
   @ConditionalOnMissingBean(CellRpcClient.class)
-  CellRpcClient nativeCellRpcClient(NativeCellRpcEnrollment enrollment, NativeTelemetry telemetry, NativeCompatibility compatibility) {
+  CellRpcClient nativeCellRpcClient(
+      NativeCellRpcEnrollment enrollment,
+      NativeTelemetry telemetry,
+      NativeCompatibility compatibility) {
     return new CellRpcClient(
-        enrollment.environment(),
-        enrollment.destinations(),
-        enrollment.tls(),
-        enrollment.admission()).observe(telemetry).compatibility(compatibility);
+            enrollment.environment(),
+            enrollment.destinations(),
+            enrollment.tls(),
+            enrollment.admission())
+        .observe(telemetry)
+        .compatibility(compatibility);
   }
 }

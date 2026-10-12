@@ -187,7 +187,9 @@ public final class PostgresShardLease extends Lease {
     }
 
     long renewalAgeNanos() {
-      return held.get() == null || lastPublishedNanos == 0 ? -1 : Math.max(0, nanos.getAsLong() - lastPublishedNanos);
+      return held.get() == null || lastPublishedNanos == 0
+          ? -1
+          : Math.max(0, nanos.getAsLong() - lastPublishedNanos);
     }
 
     synchronized void shedNewAcquisition() {

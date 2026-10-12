@@ -346,26 +346,58 @@ class CallRecoveryIT {
       for (int i = 0; i < 12; i++) calls.add(f.create());
       var observed = ConcurrentHashMap.<CallId>newKeySet();
       var dropFirst = new AtomicBoolean(true);
+
       try (var recovery =
           new CallRecoveryService(
               f.runtime.sql,
               "c001",
               1,
+              null,
+              () ->
+                  f.tokens.values().stream()
+                      .map(AuthoritySql.GroupToken::group)
+                      .collect(java.util.stream.Collectors.toUnmodifiableSet()),
               (call, budget) -> {
-                if (dropFirst.getAndSet(false)) return CompletableFuture.completedFuture(false);
-                observed.add(call);
-                return f.workflow
-                    .load(call, f.tokens.get(call), budget)
-                    .logical()
-                    .thenApply(snapshot -> snapshot.isPresent());
+                if (dropFirst.getAndSet(false))
+                  return new DbOperation<>(
+                      CompletableFuture.completedFuture(false),
+                      CompletableFuture.completedFuture(
+                          DbOperation.PhysicalCompletion.NOT_STARTED));
+                var original = f.workflow.load(call, f.tokens.get(call), budget);
+                return new DbOperation<>(
+                    original
+                        .logical()
+                        .thenApply(
+                            snapshot -> {
+                              if (snapshot.isPresent()) observed.add(call);
+                              return snapshot.isPresent();
+                            }),
+                    original.physicalCompletion());
               })) {
         long started = System.nanoTime();
-        var first = recovery.sweep().toCompletableFuture().join();
-        assertThat(first.examined()).isEqualTo(12);
-        assertThat(observed).hasSize(11);
-        var repaired = recovery.sweep().toCompletableFuture().join();
-        assertThat(repaired.cycleComplete()).isTrue();
-        assertThat(observed).containsAll(calls);
+        long deadline = started + Duration.ofSeconds(5).toNanos();
+        for (int attempt = 0;
+            attempt < 128 && observed.size() < calls.size() && System.nanoTime() < deadline;
+            attempt++) {
+          try {
+            finish(
+                recovery.sweepTracked(
+                    Duration.ofNanos(
+                        Math.min(
+                            Duration.ofSeconds(2).toNanos(),
+                            Math.max(1, deadline - System.nanoTime())))));
+          } catch (CompletionException known) {
+            if (!(known.getCause() instanceof DbOverloadedException)) throw known;
+          }
+          Thread.sleep(10);
+        }
+        assertThat(observed).containsExactlyInAnyOrderElementsOf(calls);
+        recovery
+            .drain()
+            .toCompletableFuture()
+            .get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        assertThat(recovery.observedProgressAgeNanos())
+            .isBetween(0L, Duration.ofSeconds(5).toNanos());
         assertThat(Duration.ofNanos(System.nanoTime() - started))
             .isLessThanOrEqualTo(Duration.ofSeconds(5));
       }
@@ -538,11 +570,14 @@ class CallRecoveryIT {
       try {
         var entities =
             new ConcurrentHashMap<CallId, org.apache.pekko.actor.typed.ActorRef<CallMessage>>();
+        var recovered = new CompletableFuture<Boolean>();
         try (var recovery =
             new CallRecoveryService(
                 f.runtime.sql,
                 "c001",
                 1,
+                null,
+                () -> Set.of(token.group()),
                 (hint, budget) -> {
                   var entity =
                       entities.computeIfAbsent(
@@ -551,15 +586,21 @@ class CallRecoveryIT {
                               replacement.spawn(
                                   CallActor.create(
                                       id, backend, () -> Optional.of(token), Clock.systemUTC())));
-                  return AskPattern.ask(
-                      entity,
-                      reply -> new CallActor.WakeCall(hint, reply, Instant.now().plus(budget)),
-                      budget,
-                      replacement.scheduler());
+                  CompletionStage<Boolean> stage =
+                      AskPattern.ask(
+                          entity,
+                          reply -> new CallActor.WakeCall(hint, reply, Instant.now().plus(budget)),
+                          budget,
+                          replacement.scheduler());
+                  stage.thenAccept(recovered::complete);
+                  return new DbOperation<>(
+                      stage, stage.handle((v, error) -> DbOperation.PhysicalCompletion.FINISHED));
                 })) {
-          var report = recovery.sweep().toCompletableFuture().join();
-          assertThat(report.hydrated()).isEqualTo(1);
-          assertThat(report.cycleComplete()).isTrue();
+          var report = finish(recovery.sweepTracked(Duration.ofSeconds(2)));
+          assertThat(report.examined()).isEqualTo(1);
+          assertThat(recovered.get(3, TimeUnit.SECONDS)).isTrue();
+          assertThat(recovery.observedProgressAgeNanos())
+              .isBetween(0L, Duration.ofSeconds(5).toNanos());
           assertThat(
                   finish(f.workflow.load(call, token, Duration.ofSeconds(2)))
                       .orElseThrow()

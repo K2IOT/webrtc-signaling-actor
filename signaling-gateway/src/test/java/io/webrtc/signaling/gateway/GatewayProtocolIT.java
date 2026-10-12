@@ -450,14 +450,42 @@ class GatewayProtocolIT {
                                   .putLong(route.connectionId().getLeastSignificantBits())
                                   .array())))
               .build();
-      var stream = new GatewayDeliveryStream(registry, services, clock, Runnable::run);
+      channel
+          .pipeline()
+          .addLast(
+              new OutboundAdmissionHandler(
+                  new io.webrtc.signaling.rpc.DeliveryCreditController(256, 4194304, 8, 65536)));
+      var receipts = new NativeControlReceiptTracker(256, 4194304);
+      var stream =
+          new GatewayDeliveryStream(registry, services, clock, Runnable::run, receipts, () -> true);
       var result = stream.send(event);
       channel.runPendingTasks();
-      assertThat(result.toCompletableFuture().join().getStatus()).isEqualTo("WRITE_COMPLETED");
-      assertThat(result.toCompletableFuture().join().getAckCommitted()).isFalse();
+      assertThat(result.toCompletableFuture()).isNotDone();
       var message = (TextWebSocketFrame) channel.readOutbound();
       assertThat(message.text()).contains("CALL_READY", "eventId");
       message.release();
+      var call = new CallId(event.getCallId());
+      var receipt =
+          new CallCommand(
+              SignalEnvelope.Type.EVENT_RECEIVED,
+              new AuthenticatedSession(
+                  route.user(),
+                  route.key(),
+                  route.incarnation(),
+                  route.connectionGeneration(),
+                  route.connectionId()),
+              new RequestId(UUID.randomUUID()),
+              call,
+              CommandScope.call(call),
+              null,
+              null,
+              null,
+              "{}",
+              "a".repeat(64));
+      assertThat(receipts.acknowledge(receipt, route, UUID.fromString(event.getEventId())))
+          .isTrue();
+      assertThat(result.toCompletableFuture().join().getStatus()).isEqualTo("APPLICATION_RECEIVED");
+      assertThat(result.toCompletableFuture().join().getAckCommitted()).isFalse();
       var stale =
           stream.send(
               event.toBuilder()

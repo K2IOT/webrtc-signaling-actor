@@ -200,12 +200,19 @@ class BackpressureIT {
         held.add(
             admission.acquire(
                 "shared-entity",
-                slot < 7 ? EntityAdmission.Priority.NORMAL : EntityAdmission.Priority.SAFETY,
+                slot < 6
+                    ? EntityAdmission.Priority.NORMAL
+                    : slot < 8
+                        ? EntityAdmission.Priority.SAFETY
+                        : EntityAdmission.Priority.RECOVERY,
                 1024));
         admitted++;
       }
       assertThatThrownBy(
               () -> admission.acquire("shared-entity", EntityAdmission.Priority.SAFETY, 1))
+          .isInstanceOf(EntityAdmission.Overloaded.class);
+      assertThatThrownBy(
+              () -> admission.acquire("shared-entity", EntityAdmission.Priority.RECOVERY, 1))
           .isInstanceOf(EntityAdmission.Overloaded.class);
     }
     assertThat(admitted).isLessThanOrEqualTo(64);

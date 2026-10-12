@@ -113,7 +113,10 @@ public final class NativeRevocationSource implements AutoCloseable {
       synchronized (this) {
         checkedAt = !draining && batch.caughtUp() ? batch.checkedAt() : null;
         checkedNanos = start;
-        if (checkedAt != null) { observedCheckedAt = checkedAt; observedNanos = start; }
+        if (checkedAt != null) {
+          observedCheckedAt = checkedAt;
+          observedNanos = start;
+        }
       }
       logical = CompletableFuture.completedFuture(offset);
     } catch (Throwable invalid) {

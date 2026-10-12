@@ -13,6 +13,10 @@ import java.util.concurrent.CompletionStage;
 public interface GatewayServices {
   boolean currentBoot();
 
+  default boolean supportsInitialIceReceipts() {
+    return false;
+  }
+
   CompletionStage<AuthPrincipal> verify(String token, Instant now);
 
   AuthorizationStatus cachedSecurity(AuthPrincipal principal, Instant now);

@@ -10,6 +10,26 @@ import org.junit.jupiter.api.Test;
 
 class DbBoundaryTest {
   @Test
+  void unsignedWalIntegerIsImmutableButBudgetedAndSubclassesRemainRejected() throws Exception {
+    var maximum = new java.math.BigInteger("18446744073709551615");
+    assertThatCode(() -> DbBoundary.beforeCommit(maximum, 64)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> DbBoundary.beforeCommit(maximum, 32))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () -> DbBoundary.beforeCommit(java.math.BigInteger.ONE.shiftLeft(8192), 1024))
+        .isInstanceOf(IllegalArgumentException.class);
+    class MutableInteger extends java.math.BigInteger {
+      MutableInteger() {
+        super("1");
+      }
+    }
+    assertThatThrownBy(() -> DbBoundary.beforeCommit(new MutableInteger(), 1024))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> DbBoundary.beforeCommit(java.util.Map.of("wal", maximum), 1024))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void snapshotSettlesOriginalPhysicalWorkWhileLaterSafetyWorkRemainsAdmissible() throws Exception {
     var entered = new CountDownLatch(1);
     var release = new CountDownLatch(1);

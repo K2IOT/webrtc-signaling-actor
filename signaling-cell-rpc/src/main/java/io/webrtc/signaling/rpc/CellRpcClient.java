@@ -269,7 +269,8 @@ public final class CellRpcClient implements AutoCloseable {
       CellRpcServer.Operation op, InternalCommand original, Duration budget) {
     long started = System.nanoTime();
     if (original.getType().equals("INVITE")
-        && !capabilities.permitsNew(original.getDestinationCell(), RuntimeCapabilities.FULL_CONNECTION_ACTIVE))
+        && !capabilities.permitsNew(
+            original.getDestinationCell(), RuntimeCapabilities.FULL_CONNECTION_ACTIVE))
       return completed(error(original, "UNAVAILABLE"));
     if (original.getType().equals("RenewReservation")
         && !capabilities.permits(
@@ -721,57 +722,87 @@ public final class CellRpcClient implements AutoCloseable {
    * callbacks.
    */
 
-  /** Bootstrap observation uses authenticated CONTROL transport without a business capability gate. */
-  public RpcOperation<CompatibilityObservationReply> observeCompatibility(String target, Duration budget) {
+  /**
+   * Bootstrap observation uses authenticated CONTROL transport without a business capability gate.
+   */
+  public RpcOperation<CompatibilityObservationReply> observeCompatibility(
+      String target, Duration budget) {
     final Flight<CompatibilityObservationReply> flight;
     final CompatibilityObservationRequest request;
     final long end;
     try {
-      if (budget == null || budget.isNegative() || budget.isZero()
-          || budget.compareTo(Duration.ofSeconds(2)) > 0 || !destinations.containsKey(target))
+      if (budget == null
+          || budget.isNegative()
+          || budget.isZero()
+          || budget.compareTo(Duration.ofSeconds(2)) > 0
+          || !destinations.containsKey(target))
         throw new IllegalArgumentException("Unenrolled observation destination/budget");
       end = System.nanoTime() + budget.toNanos();
-      request = CompatibilityObservationRequest.newBuilder().setDestinationCell(target)
-          .setNonce(UUID.randomUUID().toString()).build();
+      request =
+          CompatibilityObservationRequest.newBuilder()
+              .setDestinationCell(target)
+              .setNonce(UUID.randomUUID().toString())
+              .build();
       flight = begin(RpcAdmission.Lane.CONTROL, request.getSerializedSize());
       if (flight == null) throw new IllegalStateException("Draining");
     } catch (RuntimeException rejected) {
-      return new RpcOperation<>(CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
     }
     flight.logical.orTimeout(Math.max(1, end - System.nanoTime()), TimeUnit.NANOSECONDS);
     try {
       var transport = channel(target, RpcAdmission.Lane.CONTROL);
       long remaining = end - System.nanoTime();
       if (remaining <= 0) throw new IllegalStateException("Original observation deadline");
-      var stub = CompatibilityObservationIngressGrpc.newStub(transport)
-          .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
+      var stub =
+          CompatibilityObservationIngressGrpc.newStub(transport)
+              .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
       flight.opened();
       var terminal = new java.util.concurrent.atomic.AtomicBoolean();
-      var observer = new StreamObserver<CompatibilityObservationReply>() {
-        CompatibilityObservationReply received;
-        public void onNext(CompatibilityObservationReply value) {
-          if (received != null || !CompatibilityObservationValidation.valid(request, value))
-            flight.logical.completeExceptionally(new IllegalStateException("Invalid observation"));
-          else received = value;
-        }
-        public void onError(Throwable error) {
-          if (terminal.compareAndSet(false, true)) {
-            try { flight.logical.completeExceptionally(error); } finally { flight.ended(); }
-          }
-        }
-        public void onCompleted() {
-          if (terminal.compareAndSet(false, true)) {
-            try {
-              if (received == null) flight.logical.completeExceptionally(new IllegalStateException("Missing observation"));
-              else flight.logical.complete(received);
-            } finally { flight.ended(); }
-          }
-        }
-      };
-      try { stub.observeCompatibility(request, observer); }
-      catch (RuntimeException ambiguous) { flight.logical.completeExceptionally(ambiguous); }
-    } catch (RuntimeException notDispatched) { flight.logical.completeExceptionally(notDispatched); }
-    finally { flight.ended(); }
+      var observer =
+          new StreamObserver<CompatibilityObservationReply>() {
+            CompatibilityObservationReply received;
+
+            public void onNext(CompatibilityObservationReply value) {
+              if (received != null || !CompatibilityObservationValidation.valid(request, value))
+                flight.logical.completeExceptionally(
+                    new IllegalStateException("Invalid observation"));
+              else received = value;
+            }
+
+            public void onError(Throwable error) {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  flight.logical.completeExceptionally(error);
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+
+            public void onCompleted() {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  if (received == null)
+                    flight.logical.completeExceptionally(
+                        new IllegalStateException("Missing observation"));
+                  else flight.logical.complete(received);
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+          };
+      try {
+        stub.observeCompatibility(request, observer);
+      } catch (RuntimeException ambiguous) {
+        flight.logical.completeExceptionally(ambiguous);
+      }
+    } catch (RuntimeException notDispatched) {
+      flight.logical.completeExceptionally(notDispatched);
+    } finally {
+      flight.ended();
+    }
     return flight.operation();
   }
 

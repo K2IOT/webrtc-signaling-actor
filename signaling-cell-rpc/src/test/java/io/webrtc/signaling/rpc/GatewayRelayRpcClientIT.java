@@ -76,12 +76,14 @@ class GatewayRelayRpcClientIT {
     var admission = new RpcAdmission(1, 98304, 1, 98304);
     try (var client =
         new GatewayRelayRpcClient(
-            "test",
-            2,
-            Map.of(target, new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
-            RpcTlsContexts.gatewayClients(
-                "test", f.cert("ca.crt"), f.cert("actor.crt"), f.cert("actor.key")),
-            admission)) {
+                "test",
+                2,
+                Map.of(
+                    target, new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
+                RpcTlsContexts.gatewayClients(
+                    "test", f.cert("ca.crt"), f.cert("actor.crt"), f.cert("actor.key")),
+                admission)
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))) {
       for (int attempt = 0; attempt < 2; attempt++) {
         var work = client.send(destination, delivery, Duration.ofSeconds(1));
         assertThat(
@@ -156,15 +158,17 @@ class GatewayRelayRpcClientIT {
                                 17,
                                 29)),
                         CompletableFuture.completedFuture(null)))
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))
             .start();
     try (var client =
         new GatewayRelayRpcClient(
-            "test",
-            2,
-            Map.of(target, new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
-            RpcTlsContexts.gatewayClients(
-                "test", f.cert("ca.crt"), f.cert("actor.crt"), f.cert("actor.key")),
-            new RpcAdmission(1, 98304, 1, 98304))) {
+                "test",
+                2,
+                Map.of(target, new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
+                RpcTlsContexts.gatewayClients(
+                    "test", f.cert("ca.crt"), f.cert("actor.crt"), f.cert("actor.key")),
+                new RpcAdmission(1, 98304, 1, 98304))
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))) {
       var work =
           client.send(
               new RelayDestination("c001", "gw-1", boot, delivery.recipient()),

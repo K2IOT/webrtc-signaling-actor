@@ -30,6 +30,7 @@ class NativeCallingPolicyTest {
               context.getEnvironment().setActiveProfiles(profile);
             })
         .withPropertyValues(
+            "CELL_ID=c001",
             "signaling.identity.issuer=TEST_ONLY_ISSUER",
             "signaling.identity.audience=TEST_ONLY_AUDIENCE");
   }

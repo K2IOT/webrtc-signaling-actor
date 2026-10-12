@@ -51,11 +51,14 @@ public final class SqlTransactions {
   /** Caller validates its finite immutable input cap; this never inspects an opaque closure. */
   public DbCost boundedCharge(DbClass clazz, long inputByteBound, long resultByteBound) {
     var maximum = boundary.maximumCharge(clazz);
-    if (maximum == null || inputByteBound < 1 || resultByteBound < 1
-        || inputByteBound > maximum.inputBytes() || resultByteBound > maximum.resultBytes())
-      throw new DbOverloadedException();
-    long retained = Math.addExact(Math.multiplyExact(inputByteBound, 2),
-        Math.multiplyExact(resultByteBound, 2));
+    if (maximum == null
+        || inputByteBound < 1
+        || resultByteBound < 1
+        || inputByteBound > maximum.inputBytes()
+        || resultByteBound > maximum.resultBytes()) throw new DbOverloadedException();
+    long retained =
+        Math.addExact(
+            Math.multiplyExact(inputByteBound, 2), Math.multiplyExact(resultByteBound, 2));
     if (retained > maximum.retainedBytes()) throw new DbOverloadedException();
     return new DbCost(inputByteBound, retained, resultByteBound, maximum.serviceNanos());
   }
@@ -64,7 +67,8 @@ public final class SqlTransactions {
     return submitTracked(clazz, budget, boundary.maximumCharge(clazz), work);
   }
 
-  public <T> DbOperation<T> submitTracked(DbClass clazz, Duration budget, DbCost cost, Work<T> work) {
+  public <T> DbOperation<T> submitTracked(
+      DbClass clazz, Duration budget, DbCost cost, Work<T> work) {
     long start = System.nanoTime();
     return boundary.submitTransactionTracked(
         clazz,

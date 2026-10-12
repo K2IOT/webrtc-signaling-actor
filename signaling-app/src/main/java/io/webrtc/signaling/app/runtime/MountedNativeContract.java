@@ -150,21 +150,27 @@ public record MountedNativeContract(
               .onMalformedInput(CodingErrorAction.REPORT)
               .onUnmappableCharacter(CodingErrorAction.REPORT);
       var document = JSON.readTree(decoder.decode(ByteBuffer.wrap(bytes)).toString());
-      if (document.path("identity") instanceof com.fasterxml.jackson.databind.node.ObjectNode identity
+      if (document.path("identity")
+              instanceof com.fasterxml.jackson.databind.node.ObjectNode identity
           && !identity.has("claimLifetimePolicy")) {
         // Existing enrolled mounts retain their strict iat policy. Explicit null remains invalid.
-        identity.set("claimLifetimePolicy",
+        identity.set(
+            "claimLifetimePolicy",
             JSON.valueToTree(io.webrtc.signaling.auth.ClaimLifetimePolicy.legacyRequired()));
       }
       for (String database : List.of("cellDatabase", "directoryDatabase")) {
         if (document.path(database) instanceof com.fasterxml.jackson.databind.node.ObjectNode node
             && !node.has("resourceProfiles")) {
           // This parser admits only acknowledged local mounts. Production has no fallback.
-          var quotas = JSON.convertValue(node.get("quotas"),
-              new com.fasterxml.jackson.core.type.TypeReference<
-                  Map<io.webrtc.signaling.storage.DbClass, Integer>>() {});
-          node.set("resourceProfiles", JSON.valueToTree(
-              io.webrtc.signaling.storage.DbResourceProfile.localTestOnly(quotas)));
+          var quotas =
+              JSON.convertValue(
+                  node.get("quotas"),
+                  new com.fasterxml.jackson.core.type.TypeReference<
+                      Map<io.webrtc.signaling.storage.DbClass, Integer>>() {});
+          node.set(
+              "resourceProfiles",
+              JSON.valueToTree(
+                  io.webrtc.signaling.storage.DbResourceProfile.localTestOnly(quotas)));
         }
       }
       var contract = JSON.treeToValue(document, MountedNativeContract.class);

@@ -108,13 +108,20 @@ public final class DbPools implements AutoCloseable {
     if (observed) return;
     observed = true;
     for (var binding : java.util.List.of(safety, control)) {
-      var operation = binding == safety ? Operation.DB_CONNECTION_SAFETY : Operation.DB_CONNECTION_CONTROL;
-      binding.dataSource().setMetricsTrackerFactory((poolName, stats) -> new com.zaxxer.hikari.metrics.IMetricsTracker() {
-        public void recordConnectionAcquiredNanos(long elapsedNanos) {
-          var receipt = OperationObservation.safeStart(observer, operation);
-          receipt.poolWait(elapsedNanos); receipt.logical(Outcome.READ); receipt.physical(true);
-        }
-      });
+      var operation =
+          binding == safety ? Operation.DB_CONNECTION_SAFETY : Operation.DB_CONNECTION_CONTROL;
+      binding
+          .dataSource()
+          .setMetricsTrackerFactory(
+              (poolName, stats) ->
+                  new com.zaxxer.hikari.metrics.IMetricsTracker() {
+                    public void recordConnectionAcquiredNanos(long elapsedNanos) {
+                      var receipt = OperationObservation.safeStart(observer, operation);
+                      receipt.poolWait(elapsedNanos);
+                      receipt.logical(Outcome.READ);
+                      receipt.physical(true);
+                    }
+                  });
     }
   }
 
@@ -123,7 +130,9 @@ public final class DbPools implements AutoCloseable {
   public PoolObservation observation(boolean safetyPool) {
     var source = (safetyPool ? safety : control).dataSource();
     var bean = source.getHikariPoolMXBean();
-    return bean == null || source.isClosed() ? null : new PoolObservation(bean.getActiveConnections(), bean.getThreadsAwaitingConnection());
+    return bean == null || source.isClosed()
+        ? null
+        : new PoolObservation(bean.getActiveConnections(), bean.getThreadsAwaitingConnection());
   }
 
   public boolean closed() {

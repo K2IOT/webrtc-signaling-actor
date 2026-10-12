@@ -30,9 +30,20 @@ public record NativeControlDatabaseEnrollment(
       int controlMax,
       Map<DbClass, DbResourceProfile> resourceProfiles) {
     /** Count-only enrollment is explicitly LOCAL_TEST_ONLY and cannot launch production. */
-    public Database(String jdbcUrl, String username, String password,
-        Map<DbClass, Integer> quotas, int safetyMax, int controlMax) {
-      this(jdbcUrl, username, password, quotas, safetyMax, controlMax,
+    public Database(
+        String jdbcUrl,
+        String username,
+        String password,
+        Map<DbClass, Integer> quotas,
+        int safetyMax,
+        int controlMax) {
+      this(
+          jdbcUrl,
+          username,
+          password,
+          quotas,
+          safetyMax,
+          controlMax,
           DbResourceProfile.localTestOnly(quotas));
     }
 

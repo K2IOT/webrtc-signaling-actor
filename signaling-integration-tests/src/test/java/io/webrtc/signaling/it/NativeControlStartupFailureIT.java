@@ -367,6 +367,9 @@ class NativeControlStartupFailureIT {
     org.springframework.context.ConfigurableApplicationContext run(SpringApplication app) {
       return app.run(
           "--spring.profiles.active=control",
+          "--SIGNALING_DEPLOYMENT_MODE=local-minikube",
+          "--SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
+          "--CELL_ID=c001",
           "--signaling.identity.issuer=TEST_ONLY",
           "--signaling.identity.audience=TEST_ONLY");
     }

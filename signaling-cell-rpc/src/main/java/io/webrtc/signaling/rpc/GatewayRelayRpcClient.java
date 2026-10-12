@@ -4,11 +4,12 @@ import com.fasterxml.jackson.core.*;
 import com.fasterxml.jackson.databind.*;
 import com.google.protobuf.ByteString;
 import io.grpc.*;
-import io.webrtc.signaling.observability.*;
-import io.webrtc.signaling.observability.SignalingMetrics;
-import io.webrtc.signaling.protocol.RuntimeCapabilities;
 import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
+import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.observability.SignalingMetrics;
+import io.webrtc.signaling.protocol.InitialIceReceipt;
+import io.webrtc.signaling.protocol.RuntimeCapabilities;
 import io.webrtc.signaling.protocol.internal.*;
 import java.nio.ByteBuffer;
 import java.time.*;
@@ -67,6 +68,7 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
     observations = Objects.requireNonNull(value);
     return this;
   }
+
   private final ExecutorService callbacks =
       new ThreadPoolExecutor(
           4,
@@ -130,7 +132,7 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
                 .maxInboundMessageSize(98304)
                 .executor(lane == RpcAdmission.Lane.CONTROL ? controlCallbacks : callbacks)
                 .intercept(NativeRpcTelemetry.client())
-            .intercept(
+                .intercept(
                     new ClientInterceptor() {
                       @Override
                       public <Q, A> ClientCall<Q, A> interceptCall(
@@ -194,13 +196,23 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
     Flight(RpcAdmission.Ticket ticket, SignalingMetrics.Operation operation) {
       this.ticket = ticket;
       observation = OperationObservation.safeStart(observations, operation);
-      logical.whenComplete((v, e) -> {
-        observation.logical(e == null ? SignalingMetrics.Outcome.READ : SignalingMetrics.Outcome.OUTCOME_UNKNOWN);
-        if (operation == SignalingMetrics.Operation.RPC_RELAY)
-          observation.relay(e == null ? SignalingMetrics.RelayOutcome.WRITE_COMPLETED : SignalingMetrics.RelayOutcome.OUTCOME_UNKNOWN);
-        ended();
-      });
-      physical.whenComplete((v, e) -> { if (e == null) observation.physical(true); });
+      logical.whenComplete(
+          (v, e) -> {
+            observation.logical(
+                e == null
+                    ? SignalingMetrics.Outcome.READ
+                    : SignalingMetrics.Outcome.OUTCOME_UNKNOWN);
+            if (operation == SignalingMetrics.Operation.RPC_RELAY)
+              observation.relay(
+                  e == null
+                      ? SignalingMetrics.RelayOutcome.WRITE_COMPLETED
+                      : SignalingMetrics.RelayOutcome.OUTCOME_UNKNOWN);
+            ended();
+          });
+      physical.whenComplete(
+          (v, e) -> {
+            if (e == null) observation.physical(true);
+          });
     }
 
     synchronized void opened() {
@@ -230,7 +242,10 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
 
   private synchronized Flight<RelayWriteReceipt> begin(int bytes) {
     if (closed) throw new IllegalStateException("Gateway relay client draining");
-    var flight = new Flight<RelayWriteReceipt>(admission.acquire(RpcAdmission.Lane.RELAY, bytes), SignalingMetrics.Operation.RPC_RELAY);
+    var flight =
+        new Flight<RelayWriteReceipt>(
+            admission.acquire(RpcAdmission.Lane.RELAY, bytes),
+            SignalingMetrics.Operation.RPC_RELAY);
     active.add(flight);
     return flight;
   }
@@ -252,7 +267,17 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
         throw new IllegalArgumentException("Invalid relay budget/binding");
       end = System.nanoTime() + budget.toNanos();
       target = new Target(destination.cell(), destination.gatewayId(), destination.bootId());
-      capabilities.requireGateway(target.cell(), target.gatewayId(), target.bootId(), RuntimeCapabilities.FULL_CONNECTION_ACTIVE);
+      capabilities.requireGateway(
+          target.cell(),
+          target.gatewayId(),
+          target.bootId(),
+          RuntimeCapabilities.FULL_CONNECTION_ACTIVE);
+      if (InitialIceReceipt.requiresCapability(delivery.command()))
+        capabilities.requireGateway(
+            target.cell(),
+            target.gatewayId(),
+            target.bootId(),
+            RuntimeCapabilities.NATIVE_INITIAL_ICE_RECEIPT_V1);
       if (!destinations.containsKey(target))
         throw new IllegalArgumentException("Unenrolled gateway boot");
       var payload = JSON.writeValueAsBytes(delivery);
@@ -286,7 +311,8 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
       long remaining = end - System.nanoTime();
       if (remaining <= 0) throw new TimeoutException("Original relay deadline");
       var stub =
-          GatewayRelayIngressGrpc.newStub(transport).withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+          GatewayRelayIngressGrpc.newStub(transport)
+              .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
               .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
       flight.opened();
       var terminal = new AtomicBoolean();
@@ -355,7 +381,9 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
   private synchronized Flight<ControlApplicationReceipt> beginControl(int bytes) {
     if (closed) throw new IllegalStateException("Gateway control draining");
     var flight =
-        new Flight<ControlApplicationReceipt>(admission.acquire(RpcAdmission.Lane.CONTROL, bytes), SignalingMetrics.Operation.RPC_CONTROL);
+        new Flight<ControlApplicationReceipt>(
+            admission.acquire(RpcAdmission.Lane.CONTROL, bytes),
+            SignalingMetrics.Operation.RPC_CONTROL);
     active.add(flight);
     return flight;
   }
@@ -369,7 +397,11 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
     final GatewayControlRequest request;
     final long end;
     try {
-      capabilities.requireGateway(target.cell(), target.gatewayId(), target.bootId(), RuntimeCapabilities.NATIVE_CONTROL_RECEIPT_V1);
+      capabilities.requireGateway(
+          target.cell(),
+          target.gatewayId(),
+          target.bootId(),
+          RuntimeCapabilities.NATIVE_CONTROL_RECEIPT_V1);
       if (budget == null
           || budget.isNegative()
           || budget.isZero()
@@ -407,7 +439,8 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
       long remaining = end - System.nanoTime();
       if (remaining <= 0) throw new IllegalStateException("Original control deadline");
       var stub =
-          GatewayControlIngressGrpc.newStub(transport).withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
+          GatewayControlIngressGrpc.newStub(transport)
+              .withOption(NativeRpcTelemetry.TRACE_ID, flight.observation.traceId())
               .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
       flight.opened();
       var terminal = new AtomicBoolean();
@@ -475,64 +508,98 @@ public final class GatewayRelayRpcClient implements AutoCloseable {
     return flight.operation();
   }
 
-
-  /** Bootstrap observation uses authenticated CONTROL transport without a business capability gate. */
-  public RpcOperation<CompatibilityObservationReply> observeCompatibility(Target target, Duration budget) {
+  /**
+   * Bootstrap observation uses authenticated CONTROL transport without a business capability gate.
+   */
+  public RpcOperation<CompatibilityObservationReply> observeCompatibility(
+      Target target, Duration budget) {
     final Flight<CompatibilityObservationReply> flight;
     final CompatibilityObservationRequest request;
     final long end;
     try {
-      if (budget == null || budget.isNegative() || budget.isZero()
-          || budget.compareTo(Duration.ofSeconds(2)) > 0 || !destinations.containsKey(target))
+      if (budget == null
+          || budget.isNegative()
+          || budget.isZero()
+          || budget.compareTo(Duration.ofSeconds(2)) > 0
+          || !destinations.containsKey(target))
         throw new IllegalArgumentException("Unenrolled observation destination/budget");
       end = System.nanoTime() + budget.toNanos();
-      request = CompatibilityObservationRequest.newBuilder().setDestinationCell(target.cell())
-          .setGatewayId(target.gatewayId()).setBootId(target.bootId().toString()).setNonce(UUID.randomUUID().toString()).build();
+      request =
+          CompatibilityObservationRequest.newBuilder()
+              .setDestinationCell(target.cell())
+              .setGatewayId(target.gatewayId())
+              .setBootId(target.bootId().toString())
+              .setNonce(UUID.randomUUID().toString())
+              .build();
       flight = beginObservation(request.getSerializedSize());
       if (flight == null) throw new IllegalStateException("Draining");
     } catch (RuntimeException rejected) {
-      return new RpcOperation<>(CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
+      return new RpcOperation<>(
+          CompletableFuture.failedFuture(rejected), CompletableFuture.completedFuture(null));
     }
     flight.logical.orTimeout(Math.max(1, end - System.nanoTime()), TimeUnit.NANOSECONDS);
     try {
       var transport = channel(target, RpcAdmission.Lane.CONTROL);
       long remaining = end - System.nanoTime();
       if (remaining <= 0) throw new IllegalStateException("Original observation deadline");
-      var stub = CompatibilityObservationIngressGrpc.newStub(transport)
-          .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
+      var stub =
+          CompatibilityObservationIngressGrpc.newStub(transport)
+              .withDeadlineAfter(remaining, TimeUnit.NANOSECONDS);
       flight.opened();
       var terminal = new java.util.concurrent.atomic.AtomicBoolean();
-      var observer = new StreamObserver<CompatibilityObservationReply>() {
-        CompatibilityObservationReply received;
-        public void onNext(CompatibilityObservationReply value) {
-          if (received != null || !CompatibilityObservationValidation.valid(request, value))
-            flight.logical.completeExceptionally(new IllegalStateException("Invalid observation"));
-          else received = value;
-        }
-        public void onError(Throwable error) {
-          if (terminal.compareAndSet(false, true)) {
-            try { flight.logical.completeExceptionally(error); } finally { flight.ended(); }
-          }
-        }
-        public void onCompleted() {
-          if (terminal.compareAndSet(false, true)) {
-            try {
-              if (received == null) flight.logical.completeExceptionally(new IllegalStateException("Missing observation"));
-              else flight.logical.complete(received);
-            } finally { flight.ended(); }
-          }
-        }
-      };
-      try { stub.observeCompatibility(request, observer); }
-      catch (RuntimeException ambiguous) { flight.logical.completeExceptionally(ambiguous); }
-    } catch (RuntimeException notDispatched) { flight.logical.completeExceptionally(notDispatched); }
-    finally { flight.ended(); }
+      var observer =
+          new StreamObserver<CompatibilityObservationReply>() {
+            CompatibilityObservationReply received;
+
+            public void onNext(CompatibilityObservationReply value) {
+              if (received != null || !CompatibilityObservationValidation.valid(request, value))
+                flight.logical.completeExceptionally(
+                    new IllegalStateException("Invalid observation"));
+              else received = value;
+            }
+
+            public void onError(Throwable error) {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  flight.logical.completeExceptionally(error);
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+
+            public void onCompleted() {
+              if (terminal.compareAndSet(false, true)) {
+                try {
+                  if (received == null)
+                    flight.logical.completeExceptionally(
+                        new IllegalStateException("Missing observation"));
+                  else flight.logical.complete(received);
+                } finally {
+                  flight.ended();
+                }
+              }
+            }
+          };
+      try {
+        stub.observeCompatibility(request, observer);
+      } catch (RuntimeException ambiguous) {
+        flight.logical.completeExceptionally(ambiguous);
+      }
+    } catch (RuntimeException notDispatched) {
+      flight.logical.completeExceptionally(notDispatched);
+    } finally {
+      flight.ended();
+    }
     return flight.operation();
   }
 
   private synchronized Flight<CompatibilityObservationReply> beginObservation(int bytes) {
     if (closed) throw new IllegalStateException("Draining");
-    var flight = new Flight<CompatibilityObservationReply>(admission.acquire(RpcAdmission.Lane.CONTROL, bytes), SignalingMetrics.Operation.RPC_CONTROL);
+    var flight =
+        new Flight<CompatibilityObservationReply>(
+            admission.acquire(RpcAdmission.Lane.CONTROL, bytes),
+            SignalingMetrics.Operation.RPC_CONTROL);
     active.add(flight);
     return flight;
   }

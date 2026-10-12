@@ -49,20 +49,28 @@ public record TraceContext(String traceId, String spanId, boolean sampled) {
     return new TraceContext(trace, span, false);
   }
 
-  public static Scope activate(TraceContext context) { return new Scope(context); }
+  public static Scope activate(TraceContext context) {
+    return new Scope(context);
+  }
 
   /** Restores both fields, including absence, on the same callback thread. */
   public static final class Scope implements AutoCloseable {
     private final String priorTrace = MDC.get("traceId"), priorSpan = MDC.get("spanId");
+
     private Scope(TraceContext context) {
       restore("traceId", context == null ? null : context.traceId());
       restore("spanId", context == null ? null : context.spanId());
     }
-    @Override public void close() {
-      restore("traceId", priorTrace); restore("spanId", priorSpan);
+
+    @Override
+    public void close() {
+      restore("traceId", priorTrace);
+      restore("spanId", priorSpan);
     }
+
     private static void restore(String field, String value) {
-      if (value == null) MDC.remove(field); else MDC.put(field, value);
+      if (value == null) MDC.remove(field);
+      else MDC.put(field, value);
     }
   }
 

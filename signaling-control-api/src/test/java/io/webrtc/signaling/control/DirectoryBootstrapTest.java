@@ -3,6 +3,7 @@ package io.webrtc.signaling.control;
 import static org.assertj.core.api.Assertions.*;
 
 import io.webrtc.signaling.protocol.Identity.UserId;
+import io.webrtc.signaling.storage.DbOperation;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -69,10 +70,16 @@ class DirectoryBootstrapTest {
             repo,
             new BucketTransferService.AuthorityTransfer() {
               public CompletionStage<BucketTransferService.FreezeReceipt> freeze(HomeRoute source) {
+                throw new UnsupportedOperationException(
+                    "TEST_ONLY explicit transfer identity required");
+              }
+
+              public CompletionStage<BucketTransferService.FreezeReceipt> prepare(
+                  UUID id, HomeRoute source, HomeRoute target) {
                 calls.add("freeze");
                 return CompletableFuture.completedFuture(
                     new BucketTransferService.FreezeReceipt(
-                        source.bucket(), source.cell(), source.epoch(), UUID.randomUUID()));
+                        source.bucket(), source.cell(), source.epoch(), id));
               }
 
               public CompletionStage<Void> copyAndInstall(
@@ -80,12 +87,19 @@ class DirectoryBootstrapTest {
                 calls.add("install");
                 return CompletableFuture.completedFuture(null);
               }
+
+              public CompletionStage<Void> verifyInstalled(
+                  BucketTransferService.FreezeReceipt receipt, HomeRoute target) {
+                calls.add("verify");
+                assertThat(repo.route.cell()).isEqualTo("c001");
+                return CompletableFuture.completedFuture(null);
+              }
             });
     transfer
         .transfer(repo.route, new HomeRoute(175, "c002", 2, "wss://c002.test/signal"))
         .toCompletableFuture()
         .join();
-    assertThat(calls).containsExactly("freeze", "install");
+    assertThat(calls).containsExactly("freeze", "install", "verify");
     assertThat(repo.route.cell()).isEqualTo("c002");
   }
 
@@ -103,6 +117,19 @@ class DirectoryBootstrapTest {
       if (!Objects.equals(route, previous)) return CompletableFuture.completedFuture(false);
       route = next;
       return CompletableFuture.completedFuture(true);
+    }
+
+    // Synchronous TEST_ONLY repository; physical completion is explicit, never a production
+    // default.
+    public DbOperation<Optional<HomeRoute>> readTracked(int bucket) {
+      return new DbOperation<>(
+          read(bucket), CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.FINISHED));
+    }
+
+    public DbOperation<Boolean> compareAndPublishTracked(HomeRoute previous, HomeRoute next) {
+      return new DbOperation<>(
+          compareAndPublish(previous, next),
+          CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.FINISHED));
     }
 
     public CompletionStage<Boolean> localActive(int b, String cell, long epoch) {

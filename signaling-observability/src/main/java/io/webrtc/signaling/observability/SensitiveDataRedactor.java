@@ -29,7 +29,11 @@ public final class SensitiveDataRedactor {
   static Object approved(String key, Object value) {
     if (value == null) return null;
     if (NUMERIC.contains(key) && value instanceof String text && text.matches("[0-9]{1,19}")) {
-      try { value = Long.parseLong(text); } catch (NumberFormatException invalid) { return null; }
+      try {
+        value = Long.parseLong(text);
+      } catch (NumberFormatException invalid) {
+        return null;
+      }
     }
     if (NUMERIC.contains(key) && value instanceof Number n) {
       if (n instanceof Long || n instanceof Integer)

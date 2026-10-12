@@ -242,6 +242,7 @@ class NativeGatewayCommandIT {
                         throw new AssertionError();
                       })
                   .sessions(sessionHandler)
+                  .compatibility(TestOnlyNativeCapabilities.cells("c001"))
                   .start();
           var client =
               new CellRpcClient(
@@ -728,6 +729,7 @@ class NativeGatewayCommandIT {
                 context.getEnvironment().setActiveProfiles("gateway");
               })
           .withPropertyValues(
+              "CELL_ID=c001",
               "signaling.identity.issuer=TEST_ONLY_ISSUER",
               "signaling.identity.audience=TEST_ONLY_AUDIENCE")
           .run(
@@ -742,9 +744,22 @@ class NativeGatewayCommandIT {
                     .hasSingleBean(ConnectionRegistry.class);
                 fixture.gateway = context.getBean(NativeGatewayServices.class);
                 fixture.boot = context.getBean(GatewayBootController.class);
+                // Explicit TEST_ONLY support, after default fail-closed bean bindings.
+                client.compatibility(TestOnlyNativeCapabilities.cells("c001"));
+                fixture.gateway.compatibility(
+                    TestOnlyNativeCapabilities.gateway(
+                        "c001",
+                        fixture.boot.identity().gatewayId(),
+                        fixture.boot.identity().bootId()));
+                fixture.boot.start();
                 fixture.cache = context.getBean(NativeRelaySessionProofCache.class);
                 fixture.wss = context.getBean(GatewayServer.class);
                 fixture.relay = context.getBean(GatewayRelayRpcServer.class);
+                fixture.relay.compatibility(
+                    TestOnlyNativeCapabilities.gateway(
+                        "c001",
+                        fixture.boot.identity().gatewayId(),
+                        fixture.boot.identity().bootId()));
                 fixture.connections = context.getBean(ConnectionRegistry.class);
                 fixture.ingress =
                     context.getBean(io.webrtc.signaling.app.runtime.NativeGatewayIngress.class);

@@ -21,6 +21,7 @@ class RuntimeSecretStartupTest {
         () ->
             app.run(
                 "--spring.profiles.active=gateway",
+                "--CELL_ID=c001",
                 "--spring.main.banner-mode=off",
                 "--SIGNALING_RUNTIME_CONTRACT=" + file));
   }

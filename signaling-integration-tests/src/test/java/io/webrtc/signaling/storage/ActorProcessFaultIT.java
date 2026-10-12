@@ -206,11 +206,14 @@ class ActorProcessFaultIT {
                     CallId,
                     org.apache.pekko.actor.typed.ActorRef<
                         io.webrtc.signaling.actors.cluster.CallMessage>>();
+            var recovered = new CompletableFuture<Boolean>();
             try (var recovery =
                 new CallRecoveryService(
                     f.runtime.sql,
                     "c001",
                     1,
+                    "TEST_ONLY_PROCESS_RECOVERY",
+                    () -> Set.of(group),
                     (id, budget) -> {
                       var actor =
                           entities.computeIfAbsent(
@@ -222,15 +225,25 @@ class ActorProcessFaultIT {
                                           backend,
                                           () -> Optional.of(replacement.token()),
                                           Clock.systemUTC())));
-                      return AskPattern.ask(
-                          actor,
-                          reply -> new CallActor.WakeCall(id, reply, Instant.now().plus(budget)),
-                          budget,
-                          actors.scheduler());
+                      CompletionStage<Boolean> stage =
+                          AskPattern.ask(
+                              actor,
+                              reply ->
+                                  new CallActor.WakeCall(id, reply, Instant.now().plus(budget)),
+                              budget,
+                              actors.scheduler());
+                      stage.thenAccept(recovered::complete);
+                      return new DbOperation<>(
+                          stage,
+                          stage.handle((v, error) -> DbOperation.PhysicalCompletion.FINISHED));
                     })) {
-              var result = recovery.sweep().toCompletableFuture().get(5, TimeUnit.SECONDS);
-              assertThat(result.hydrated()).isEqualTo(1);
-              assertThat(result.cycleComplete()).isTrue();
+              var sweep = recovery.sweepTracked(Duration.ofSeconds(2));
+              var result = sweep.logical().toCompletableFuture().get(5, TimeUnit.SECONDS);
+              assertThat(result.examined()).isEqualTo(1);
+              assertThat(recovered.get(3, TimeUnit.SECONDS)).isTrue();
+              sweep.physicalCompletion().toCompletableFuture().get(3, TimeUnit.SECONDS);
+              assertThat(recovery.observedProgressAgeNanos())
+                  .isBetween(0L, Duration.ofSeconds(5).toNanos());
             }
           } finally {
             actors.shutdownTestKit();

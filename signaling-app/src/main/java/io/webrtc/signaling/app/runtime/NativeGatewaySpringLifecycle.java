@@ -21,7 +21,10 @@ public final class NativeGatewaySpringLifecycle implements SmartLifecycle {
   private volatile boolean running, draining;
   private CompletionStage<Void> completion;
   private java.util.function.BooleanSupplier compatibility = () -> false;
-  public void compatibility(java.util.function.BooleanSupplier compatibility) { this.compatibility = java.util.Objects.requireNonNull(compatibility); }
+
+  public void compatibility(java.util.function.BooleanSupplier compatibility) {
+    this.compatibility = java.util.Objects.requireNonNull(compatibility);
+  }
 
   NativeGatewaySpringLifecycle(
       NativeGatewayIngress ingress,
@@ -39,17 +42,28 @@ public final class NativeGatewaySpringLifecycle implements SmartLifecycle {
   }
 
   NativeGatewaySpringLifecycle(
-      NativeGatewayIngress ingress, GatewayBootController boot, NativeRelaySessionProofCache cache,
-      CellRpcClient client, NativeGatewayLifecycleEnrollment enrollment, BoundedTokenVerifier tokens,
-      NativeGatewaySafety safety, List<NativeWorkerScheduler> workers, List<NativeClockSource> clocks,
-      List<NativeCachedRevocationSource> sources, NativeTelemetry telemetry) throws Exception {
+      NativeGatewayIngress ingress,
+      GatewayBootController boot,
+      NativeRelaySessionProofCache cache,
+      CellRpcClient client,
+      NativeGatewayLifecycleEnrollment enrollment,
+      BoundedTokenVerifier tokens,
+      NativeGatewaySafety safety,
+      List<NativeWorkerScheduler> workers,
+      List<NativeClockSource> clocks,
+      List<NativeCachedRevocationSource> sources,
+      NativeTelemetry telemetry)
+      throws Exception {
     this.ingress = ingress;
     this.boot = boot;
     this.safety = safety;
     this.workers = List.copyOf(workers);
     health =
         new PrivateHealthServer(
-            enrollment.healthAddress(), enrollment.live(), this::ready, telemetry == null ? enrollment.metrics() : telemetry::scrape);
+            enrollment.healthAddress(),
+            enrollment.live(),
+            this::ready,
+            telemetry == null ? enrollment.metrics() : telemetry::scrape);
     shutdown =
         new ShutdownCoordinator(
             new ShutdownCoordinator.Hooks() {
@@ -105,7 +119,12 @@ public final class NativeGatewaySpringLifecycle implements SmartLifecycle {
   }
 
   public boolean ready() {
-    return running && !draining && compatibility.getAsBoolean() && ingress.wss().accepting() && boot.current() && safety.valid();
+    return running
+        && !draining
+        && compatibility.getAsBoolean()
+        && ingress.wss().accepting()
+        && boot.current()
+        && safety.valid();
   }
 
   @Override

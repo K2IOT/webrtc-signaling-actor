@@ -134,10 +134,14 @@ public final class OutboxRepository {
           boolean hintTurn = (claimTurn.getAndIncrement() & 1) != 0;
           int hintLimit = committedHints.isEmpty() ? 0 : limit / 2 + (hintTurn ? limit % 2 : 0);
           int repairLimit = limit - hintLimit;
-          var hints = repairLimit == 0 ? new LinkedHashMap<UUID, Integer>()
-              : hints(c, Queue.PENDING, pendingCursor, repairLimit);
+          var hints =
+              repairLimit == 0
+                  ? new LinkedHashMap<UUID, Integer>()
+                  : hints(c, Queue.PENDING, pendingCursor, repairLimit);
           if (hintLimit > 0) {
-            var hintArray = c.createArrayOf("uuid", committedHints.stream().limit(hintLimit).toArray(UUID[]::new));
+            var hintArray =
+                c.createArrayOf(
+                    "uuid", committedHints.stream().limit(hintLimit).toArray(UUID[]::new));
             try (var q =
                 c.prepareStatement(
                     "SELECT event_id,authority_bucket_id FROM control_outbox WHERE event_id=ANY(?)"

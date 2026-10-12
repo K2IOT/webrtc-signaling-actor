@@ -38,6 +38,7 @@ public final class GatewayBootController implements AutoCloseable {
   private State state = State.NEW;
   private boolean pending;
   private long sequence, deadline;
+  private ScheduledFuture<?> startupTask;
 
   public GatewayBootController(
       NativeSessionHandler.GatewayIdentity identity, Network network, LongSupplier nanos) {
@@ -64,9 +65,34 @@ public final class GatewayBootController implements AutoCloseable {
     return identity;
   }
 
+  /** Await trusted bootstrap facts before the first request; never retry a consumed boot. */
+  public synchronized void startWhen(java.util.function.BooleanSupplier ready) {
+    Objects.requireNonNull(ready);
+    if (state != State.NEW || startupTask != null) return;
+    startupTask =
+        scheduler.scheduleAtFixedRate(
+            () -> {
+              synchronized (this) {
+                if (state != State.NEW) return;
+              }
+              boolean admitted;
+              try {
+                admitted = ready.getAsBoolean();
+              } catch (RuntimeException unavailable) {
+                // Missing bootstrap facts leave the unconsumed boot unavailable.
+                return;
+              }
+              if (admitted) start();
+            },
+            0,
+            1,
+            TimeUnit.SECONDS);
+  }
+
   public synchronized void start() {
     if (state != State.NEW) return;
     state = State.STARTING;
+    if (startupTask != null) startupTask.cancel(false);
     send("BOOT_START", 1);
     scheduler.scheduleAtFixedRate(this::pulse, 5, 5, TimeUnit.SECONDS);
   }

@@ -127,6 +127,7 @@ class NativeCallingPolicyIT {
               context.getEnvironment().setActiveProfiles("actor");
             })
         .withPropertyValues(
+            "CELL_ID=c001",
             "signaling.identity.issuer=https://issuer.test",
             "signaling.identity.audience=control-test")
         .run(

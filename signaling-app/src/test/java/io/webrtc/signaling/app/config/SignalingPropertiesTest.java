@@ -27,6 +27,7 @@ class SignalingPropertiesTest {
               ctx.getEnvironment().setActiveProfiles("actor");
             })
         .withPropertyValues(
+            "CELL_ID=c001",
             "signaling.identity.issuer=https://identity.example.test",
             "signaling.identity.audience=signaling-test")
         .withPropertyValues(overrides);

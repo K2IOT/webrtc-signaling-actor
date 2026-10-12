@@ -8,13 +8,40 @@ import org.springframework.context.SmartLifecycle;
 public final class NativeCompatibilityObservationLifecycle implements SmartLifecycle {
   private final NativeWorkerScheduler worker;
   private volatile boolean running;
-  public NativeCompatibilityObservationLifecycle(List<NativeWorkerScheduler.Job> jobs, NativeTelemetry telemetry) {
+
+  public NativeCompatibilityObservationLifecycle(
+      List<NativeWorkerScheduler.Job> jobs, NativeTelemetry telemetry) {
     worker = new NativeWorkerScheduler(jobs, event -> {}).observe(telemetry::workerStarted);
   }
-  @Override public void start() { worker.start(); running = true; }
-  @Override public boolean isRunning() { return running; }
-  @Override public int getPhase() { return Integer.MAX_VALUE; }
-  public CompletionStage<Void> drain() { running = false; return worker.drain(); }
-  @Override public void stop(Runnable callback) { drain().thenRun(callback); }
-  @Override public void stop() { drain(); }
+
+  @Override
+  public void start() {
+    worker.start();
+    running = true;
+  }
+
+  @Override
+  public boolean isRunning() {
+    return running;
+  }
+
+  @Override
+  public int getPhase() {
+    return Integer.MAX_VALUE;
+  }
+
+  public CompletionStage<Void> drain() {
+    running = false;
+    return worker.drain();
+  }
+
+  @Override
+  public void stop(Runnable callback) {
+    drain().thenRun(callback);
+  }
+
+  @Override
+  public void stop() {
+    drain();
+  }
 }

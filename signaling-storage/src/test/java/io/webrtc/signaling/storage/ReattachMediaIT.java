@@ -227,6 +227,11 @@ class ReattachMediaIT {
       var loss =
           new CallWorkflowService.RouteLoss(
               call, f.token(call), caller, "TEST_ONLY_NATIVE_CLOSE_PROOF");
+      assertThatThrownBy(() -> workflow.routeLost(loss, Duration.ofSeconds(2)))
+          .isInstanceOf(IllegalStateException.class);
+      workflow.compatibility(
+          (cell, feature) ->
+              cell.equals("c001") && feature.equals(RuntimeCapabilities.CAUSAL_ROUTE_LOSS));
       var first = done(workflow.routeLost(loss, Duration.ofSeconds(2)));
       var duplicate = done(workflow.routeLost(loss, Duration.ofSeconds(2)));
       assertThat(duplicate.version()).isEqualTo(first.version());

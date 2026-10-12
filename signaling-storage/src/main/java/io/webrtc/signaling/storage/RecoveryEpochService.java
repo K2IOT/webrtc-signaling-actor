@@ -134,6 +134,12 @@ public final class RecoveryEpochService {
         Duration.ofSeconds(2),
         c -> {
           guard(c, p);
+          try (var context =
+              c.prepareStatement(
+                  "SELECT set_config('signaling.recovery_abort_operation',?,true)")) {
+            context.setString(1, p.operation().toString());
+            context.execute();
+          }
           int changed = 0;
           changed +=
               update(

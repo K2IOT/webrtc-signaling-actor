@@ -1,7 +1,7 @@
 package io.webrtc.signaling.actors.call;
 
-import io.webrtc.signaling.protocol.Identity.CallId;
 import io.webrtc.signaling.observability.*;
+import io.webrtc.signaling.protocol.Identity.CallId;
 import io.webrtc.signaling.storage.*;
 import java.time.Duration;
 import java.util.*;
@@ -31,7 +31,8 @@ public final class CallRecoveryService implements AutoCloseable {
     long reconcileAfter = admitted + Duration.ofMillis(500).toNanos();
     DbOperation<Boolean> operation;
     CompletableFuture<?> settled;
-    final java.util.concurrent.atomic.AtomicBoolean observationRecorded = new java.util.concurrent.atomic.AtomicBoolean();
+    final java.util.concurrent.atomic.AtomicBoolean observationRecorded =
+        new java.util.concurrent.atomic.AtomicBoolean();
 
     PendingWake(Hint hint) {
       this.hint = hint;
@@ -48,15 +49,20 @@ public final class CallRecoveryService implements AutoCloseable {
   private final Supplier<Set<Integer>> groups;
   private final Wake wake;
   private volatile OperationObservation observer = OperationObservation.NONE;
+
   public CallRecoveryService observe(OperationObservation observation) {
-    observer = Objects.requireNonNull(observation); return this;
+    observer = Objects.requireNonNull(observation);
+    return this;
   }
+
   private record WakeResult(Boolean hydrated, Throwable failure) {}
+
   private void observeHydration(PendingWake pending, SignalingMetrics.HydrationOutcome outcome) {
     if (pending.observationRecorded.compareAndSet(false, true))
-      OperationObservation.safeHydration(observer, outcome,
-          Duration.ofNanos(Math.max(0, System.nanoTime() - pending.admitted)));
+      OperationObservation.safeHydration(
+          observer, outcome, Duration.ofNanos(Math.max(0, System.nanoTime() - pending.admitted)));
   }
+
   // The authority domain has exactly 1024 groups. Each holds two keyset positions, never a
   // per-call backlog; hash versions remain part of the SQL key and frozen boundary.
   private final Hint[] cursors = new Hint[1024], uppers = new Hint[1024];
@@ -354,18 +360,21 @@ public final class CallRecoveryService implements AutoCloseable {
                   (cleanup, result) -> {
                     if (cleanup == null)
                       throw new IllegalStateException("Missing wake cleanup proof");
-                    var outcome = result.failure() != null || result.hydrated() == null
-                        ? SignalingMetrics.HydrationOutcome.OUTCOME_UNKNOWN
-                        : cleanup == DbOperation.PhysicalCompletion.FINISHED && result.hydrated()
-                            ? SignalingMetrics.HydrationOutcome.HYDRATED
-                            : SignalingMetrics.HydrationOutcome.NOT_HYDRATED;
+                    var outcome =
+                        result.failure() != null || result.hydrated() == null
+                            ? SignalingMetrics.HydrationOutcome.OUTCOME_UNKNOWN
+                            : cleanup == DbOperation.PhysicalCompletion.FINISHED
+                                    && result.hydrated()
+                                ? SignalingMetrics.HydrationOutcome.HYDRATED
+                                : SignalingMetrics.HydrationOutcome.NOT_HYDRATED;
                     observeHydration(pending, outcome);
                     return cleanup;
                   })
               .toCompletableFuture();
       pending.settled.whenComplete(
           (done, failure) -> {
-            if (failure != null) observeHydration(pending, SignalingMetrics.HydrationOutcome.OUTCOME_UNKNOWN);
+            if (failure != null)
+              observeHydration(pending, SignalingMetrics.HydrationOutcome.OUTCOME_UNKNOWN);
             if (failure == null)
               synchronized (CallRecoveryService.this) {
                 release(pending);
@@ -449,7 +458,9 @@ public final class CallRecoveryService implements AutoCloseable {
 
   /** Separate telemetry projection; startup without a native scan has no progress observation. */
   public synchronized long observedProgressAgeNanos() {
-    return active == null && lastCycleNanos == 0 && wakes.isEmpty() ? -1 : oldestUnreconciledNanos();
+    return active == null && lastCycleNanos == 0 && wakes.isEmpty()
+        ? -1
+        : oldestUnreconciledNanos();
   }
 
   public synchronized CompletionStage<Void> drain() {

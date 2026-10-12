@@ -22,8 +22,16 @@ public record IdentitySecurityContract(
       Duration hardSafetyBound,
       boolean preserveJtiOnRefresh,
       String highWaterSource) {
-    this(issuer, audience, maximumJwtLifetime, clockSkew, revocationPropagationSLO,
-        hardSafetyBound, preserveJtiOnRefresh, highWaterSource, ClaimLifetimePolicy.legacyRequired());
+    this(
+        issuer,
+        audience,
+        maximumJwtLifetime,
+        clockSkew,
+        revocationPropagationSLO,
+        hardSafetyBound,
+        preserveJtiOnRefresh,
+        highWaterSource,
+        ClaimLifetimePolicy.legacyRequired());
   }
 
   public IdentitySecurityContract {

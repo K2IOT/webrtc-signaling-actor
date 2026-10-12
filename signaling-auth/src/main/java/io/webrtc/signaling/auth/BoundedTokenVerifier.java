@@ -1,14 +1,18 @@
 package io.webrtc.signaling.auth;
 
-import java.time.*;
 import io.webrtc.signaling.observability.*;
 import io.webrtc.signaling.observability.SignalingMetrics.*;
+import java.time.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class BoundedTokenVerifier implements AutoCloseable {
   private volatile OperationObservation observations = OperationObservation.NONE;
-  public void observe(OperationObservation observations) { this.observations = java.util.Objects.requireNonNull(observations); }
+
+  public void observe(OperationObservation observations) {
+    this.observations = java.util.Objects.requireNonNull(observations);
+  }
+
   private final TokenVerifier verifier;
   private final ThreadPoolExecutor executor;
   private final Semaphore admission;
@@ -41,14 +45,21 @@ public final class BoundedTokenVerifier implements AutoCloseable {
   public CompletionStage<AuthPrincipal> verify(String token, Instant now) {
     var observation = OperationObservation.safeStart(observations, Operation.AUTH_VERIFY);
     if (!admission.tryAcquire()) {
-      observation.logical(Outcome.BACKPRESSURE); observation.physical(false);
+      observation.logical(Outcome.BACKPRESSURE);
+      observation.physical(false);
       return CompletableFuture.failedFuture(new RejectedExecutionException("AUTH_OVERLOADED"));
     }
     pending.incrementAndGet();
     long submitted = System.nanoTime();
     var result = new CompletableFuture<AuthPrincipal>();
-    result.whenComplete((value, failure) -> observation.logical(failure == null ? Outcome.READ
-        : failure instanceof RejectedExecutionException ? Outcome.BACKPRESSURE : Outcome.FORBIDDEN));
+    result.whenComplete(
+        (value, failure) ->
+            observation.logical(
+                failure == null
+                    ? Outcome.READ
+                    : failure instanceof RejectedExecutionException
+                        ? Outcome.BACKPRESSURE
+                        : Outcome.FORBIDDEN));
     try {
       executor.execute(
           () -> {

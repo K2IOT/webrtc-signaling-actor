@@ -21,6 +21,12 @@ class MaintenanceWorkersIT {
     }
   }
 
+  static void awaitIdle(OutboxDispatcher dispatcher) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (dispatcher.activeDeliveries() != 0 && System.nanoTime() < deadline) Thread.sleep(10);
+    assertThat(dispatcher.activeDeliveries()).isZero();
+  }
+
   static long count(LocalInviteAtomicIT.Fixture f, String table) throws Exception {
     try (var c = f.connection();
         var q = c.createStatement();
@@ -58,7 +64,8 @@ class MaintenanceWorkersIT {
                     CompletableFuture.completedFuture(null));
               },
               (event, receipt) -> event.eventId().equals(receipt.eventId()));
-      assertThat(dispatcher.poll(128).toCompletableFuture().join().delivered()).isZero();
+      assertThat(done(dispatcher.pollTracked(128)).claimed()).isEqualTo(2);
+      awaitIdle(dispatcher);
       try (var c = f.connection();
           var q = c.createStatement();
           var r =
@@ -73,9 +80,20 @@ class MaintenanceWorkersIT {
             "UPDATE control_outbox SET dispatch_until=clock_timestamp()-interval '1 second',next_attempt=clock_timestamp()-interval '1 second'");
       }
       application.set(true);
-      assertThat(dispatcher.poll(128).toCompletableFuture().join().delivered()).isEqualTo(2);
+      int claimed = 0, delivered = 0;
+      // A fixed-ceiling repair cursor wraps before revisiting the earlier deferred rows.
+      for (int page = 0; page < 3 && claimed < 2; page++) {
+        var report = done(dispatcher.pollTracked(128));
+        claimed += report.claimed();
+        delivered += report.delivered();
+      }
+      assertThat(claimed).isEqualTo(2);
+      awaitIdle(dispatcher);
+      delivered += done(dispatcher.pollTracked(128)).delivered();
+      assertThat(delivered).isEqualTo(2);
       assertThat(sent.get()).isEqualTo(4);
-      assertThat(dispatcher.poll(128).toCompletableFuture().join().claimed()).isZero();
+      assertThat(done(dispatcher.pollTracked(128)).claimed()).isZero();
+      dispatcher.drain().toCompletableFuture().get(5, TimeUnit.SECONDS);
     }
   }
 
@@ -98,11 +116,16 @@ class MaintenanceWorkersIT {
                   new DbOperation<>(
                       CompletableFuture.failedFuture(new TimeoutException()), cleanup),
               (event, receipt) -> false);
-      dispatcher.poll(2).toCompletableFuture().join();
-      assertThatThrownBy(() -> dispatcher.poll(2).toCompletableFuture().join())
-          .hasCauseInstanceOf(DbOverloadedException.class);
+      assertThat(done(dispatcher.pollTracked(128)).claimed()).isEqualTo(2);
+      assertThat(dispatcher.activeDeliveries()).isEqualTo(2);
+      // SQL scan admission is independent; still-owned original events cannot be redelivered.
+      assertThat(done(dispatcher.pollTracked(128)).claimed()).isZero();
+      assertThat(dispatcher.activeDeliveries()).isEqualTo(2);
+      var drained = dispatcher.drain().toCompletableFuture();
+      assertThat(drained.isDone()).isFalse();
       cleanup.complete(DbOperation.PhysicalCompletion.FINISHED);
-      assertThat(dispatcher.poll(2).toCompletableFuture().join().claimed()).isZero();
+      drained.get(5, TimeUnit.SECONDS);
+      assertThat(dispatcher.activeDeliveries()).isZero();
     }
   }
 

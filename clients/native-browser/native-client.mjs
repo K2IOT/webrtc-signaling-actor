@@ -3,6 +3,7 @@ import { MediaRecoveryController } from "./media-recovery-controller.mjs";
 // Native public WSS v1. No HTTP fixture or invented ICE_ACK server operation.
 export const VERSION = "1.0.0";
 export const RECEIPT_PROTOCOL = "webrtc-signaling-ice-receipts.v1";
+export const INITIAL_RECEIPT_PROTOCOL = "native-initial-ice-receipt-v1";
 const MAX = 9223372036854775807n;
 const bytes = value => new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value)).length;
 const uuid = value => {
@@ -42,7 +43,8 @@ function candidate(value) {
 /** One active call, one ordered ICE agent. All application callbacks must settle within 10s. */
 export class NativeBrowserClient {
   constructor({ peerConnection, authorityDomain, handleControlEvent, onMessage, onResyncRequired,
-    onResetPeerConnection, journal, principal, mediaRecovery, requestId = () => crypto.randomUUID(), now = () => performance.now() }) {
+    onResetPeerConnection, journal, principal, mediaRecovery, initialIceReceipts = false,
+    requestId = () => crypto.randomUUID(), now = () => performance.now() }) {
     if (!peerConnection || typeof peerConnection.addIceCandidate !== "function"
         || typeof handleControlEvent !== "function" || typeof onResyncRequired !== "function"
         || typeof authorityDomain !== "string" || !authorityDomain.trim() || bytes(authorityDomain) > 256) throw Error("CLIENT_CONTRACT_REQUIRED");
@@ -53,6 +55,10 @@ export class NativeBrowserClient {
     this.journal = journal ?? null;
     this.principal = principal ? principalBinding(principal, authorityDomain) : null;
     this.durableRequests = new Set();
+    if (typeof initialIceReceipts !== "boolean") throw Error("INVALID_RECEIPT_CAPABILITY");
+    this.initialIceRequested = initialIceReceipts; this.initialIceEnabled = false;
+    this.initialReceipts = new Map(); this.lastNativeReceipt = null; this.lastIceResend = -Infinity;
+    this.nativePeerSupported = false;
     this.media = mediaRecovery ? new MediaRecoveryController(this, mediaRecovery) : null;
     this.socket = null; this.route = null; this.round = null; this.receiver = null; this.sender = null;
     this.outbound = new Map(); this.outboundBytes = 0; this.outboundCount = 0;
@@ -100,7 +106,8 @@ export class NativeBrowserClient {
   }
   authenticate(token, refresh = false) {
     if (typeof token !== "string" || bytes(token) > 8192) throw Error("INVALID_TOKEN");
-    this.sendFrame({ v: 1, type: refresh ? "AUTH_REFRESH" : "AUTH", payload: { token } });
+    this.sendFrame({ v: 1, type: refresh ? "AUTH_REFRESH" : "AUTH", payload: { token,
+      ...(this.initialIceRequested ? { initialIceReceiptsV1: true } : {}) } });
   }
   command(type, callId, payload = {}, request = this.requestId()) {
     if (!["INVITE", "ACCEPT", "CANCEL", "HANGUP", "REJECT", "DECLINE_ALL", "NEGOTIATE_REQUEST", "RESUME", "SYNC_CALL", "EVENT_RECEIVED"].includes(type)) throw Error("UNSUPPORTED_COMMAND");
@@ -129,6 +136,8 @@ export class NativeBrowserClient {
     if (existing && existing.encoded !== encoded) throw Error("REQUEST_ID_REUSED");
     if (!existing && (this.pending.size >= 256 || this.pendingBytes + bytes(encoded) > 262144)) throw Error("COMMAND_WINDOW_FULL");
     await this.journal.persist(this.principal, encoded);
+    // The admitted intent remains durable even if disposal wins the transaction race.
+    if (this.closed) { const error = Error("CLIENT_CLOSED"); error.requestId = request; throw error; }
     this.durableRequests.add(request);
     // Recheck synchronous map admission after concurrent transaction completion.
     try { return this.command(type, callId, JSON.parse(encoded).payload, request); }
@@ -206,12 +215,16 @@ export class NativeBrowserClient {
     if (frame.type === "AUTH_OK") {
       uuid(frame.sessionIncarnation); decimal64(frame.connectionGeneration);
       this.route = { sessionIncarnation: frame.sessionIncarnation, connectionGeneration: frame.connectionGeneration };
+      this.initialIceEnabled = this.initialIceRequested && frame.initialIceReceiptsV1 === true;
       await this.bounded(() => this.onMessage(frame)); return;
     }
     if (frame.type === "AUTH_EXPIRING" || frame.type === "OVERLOADED") {
       await this.bounded(() => this.onMessage(frame)); return;
     }
     if (!this.currentRoute(frame)) return; // Old socket/session frames cannot mutate the new route.
+    if (frame.type === "INITIAL_ICE_RECEIPT") {
+      this.acceptInitialIceReceipt(frame); return;
+    }
     if (frame.type === "CALL_SNAPSHOT" && !this.applySnapshot(frame)) {
       const pending = this.pending.get(frame.requestId);
       if (pending?.frame.type === "SYNC_CALL") pending.status = "READ";
@@ -323,6 +336,10 @@ export class NativeBrowserClient {
   bufferIce(frame) {
     const receiver = this.receiver, payload = frame.payload;
     if (!payload || bytes(payload) > 8192) throw Error("ICE_BATCH_BOUND");
+    if (payload.receiptProtocol !== undefined && payload.receiptProtocol !== INITIAL_RECEIPT_PROTOCOL) throw Error("UNSUPPORTED_RECEIPT_PROTOCOL");
+    if (payload.receiptProtocol === INITIAL_RECEIPT_PROTOCOL && this.initialIceEnabled) {
+      receiver.nativeReceipts = true; this.nativePeerSupported = true;
+    }
     if (frame.type === "END_OF_CANDIDATES") {
       const terminal = decimal64(payload.terminalSequence);
       if ((receiver.terminal !== null && receiver.terminal !== terminal) || terminal < receiver.cursor
@@ -396,37 +413,77 @@ export class NativeBrowserClient {
   }
   sendIceReceipt() {
     const receipt = this.receipt();
+    if (receipt && this.initialIceEnabled && this.receiver?.nativeReceipts) {
+      const payload = { receiptVersion: 1, senderSessionIncarnation: receipt.scope.senderSessionIncarnation,
+        highestContiguous: receipt.highestContiguous, missingRanges: receipt.missingRanges.slice(0, 32), endReceived: receipt.endReceived };
+      const identity = JSON.stringify(payload);
+      let item = this.lastNativeReceipt;
+      if (!item || item.identity !== identity) {
+        const { callId, negotiationId, iceGeneration } = receipt.scope;
+        const requestId = uuid(this.requestId());
+        item = { identity, encoded: JSON.stringify({ v: 1, type: "INITIAL_ICE_RECEIPT", requestId,
+          callId, negotiationId, iceGeneration, payload }), requestId, created: this.now(), lastSent: -Infinity };
+        this.lastNativeReceipt = item; this.initialReceipts.set(requestId, item);
+        if (this.initialReceipts.size > 32) this.initialReceipts.delete(this.initialReceipts.keys().next().value);
+      }
+      // Receipt metadata is volatile. Unavailable WSS retains the same UUID for bounded retry.
+      if (this.now() - item.lastSent >= 100 && this.now() - item.created < 10000) {
+        try { this.sendEncoded(item.encoded, item.requestId); item.lastSent = this.now(); }
+        catch (_) { /* tick retries within the original finite receipt window */ }
+      }
+      return;
+    }
     if (!receipt || !this.receiptChannel || this.receiptBinding !== key(this.round)) return;
     if (this.receiptChannel.readyState !== "open" || this.receiptChannel.bufferedAmount > 8192) throw Error("RECEIPT_TRANSPORT_UNAVAILABLE");
     this.receiptChannel.send(JSON.stringify(receipt));
   }
-  acceptIceReceipt(encoded) {
+  acceptInitialIceReceipt(frame) {
+    const payload = frame.payload;
+    if (!this.initialIceEnabled || !this.sender || !this.round || frame.callId !== this.sender.callId
+        || frame.negotiationId !== this.sender.negotiationId || frame.iceGeneration !== this.sender.iceGeneration
+        || frame.sender?.incarnation?.value !== this.round.senderSessionIncarnation
+        || payload?.receiptVersion !== 1 || payload.senderSessionIncarnation !== this.sender.senderSessionIncarnation
+        || !Array.isArray(payload.missingRanges) || payload.missingRanges.length > 32) throw Error("STALE_ICE_RECEIPT");
+    this.acceptIceReceipt(JSON.stringify({ v: 1, scope: this.sender,
+      highestContiguous: payload.highestContiguous, missingRanges: payload.missingRanges, endReceived: payload.endReceived }), true);
+    this.nativePeerSupported = true;
+  }
+  acceptIceReceipt(encoded, native = false) {
     if (typeof encoded !== "string" || bytes(encoded) > 8192 || !this.sender) throw Error("INVALID_ICE_RECEIPT");
     const receipt = JSON.parse(encoded);
-    if (receipt.v !== 1 || key(receipt.scope) !== key(this.sender) || this.receiptBinding !== key(this.round)) throw Error("STALE_ICE_RECEIPT");
+    if (receipt.v !== 1 || key(receipt.scope) !== key(this.sender)
+        || (!native && this.receiptBinding !== key(this.round))) throw Error("STALE_ICE_RECEIPT");
     const cursor = decimal64(receipt.highestContiguous, true);
-    if (cursor > this.sentSequence || cursor < this.ackedSequence) throw Error("INVALID_ICE_RECEIPT");
+    if (cursor > this.sentSequence) throw Error("INVALID_ICE_RECEIPT");
+    if (cursor < this.ackedSequence) return; // Reordered volatile receipts cannot regress progress.
     if (!Array.isArray(receipt.missingRanges) || receipt.missingRanges.length > 257 || typeof receipt.endReceived !== "boolean") throw Error("INVALID_ICE_RECEIPT");
+    let previous = cursor;
     const ranges = receipt.missingRanges.map(pair => {
       if (!Array.isArray(pair) || pair.length !== 2) throw Error("INVALID_ICE_RECEIPT");
       const start = decimal64(pair[0]), end = decimal64(pair[1]);
-      if (start <= cursor || end < start || end > this.sentSequence) throw Error("INVALID_ICE_RECEIPT");
+      if (start <= previous || end < start || end > this.sentSequence) throw Error("INVALID_ICE_RECEIPT");
+      previous = end;
       return [start, end];
     });
+    if (receipt.endReceived && (!this.sentEnd || cursor !== this.sentSequence || ranges.length)) throw Error("INVALID_ICE_END_RECEIPT");
     this.ackedSequence = cursor;
+    const resend = this.now() - this.lastIceResend >= 100;
+    let retransmitted = false;
     for (const [request, item] of this.outbound) {
       if (item.end <= cursor && (!item.terminal || receipt.endReceived)) this.retireOutbound(request, item);
-      else if (ranges.some(([start, end]) => item.start <= end && item.end >= start) || (item.terminal && !receipt.endReceived)) {
+      else if (resend && !retransmitted && (ranges.some(([start, end]) => item.start <= end && item.end >= start) || (item.terminal && !receipt.endReceived))) {
         if (this.now() - item.created >= 10000) throw Error("RESEND_WINDOW_EXPIRED");
-        this.sendFrame(item.frame); // Original native identity/sequence, never ICE_ACK on WSS.
+        this.sendFrame(item.frame); item.lastSent = this.now(); retransmitted = true; // Original native identity/sequence.
       }
     }
+    if (retransmitted) this.lastIceResend = this.now();
   }
   sendIceCandidates(values) {
     if (!this.sender || !Array.isArray(values) || values.length < 1 || values.length > 20 || this.sentEnd) throw Error("INVALID_ICE_SEND");
     const candidates = values.map(candidate), start = this.sentSequence + 1n;
     if (start > MAX - BigInt(values.length)) throw Error("ICE_SEQUENCE_EXHAUSTED");
-    const payload = { startSequence: start.toString(), candidates };
+    const payload = { startSequence: start.toString(), candidates,
+      ...(this.initialIceEnabled ? { receiptProtocol: INITIAL_RECEIPT_PROTOCOL } : {}) };
     if (bytes(payload) > 8192) throw Error("ICE_BATCH_BOUND");
     const end = start + BigInt(values.length - 1);
     const request = this.cacheAndSendIce("ICE_CANDIDATES", payload, start, end, values.length);
@@ -440,7 +497,8 @@ export class NativeBrowserClient {
   }
   sendEndOfCandidates() {
     if (!this.sender || this.sentEnd || this.sentSequence < 1n) throw Error("INVALID_ICE_END");
-    const request = this.cacheAndSendIce("END_OF_CANDIDATES", { terminalSequence: this.sentSequence.toString() }, this.sentSequence, this.sentSequence, 0);
+    const request = this.cacheAndSendIce("END_OF_CANDIDATES", { terminalSequence: this.sentSequence.toString(),
+      ...(this.initialIceEnabled ? { receiptProtocol: INITIAL_RECEIPT_PROTOCOL } : {}) }, this.sentSequence, this.sentSequence, 0);
     this.sentEnd = true; return request;
   }
   cacheAndSendIce(type, payload, start, end, count) {
@@ -492,7 +550,19 @@ export class NativeBrowserClient {
     if (this.closed) return;
     if (this.receiver?.waitingSince !== null && this.receiver?.waitingSince !== undefined
         && this.now() - this.receiver.waitingSince >= 10000) this.fail("ICE_GAP_OR_DESCRIPTION_EXPIRED");
-    for (const [request, item] of this.outbound) if (this.now() - item.created >= 10000) this.retireOutbound(request, item);
+    for (const [request, item] of this.outbound) if (this.now() - item.created >= 10000) {
+      if (this.initialIceEnabled && this.nativePeerSupported) { this.fail("INITIAL_ICE_RECEIPT_EXPIRED"); break; }
+      this.retireOutbound(request, item);
+    }
+    if (this.initialIceEnabled && this.nativePeerSupported && this.now() - this.lastIceResend >= 100) {
+      for (const item of this.outbound.values()) if (this.now() - (item.lastSent ?? item.created) >= 1000) {
+        try { this.sendFrame(item.frame); item.lastSent = this.now(); this.lastIceResend = this.now(); }
+        catch (_) { /* Original cache and deadline retain ambiguous send ownership. */ }
+        break; // At most one resend per tick; no burst over the gateway input rate budget.
+      }
+    }
+    for (const [request, item] of this.initialReceipts) if (this.now() - item.created >= 10000) this.initialReceipts.delete(request);
+    if (this.receiver?.nativeReceipts) this.sendIceReceipt();
   }
   clearVolatile() {
     this.epoch++;
@@ -502,6 +572,8 @@ export class NativeBrowserClient {
     }
     if (this.receiver) this.receiver.active = false;
     this.receiver = null; this.round = null; this.sender = null;
+    this.initialReceipts.clear(); this.lastNativeReceipt = null; this.lastIceResend = -Infinity;
+    this.nativePeerSupported = false;
     this.sentSequence = 0n; this.ackedSequence = 0n; this.sentEnd = false;
     this.outbound.clear(); this.outboundBytes = 0; this.outboundCount = 0;
     for (const [request, item] of this.pending) if (item.frame.type === "EVENT_RECEIVED") {

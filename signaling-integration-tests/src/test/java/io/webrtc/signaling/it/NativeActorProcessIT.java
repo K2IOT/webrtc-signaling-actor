@@ -182,6 +182,12 @@ class NativeActorProcessIT {
           context -> {
             defaults.forEach(
                 source -> context.getEnvironment().getPropertySources().addLast(source));
+            context
+                .getEnvironment()
+                .getPropertySources()
+                .addFirst(
+                    new org.springframework.core.env.MapPropertySource(
+                        "TEST_ONLY_identity", Map.of("CELL_ID", "c001")));
             var registry =
                 (org.springframework.beans.factory.support.BeanDefinitionRegistry)
                     context.getBeanFactory();
@@ -775,8 +781,9 @@ class NativeActorProcessIT {
                       beans.getBeanProvider(NativeActorSourceEnrollment.class),
                       beans.getBeanProvider(NativeActorSchedulingEnrollment.class),
                       beans.getBeanProvider(NativeActorProcess.class),
-                      beans.getBeanProvider(
-                          io.webrtc.signaling.auth.CallAuthorizationPolicy.class)))
+                      beans.getBeanProvider(io.webrtc.signaling.auth.CallAuthorizationPolicy.class),
+                      null,
+                      null))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessage("Native actor business process differs from managed enrollment");
     } finally {
@@ -798,6 +805,12 @@ class NativeActorProcessIT {
     app.addInitializers(
         context -> {
           defaults.forEach(s -> context.getEnvironment().getPropertySources().addLast(s));
+          context
+              .getEnvironment()
+              .getPropertySources()
+              .addFirst(
+                  new org.springframework.core.env.MapPropertySource(
+                      "TEST_ONLY_identity", Map.of("CELL_ID", "c001")));
           var definition =
               new RootBeanDefinition(NativeActorProcessEnrollment.class, () -> enrollment);
           definition.setDestroyMethodName("");

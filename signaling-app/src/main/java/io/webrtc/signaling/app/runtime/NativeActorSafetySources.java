@@ -19,12 +19,21 @@ public final class NativeActorSafetySources implements AutoCloseable {
   private final List<NativeWorkerScheduler.Job> jobs;
   private volatile boolean draining;
   private volatile NativeWalSource wal;
+
   public synchronized NativeActorSafetySources wal(NativeWalSource source) {
-    if (wal != null || draining) throw new IllegalStateException("WAL owner already bound or draining");
-    wal = Objects.requireNonNull(source); return this;
+    if (wal != null || draining)
+      throw new IllegalStateException("WAL owner already bound or draining");
+    wal = Objects.requireNonNull(source);
+    return this;
   }
+
   private java.util.function.BooleanSupplier compatibility = () -> false;
-  public NativeActorSafetySources compatibility(java.util.function.BooleanSupplier compatibility) { this.compatibility = Objects.requireNonNull(compatibility); return this; }
+
+  public NativeActorSafetySources compatibility(java.util.function.BooleanSupplier compatibility) {
+    this.compatibility = Objects.requireNonNull(compatibility);
+    return this;
+  }
+
   private CompletionStage<Void> drained;
 
   public NativeActorSafetySources(
@@ -68,7 +77,13 @@ public final class NativeActorSafetySources implements AutoCloseable {
   }
 
   private boolean liveSafety() {
-    return !draining && compatibility.getAsBoolean() && clock.valid() && primary.usable() && wal != null && wal.usable() && revocations.usable();
+    return !draining
+        && compatibility.getAsBoolean()
+        && clock.valid()
+        && primary.usable()
+        && wal != null
+        && wal.usable()
+        && revocations.usable();
   }
 
   public ClusterReadiness.Snapshot refresh() {
@@ -94,7 +109,9 @@ public final class NativeActorSafetySources implements AutoCloseable {
                 clockSource.drain().toCompletableFuture(),
                 primary.drain().toCompletableFuture(),
                 revocations.drain().toCompletableFuture(),
-                wal == null ? CompletableFuture.completedFuture(null) : wal.drain().toCompletableFuture())
+                wal == null
+                    ? CompletableFuture.completedFuture(null)
+                    : wal.drain().toCompletableFuture())
             .minimalCompletionStage();
     return drained;
   }

@@ -199,18 +199,24 @@ public interface UserCommand extends UserMessage {
       Instant deadline,
       int encodedBytes,
       io.webrtc.signaling.actors.admission.CompletionReceipt receipt,
-      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-      io.webrtc.signaling.observability.TraceContext trace)
+      @com.fasterxml.jackson.annotation.JsonInclude(
+              com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+          io.webrtc.signaling.observability.TraceContext trace)
       implements UserCommand {
     public Mutate(
         Operation operation, ActorRef<Result> replyTo, Instant deadline, int encodedBytes) {
       this(operation, replyTo, deadline, encodedBytes, null, null);
     }
 
-    public Mutate(Operation operation, ActorRef<Result> replyTo, Instant deadline, int encodedBytes,
+    public Mutate(
+        Operation operation,
+        ActorRef<Result> replyTo,
+        Instant deadline,
+        int encodedBytes,
         io.webrtc.signaling.actors.admission.CompletionReceipt receipt) {
       this(operation, replyTo, deadline, encodedBytes, receipt, null);
     }
+
     public Mutate {
       Objects.requireNonNull(operation);
       Objects.requireNonNull(replyTo);

@@ -38,13 +38,18 @@ public class NativeGatewayBusinessConfiguration {
   GatewayBootController nativeGatewayBoot(
       NativeGatewayBusinessEnrollment enrollment,
       CellRpcClient client,
-      BoundedTokenVerifier tokens) {
+      BoundedTokenVerifier tokens,
+      NativeCompatibility compatibility) {
     if (tokens != enrollment.tokens())
       throw new IllegalArgumentException("Native gateway verifier ownership differs");
     var boot =
         new GatewayBootController(
             enrollment.identity(), GatewayBootController.network(client), System::nanoTime);
-    boot.start();
+    boot.startWhen(
+        () ->
+            compatibility.permits(
+                enrollment.identity().cell(),
+                io.webrtc.signaling.protocol.RuntimeCapabilities.SESSION_S1));
     return boot;
   }
 
@@ -89,26 +94,28 @@ public class NativeGatewayBusinessConfiguration {
       GatewayBootController boot,
       NativeGatewaySafety safety,
       CellRpcClient client,
-      NativeGatewayCommands commands, NativeTelemetry telemetry) {
+      NativeGatewayCommands commands,
+      NativeTelemetry telemetry) {
     return new NativeGatewayServices(
-        boot,
-        enrollment.tokens(),
-        (principal, now) -> {
-          try {
-            if (!safety.valid()) return AuthorizationStatus.FRESHNESS_UNKNOWN;
-            var status = enrollment.cachedSecurity().apply(principal, now);
-            return safety.valid() && status != null
-                ? status
-                : AuthorizationStatus.FRESHNESS_UNKNOWN;
-          } catch (RuntimeException unavailable) {
-            return AuthorizationStatus.FRESHNESS_UNKNOWN;
-          }
-        },
-        user -> {
-          var home = enrollment.homes().apply(user);
-          return new NativeGatewayServices.Home(home.cell(), home.directoryEpoch());
-        },
-        client,
-        commands).observe(telemetry);
+            boot,
+            enrollment.tokens(),
+            (principal, now) -> {
+              try {
+                if (!safety.valid()) return AuthorizationStatus.FRESHNESS_UNKNOWN;
+                var status = enrollment.cachedSecurity().apply(principal, now);
+                return safety.valid() && status != null
+                    ? status
+                    : AuthorizationStatus.FRESHNESS_UNKNOWN;
+              } catch (RuntimeException unavailable) {
+                return AuthorizationStatus.FRESHNESS_UNKNOWN;
+              }
+            },
+            user -> {
+              var home = enrollment.homes().apply(user);
+              return new NativeGatewayServices.Home(home.cell(), home.directoryEpoch());
+            },
+            client,
+            commands)
+        .observe(telemetry);
   }
 }

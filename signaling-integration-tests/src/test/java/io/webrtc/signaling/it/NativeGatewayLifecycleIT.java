@@ -115,6 +115,7 @@ class NativeGatewayLifecycleIT {
                         (o, c, p, b) -> CompletableFuture.failedFuture(new AssertionError()),
                         e -> CompletableFuture.failedFuture(new AssertionError()))
                     .sessions(sessions)
+                    .compatibility(TestOnlyNativeCapabilities.cells("c001"))
                     .start();
             var client =
                 new CellRpcClient(
@@ -173,6 +174,7 @@ class NativeGatewayLifecycleIT {
                     c.getEnvironment().setActiveProfiles("gateway");
                   })
               .withPropertyValues(
+                  "CELL_ID=c001",
                   "signaling.identity.issuer=TEST_ONLY_ISSUER",
                   "signaling.identity.audience=TEST_ONLY_AUDIENCE")
               .withBean(

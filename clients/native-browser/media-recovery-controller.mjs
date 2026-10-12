@@ -96,6 +96,7 @@ export class MediaRecoveryController {
   snapshot(frame) {
     const episode = this.episode, client = this.client, round = frame.result?.negotiation;
     if (!episode) return;
+    if (client.now() - episode.started >= 30000) { this.tick(); return; }
     const current = scopeKey(client.sender);
     if (current !== episode.scope || episode.pc !== client.pc) {
       // Only the exact version/next round produced by this original grant may extend its lifetime.
@@ -118,19 +119,26 @@ export class MediaRecoveryController {
         || round.offerer?.connectionGeneration !== client.route?.connectionGeneration) return;
     episode.offerStarted = true;
     const sender = scopeKey(client.sender), pc = client.pc;
-    let timer;
+    let timer, touchedPC = false;
     const physical = Promise.resolve().then(async () => {
-      if (episode !== this.episode || sender !== scopeKey(client.sender) || this.closed) throw Error('STALE_MEDIA_RESTART');
+      if (episode !== this.episode || sender !== scopeKey(client.sender) || this.closed
+          || client.pcBlocked || pc !== client.pc || client.now() - episode.started >= 30000) throw Error('STALE_MEDIA_RESTART');
       this.send('ICE_RESTARTING');
       // The application callback performs actual createOffer({iceRestart:true})/setLocalDescription.
+      touchedPC = true;
       const result = await this.createRestartOffer({ peerConnection: pc, scope: Object.freeze({ ...client.sender }), iceRestart: true });
-      if (episode !== this.episode || pc !== client.pc || sender !== scopeKey(client.sender) || this.closed || client.pcBlocked) throw Error('STALE_MEDIA_RESTART');
+      if (episode !== this.episode || pc !== client.pc || sender !== scopeKey(client.sender) || this.closed || client.pcBlocked
+          || episode.exhausted || client.now() - episode.started >= 30000) throw Error('STALE_MEDIA_RESTART');
       client.sendDescription('OFFER', result?.sdp);
     });
     this.operation = physical;
     Promise.race([physical, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('MEDIA_RESTART_TIMEOUT')), 10000); })])
-      .then(() => this.publish({ status: 'OFFER_SENT' }), error => {
-        if (pc === client.pc) client.pcBlocked = true;
+      .then(() => {
+        if (!this.closed && episode === this.episode && pc === client.pc && sender === scopeKey(client.sender))
+          this.publish({ status: 'OFFER_SENT' });
+      }, error => {
+        if (this.closed || episode !== this.episode || pc !== client.pc || sender !== scopeKey(client.sender)) return;
+        if (touchedPC && pc === client.pc) client.pcBlocked = true;
         this.publish({ status: 'RESTART_FAILED', code: error.message });
       }).finally(() => clearTimeout(timer));
     physical.then(() => { this.operation = null; }, () => { this.operation = null; });

@@ -46,6 +46,7 @@ class NativeCellRpcMainIT {
                             .setStatus("WRITE_COMPLETED")
                             .build()),
                 event -> CompletableFuture.failedFuture(new AssertionError()))
+            .compatibility(TestOnlyNativeCapabilities.cells("c001"))
             .start()) {
       var enrollment =
           new NativeCellRpcEnrollment(
@@ -69,12 +70,14 @@ class NativeCellRpcMainIT {
                 context.getEnvironment().setActiveProfiles(plane);
               })
           .withPropertyValues(
+              "CELL_ID=c001",
               "signaling.identity.issuer=TEST_ONLY_ISSUER",
               "signaling.identity.audience=TEST_ONLY_AUDIENCE")
           .run(
               context -> {
                 assertThat(context).hasNotFailed().hasSingleBean(CellRpcClient.class);
                 var client = context.getBean(CellRpcClient.class);
+                client.compatibility(TestOnlyNativeCapabilities.cells("c001"));
                 created.set(client);
                 assertThat(client.channelCount()).isZero();
                 var command =

@@ -82,9 +82,13 @@ public final class ProtocolValidator {
               || type == ANSWER
               || type == ICE_CANDIDATES
               || type == END_OF_CANDIDATES
+              || type == INITIAL_ICE_RECEIPT
               || media(type))
           && round == null) throw invalid();
-      if ((type == ICE_CANDIDATES || type == END_OF_CANDIDATES || media(type))
+      if ((type == ICE_CANDIDATES
+              || type == END_OF_CANDIDATES
+              || type == INITIAL_ICE_RECEIPT
+              || media(type))
           && generation == null) throw invalid();
       JsonNode payload = root.path("payload");
       validatePayload(type, payload);
@@ -184,8 +188,10 @@ public final class ProtocolValidator {
   private void validatePayload(SignalEnvelope.Type type, JsonNode payload) {
     switch (type) {
       case AUTH, AUTH_REFRESH -> {
-        fields(payload, Set.of("token"));
+        fields(payload, Set.of("token", "initialIceReceiptsV1"));
         string(payload, "token", limits.jwtBytes());
+        if (payload.has("initialIceReceiptsV1")
+            && !payload.path("initialIceReceiptsV1").isBoolean()) throw invalid();
       }
       case INVITE -> {
         fields(payload, Set.of("targetUserId"));
@@ -196,7 +202,8 @@ public final class ProtocolValidator {
         string(payload, "sdp", limits.sdpBytes());
       }
       case ICE_CANDIDATES -> {
-        fields(payload, Set.of("startSequence", "candidates"));
+        fields(payload, Set.of("startSequence", "candidates", "receiptProtocol"));
+        receiptProtocol(payload);
         long start = counter(payload, "startSequence");
         JsonNode candidates = payload.path("candidates");
         if (!candidates.isArray()
@@ -219,8 +226,35 @@ public final class ProtocolValidator {
         }
       }
       case END_OF_CANDIDATES -> {
-        fields(payload, Set.of("terminalSequence"));
+        fields(payload, Set.of("terminalSequence", "receiptProtocol"));
+        receiptProtocol(payload);
         counter(payload, "terminalSequence");
+      }
+      case INITIAL_ICE_RECEIPT -> {
+        fields(
+            payload,
+            Set.of(
+                "receiptVersion",
+                "senderSessionIncarnation",
+                "highestContiguous",
+                "missingRanges",
+                "endReceived"));
+        if (!payload.path("receiptVersion").isIntegralNumber()
+            || !payload.path("receiptVersion").canConvertToInt()
+            || payload.path("receiptVersion").intValue() != 1
+            || !payload.path("endReceived").isBoolean()
+            || bytes(sorted(payload)).length > 8192) throw invalid();
+        uuid(string(payload, "senderSessionIncarnation", 36));
+        long cursor = zeroCounter(payload.path("highestContiguous")), previous = cursor;
+        var ranges = payload.path("missingRanges");
+        if (!ranges.isArray() || ranges.size() > 32) throw invalid();
+        for (var pair : ranges) {
+          if (!pair.isArray() || pair.size() != 2) throw invalid();
+          long start = zeroCounter(pair.get(0)), end = zeroCounter(pair.get(1));
+          if (start <= previous || end < start) throw invalid();
+          previous = end;
+        }
+        if (payload.path("endReceived").asBoolean() && !ranges.isEmpty()) throw invalid();
       }
       case EVENT_RECEIVED -> {
         fields(payload, Set.of("eventId"));
@@ -297,6 +331,17 @@ public final class ProtocolValidator {
     String value = string(node, field, 19);
     if (!value.matches("[1-9][0-9]*")) throw invalid();
     return Long.parseLong(value);
+  }
+
+  private long zeroCounter(JsonNode value) {
+    if (!value.isTextual() || !value.asText().matches("0|[1-9][0-9]{0,18}")) throw invalid();
+    return Long.parseLong(value.asText());
+  }
+
+  private void receiptProtocol(JsonNode payload) {
+    if (payload.has("receiptProtocol")
+        && !RuntimeCapabilities.NATIVE_INITIAL_ICE_RECEIPT_V1.equals(
+            string(payload, "receiptProtocol", 64))) throw invalid();
   }
 
   private UUID uuid(String value) {

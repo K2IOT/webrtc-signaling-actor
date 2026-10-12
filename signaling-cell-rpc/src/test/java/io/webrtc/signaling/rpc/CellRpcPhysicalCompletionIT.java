@@ -69,11 +69,14 @@ class CellRpcPhysicalCompletionIT {
                 .start();
         var client =
             new CellRpcClient(
-                "test",
-                Map.of("c002", new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
-                RpcTlsContexts.clients(
-                    "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
-                new RpcAdmission(1, 98304, 1, 98304))) {
+                    "test",
+                    Map.of(
+                        "c002",
+                        new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
+                    RpcTlsContexts.clients(
+                        "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
+                    new RpcAdmission(1, 98304, 1, 98304))
+                .compatibility(TestOnlyCapabilities.cells("c002"))) {
       var c =
           InternalCommand.newBuilder()
               .setSchemaMajor(1)
@@ -145,10 +148,13 @@ class CellRpcPhysicalCompletionIT {
     var admission = new RpcAdmission(1, 98304, 1, 98304);
     try (var client =
         new CellRpcClient(
-            "test",
-            Map.of("c002", new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
-            RpcTlsContexts.clients("test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
-            admission)) {
+                "test",
+                Map.of(
+                    "c002", new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
+                RpcTlsContexts.clients(
+                    "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
+                admission)
+            .compatibility(TestOnlyCapabilities.cells("c002"))) {
       var c =
           InternalCommand.newBuilder()
               .setDestinationCell("c002")
@@ -239,10 +245,13 @@ class CellRpcPhysicalCompletionIT {
     var admission = new RpcAdmission(1, 98304, 1, 98304);
     try (var client =
         new CellRpcClient(
-            "test",
-            Map.of("c002", new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
-            RpcTlsContexts.clients("test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
-            admission)) {
+                "test",
+                Map.of(
+                    "c002", new CellRpcClient.Endpoint("localhost", server.getPort(), "localhost")),
+                RpcTlsContexts.clients(
+                    "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
+                admission)
+            .compatibility(TestOnlyCapabilities.cells("c002"))) {
       String operation = UUID.randomUUID().toString();
       RpcOperation<?> pending =
           kind.equals("SESSION")

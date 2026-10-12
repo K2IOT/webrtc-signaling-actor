@@ -57,7 +57,8 @@ public class NativeControlIngressConfiguration {
   PrivateHealthServer nativeControlHealth(
       NativeControlIngressEnrollment inputs,
       NativeControlReadiness readiness,
-      NativeControlProcess process, NativeTelemetry telemetry)
+      NativeControlProcess process,
+      NativeTelemetry telemetry)
       throws Exception {
     var health =
         new PrivateHealthServer(

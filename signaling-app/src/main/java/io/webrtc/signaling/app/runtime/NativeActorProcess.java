@@ -31,7 +31,8 @@ public final class NativeActorProcess {
         ActorSystem.create(
             Behaviors.empty(),
             enrollment.systemName(),
-            PekkoShutdownLifecycle.config(NativeCompatibility.enrolledBuildRoles(enrollment.config())));
+            PekkoShutdownLifecycle.config(
+                NativeCompatibility.enrolledBuildRoles(enrollment.config())));
     system
         .getWhenTerminated()
         .whenComplete(

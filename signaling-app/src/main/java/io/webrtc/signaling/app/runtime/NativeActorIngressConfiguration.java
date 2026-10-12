@@ -28,7 +28,9 @@ public class NativeActorIngressConfiguration {
   NativeActorRpcIngress nativeActorRpcIngress(
       NativeActorComposition actors,
       NativeActorIngressEnrollment enrollment,
-      ObjectProvider<ShardingBootstrap.Regions> regions, NativeCompatibility compatibility, NativeTelemetry telemetry)
+      ObjectProvider<ShardingBootstrap.Regions> regions,
+      NativeCompatibility compatibility,
+      NativeTelemetry telemetry)
       throws IOException {
     // Resolve Main's registration dependency before listener creation. Already-installed
     // native compositions still undergo rpcIngress's independent registered-region guard.

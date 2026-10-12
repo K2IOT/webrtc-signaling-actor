@@ -78,6 +78,41 @@ class GatewayBootControllerTest {
     }
   }
 
+  @Test
+  void capabilityBootstrapWaitsWithoutConsumingBootAndLostBootIsNeverRetried() throws Exception {
+    var ready = new AtomicBoolean();
+    var checks = new AtomicInteger();
+    var sent = new AtomicInteger();
+    var identity =
+        new NativeSessionHandler.GatewayIdentity(
+            "gw", UUID.randomUUID(), "c001", 1, "TEST_ONLY_REGION");
+    try (var controller =
+        new GatewayBootController(
+            identity,
+            (request, budget) -> {
+              sent.incrementAndGet();
+              return CompletableFuture.completedFuture(
+                  SessionReply.newBuilder().setErrorCode("OUTCOME_UNKNOWN").build());
+            },
+            System::nanoTime)) {
+      controller.startWhen(
+          () -> {
+            checks.incrementAndGet();
+            return ready.get();
+          });
+      org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> checks.get() > 0);
+      assertThat(sent).hasValue(0);
+      assertThat(controller.current()).isFalse();
+      ready.set(true);
+      org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> sent.get() == 1);
+      controller.startWhen(() -> true);
+      controller.start();
+      controller.pulse();
+      assertThat(sent).hasValue(1);
+      assertThat(controller.current()).isFalse();
+    }
+  }
+
   static SessionReply reply(NativeSessionHandler.Request request, long remaining) {
     var id = request.gateway();
     var boot =

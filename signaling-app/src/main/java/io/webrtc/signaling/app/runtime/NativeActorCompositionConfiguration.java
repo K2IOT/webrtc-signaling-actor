@@ -43,7 +43,8 @@ public class NativeActorCompositionConfiguration {
       ObjectProvider<NativeActorSourceEnrollment> sources,
       ObjectProvider<NativeActorSchedulingEnrollment> scheduling,
       ObjectProvider<NativeActorProcess> processes,
-      ObjectProvider<CallAuthorizationPolicy> callingPolicies, NativeCompatibility compatibility,
+      ObjectProvider<CallAuthorizationPolicy> callingPolicies,
+      NativeCompatibility compatibility,
       NativeTelemetry telemetry) {
     var process = processes.getIfAvailable();
     if (process != null) {

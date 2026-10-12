@@ -86,6 +86,85 @@ class GatewayRelayRpcIT {
   }
 
   @Test
+  void authenticatedObservationUsesControlBodyExecutorAndRejectsStaleOrReboundFacts()
+      throws Exception {
+    var boot = UUID.randomUUID();
+    var admission = new RpcAdmission(2, 98304, 2, 98304);
+    var thread = new AtomicReference<String>();
+    var stale = new AtomicBoolean();
+    var relays = new AtomicInteger();
+    var server =
+        new GatewayRelayRpcServer(
+                "c001",
+                "gw-1",
+                boot,
+                "test",
+                0,
+                RpcTlsContexts.gatewayServer(
+                    "test",
+                    "c001",
+                    "gw-1",
+                    cert("ca.crt"),
+                    cert("gateway.crt"),
+                    cert("gateway.key")),
+                admission,
+                (d, p, b) -> {
+                  relays.incrementAndGet();
+                  throw new AssertionError("Observation reached relay backend");
+                })
+            .compatibilityFacts(
+                () -> {
+                  thread.set(Thread.currentThread().getName());
+                  assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isEqualTo(1);
+                  assertThat(admission.inFlight(RpcAdmission.Lane.RELAY)).isZero();
+                  long now = Instant.now().toEpochMilli();
+                  return CompatibilityObservationReply.newBuilder()
+                      .setObservedAtMs(stale.get() ? now - 5001 : now)
+                      .setValidUntilMs(now + 1000)
+                      .build();
+                })
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))
+            .start();
+    var channel = channel(server.port(), "actor");
+    try {
+      var stub =
+          CompatibilityObservationIngressGrpc.newBlockingStub(channel)
+              .withDeadlineAfter(2, TimeUnit.SECONDS);
+      var request =
+          CompatibilityObservationRequest.newBuilder()
+              .setDestinationCell("c001")
+              .setGatewayId("gw-1")
+              .setBootId(boot.toString())
+              .setNonce(UUID.randomUUID().toString())
+              .build();
+      var facts = stub.observeCompatibility(request);
+      assertThat(facts.getNonce()).isEqualTo(request.getNonce());
+      assertThat(thread.get()).startsWith("gateway-control-rpc-");
+      assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+      assertThatThrownBy(
+              () ->
+                  stub.observeCompatibility(
+                      request.toBuilder().setBootId(UUID.randomUUID().toString()).build()))
+          .isInstanceOf(StatusRuntimeException.class)
+          .satisfies(
+              e ->
+                  assertThat(Status.fromThrowable(e).getCode())
+                      .isEqualTo(Status.Code.INVALID_ARGUMENT));
+      stale.set(true);
+      assertThatThrownBy(() -> stub.observeCompatibility(request))
+          .isInstanceOf(StatusRuntimeException.class)
+          .satisfies(
+              e ->
+                  assertThat(Status.fromThrowable(e).getCode()).isEqualTo(Status.Code.UNAVAILABLE));
+      assertThat(relays).hasValue(0);
+      assertThat(admission.inFlight(RpcAdmission.Lane.CONTROL)).isZero();
+    } finally {
+      channel.shutdownNow().awaitTermination(3, TimeUnit.SECONDS);
+      server.close();
+    }
+  }
+
+  @Test
   void actualTlsRelayCarriesLargeSdpAndHoldsServerCreditAfterLogicalWriteReceipt()
       throws Exception {
     var boot = UUID.randomUUID();
@@ -123,9 +202,20 @@ class GatewayRelayRpcIT {
                               29)),
                       physical);
                 })
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))
             .start();
     var channel = channel(server.port(), "actor");
     try {
+      server.compatibility(RuntimeCapabilities.DENY);
+      var denied =
+          GatewayRelayIngressGrpc.newBlockingStub(channel)
+              .withDeadlineAfter(2, TimeUnit.SECONDS)
+              .deliverRelay(wire(delivery, boot));
+      assertThat(denied.getStatus()).isEqualTo("REJECTED");
+      assertThat(seen.get()).isNull();
+      assertThat(admission.inFlight(RpcAdmission.Lane.RELAY)).isZero();
+      server.compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot));
+
       var reply =
           GatewayRelayIngressGrpc.newBlockingStub(channel)
               .withDeadlineAfter(2, TimeUnit.SECONDS)
@@ -173,6 +263,7 @@ class GatewayRelayRpcIT {
                   calls.incrementAndGet();
                   throw new AssertionError("Must reject before backend");
                 })
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))
             .start();
     var channel = channel(server.port(), "actor");
     try {
@@ -224,6 +315,7 @@ class GatewayRelayRpcIT {
                   entered.countDown();
                   return new RpcOperation<>(logical, physical);
                 })
+            .compatibility(TestOnlyCapabilities.gateway("c001", "gw-1", boot))
             .start();
     var channel = channel(server.port(), "actor");
     try {

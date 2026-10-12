@@ -76,6 +76,11 @@ public final class CallCommandService {
 
   private volatile java.util.function.BooleanSupplier businessAdmission = () -> false;
   private boolean businessConfigured;
+  private volatile RecoveryOutcomeSink recoveryOutcomes = RecoveryOutcomeSink.NONE;
+
+  public void recoveryOutcomes(RecoveryOutcomeSink sink) {
+    recoveryOutcomes = Objects.requireNonNull(sink);
+  }
 
   public synchronized CallCommandService businessAdmission(
       java.util.function.BooleanSupplier gate) {
@@ -681,7 +686,8 @@ public final class CallCommandService {
       throw new AuthorizationRejected();
     boolean caller = previous.caller().sameBinding(command.sender());
     String flag = caller ? "mediaCallerConnected" : "mediaWinnerConnected";
-    if (metadata.path(flag).asBoolean())
+    if (metadata.path(flag).asBoolean()) {
+      observeMediaAfterCommit(previous, context.group(), command.sender());
       return finish(
           c,
           command,
@@ -692,6 +698,7 @@ public final class CallCommandService {
               previous.version(),
               previous.state(),
               List.of()));
+    }
     metadata.put(flag, true);
     boolean both =
         metadata.path("mediaCallerConnected").asBoolean()
@@ -743,6 +750,7 @@ public final class CallCommandService {
         events.add(
             outbox.insert(c, previous.bucket(), previous.callId(), version, destination, payload));
       }
+    observeMediaAfterCommit(calls.find(c, previous.callId()), context.group(), command.sender());
     return finish(
         c,
         command,
@@ -811,11 +819,26 @@ public final class CallCommandService {
       q.setLong(5, previous.version());
       if (q.executeUpdate() != 1) throw new AuthoritySql.RetryableConflict();
     }
+    if (command.type() == SignalEnvelope.Type.MEDIA_RECOVERED)
+      observeMediaAfterCommit(calls.find(c, previous.callId()), context.group(), command.sender());
     return finish(
         c,
         command,
         new Outcome(
             "FINAL", "MEDIA_RECORDED", previous.callId(), version, previous.state(), List.of()));
+  }
+
+  private void observeMediaAfterCommit(
+      Snapshot snapshot, AuthoritySql.GroupToken group, AuthenticatedSession sender) {
+    org.springframework.transaction.support.TransactionSynchronizationManager
+        .registerSynchronization(
+            new org.springframework.transaction.support.TransactionSynchronization() {
+              @Override
+              public void afterCommit() {
+                var sink = recoveryOutcomes;
+                RecoveryOutcomeSink.safely(sink, () -> sink.media(snapshot, group, sender));
+              }
+            });
   }
 
   private Outcome terminal(Connection c, CallCommand command, Authority context, Snapshot previous)
@@ -1016,7 +1039,17 @@ public final class CallCommandService {
         || read.callId() == null
         || !read.scope().equals(CommandScope.call(read.callId())))
       throw new IllegalArgumentException("Invalid native snapshot read");
-    return sql.submitTracked(DbClass.RECOVERY, budget, c -> authorizedRead(c, read, proof));
+    var original = sql.submitTracked(DbClass.RECOVERY, budget, c -> authorizedRead(c, read, proof));
+    return new DbOperation<>(
+        original
+            .logical()
+            .thenApply(
+                snapshot -> {
+                  var sink = recoveryOutcomes;
+                  RecoveryOutcomeSink.safely(sink, () -> sink.snapshot(snapshot));
+                  return snapshot;
+                }),
+        original.physicalCompletion());
   }
 
   public DbOperation<Optional<Outcome>> getCommandResultAuthorized(
@@ -1157,7 +1190,8 @@ public final class CallCommandService {
                 SignalEnvelope.Type.OFFER,
                 SignalEnvelope.Type.ANSWER,
                 SignalEnvelope.Type.ICE_CANDIDATES,
-                SignalEnvelope.Type.END_OF_CANDIDATES)
+                SignalEnvelope.Type.END_OF_CANDIDATES,
+                SignalEnvelope.Type.INITIAL_ICE_RECEIPT)
             .contains(command.type())
         || command.callId() == null
         || !command.scope().equals(CommandScope.call(command.callId()))

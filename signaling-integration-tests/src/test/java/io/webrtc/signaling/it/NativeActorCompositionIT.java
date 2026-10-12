@@ -91,7 +91,9 @@ class NativeActorCompositionIT {
                 Clock.systemUTC(),
                 () -> true,
                 (c, r) -> true);
-        compositions.add(new NativeActorComposition(system, inputs, readiness));
+        var composition = new NativeActorComposition(system, inputs, readiness);
+        composition.installRuntimeCapabilities(TestOnlyNativeCapabilities.cells("c001"));
+        compositions.add(composition);
       }
       for (var composition : compositions) {
         var membership =
@@ -137,6 +139,42 @@ class NativeActorCompositionIT {
         assertThat(composition.readiness().businessReady()).isTrue();
       }
       var cell = compositions.getLast();
+      var target = new java.util.concurrent.atomic.AtomicReference<RpcBusinessHandler>();
+      var network =
+          new NativeSagaEffects.Network() {
+            public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(
+                CellRpcServer.Operation op,
+                io.webrtc.signaling.protocol.internal.InternalCommand c,
+                Duration b) {
+              return callTracked(op, c, b).logical();
+            }
+
+            public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(
+                CellRpcServer.Operation op,
+                io.webrtc.signaling.protocol.internal.InternalCommand c,
+                Duration b) {
+              assertThat(c.getPayload().size()).isLessThan(37000);
+              return target
+                  .get()
+                  .executeTracked(
+                      op, c, new CellRpcServer.Peer("c001", "actor", "TEST_ONLY_NATIVE_ACTOR"), b);
+            }
+          };
+      var backend =
+          cell.backend(
+              network,
+              r ->
+                  CompletableFuture.failedFuture(
+                      new AssertionError("Legacy relay must stay unused")));
+      target.set(backend);
+      for (var member : compositions) {
+        if (member != cell)
+          member.backend(
+              network,
+              r ->
+                  CompletableFuture.failedFuture(
+                      new AssertionError("Legacy relay must stay unused")));
+      }
       var call = CallId.create("c001", 1);
       var original = f.invite(caller, callee.userId());
       var command =
@@ -241,34 +279,6 @@ class NativeActorCompositionIT {
                   .verify(grant.signedRequest(), queryAction))
           .isTrue();
       var host = holders.getFirst();
-      var target = new java.util.concurrent.atomic.AtomicReference<RpcBusinessHandler>();
-      var network =
-          new NativeSagaEffects.Network() {
-            public CompletionStage<io.webrtc.signaling.protocol.internal.InternalReply> call(
-                CellRpcServer.Operation op,
-                io.webrtc.signaling.protocol.internal.InternalCommand c,
-                Duration b) {
-              return callTracked(op, c, b).logical();
-            }
-
-            public RpcOperation<io.webrtc.signaling.protocol.internal.InternalReply> callTracked(
-                CellRpcServer.Operation op,
-                io.webrtc.signaling.protocol.internal.InternalCommand c,
-                Duration b) {
-              assertThat(c.getPayload().size()).isLessThan(37000);
-              return target
-                  .get()
-                  .executeTracked(
-                      op, c, new CellRpcServer.Peer("c001", "actor", "TEST_ONLY_NATIVE_ACTOR"), b);
-            }
-          };
-      var backend =
-          host.backend(
-              network,
-              r ->
-                  CompletableFuture.failedFuture(
-                      new AssertionError("Legacy relay must stay unused")));
-      target.set(backend);
       var winnerRoute = SessionAuthReadIT.route(f, callee);
       var winnerAuth = currentSession(registry, winnerRoute);
       var accept = AcceptCompletionIT.accept(callee, call);
@@ -368,17 +378,21 @@ class NativeActorCompositionIT {
                               new IllegalArgumentException("TEST_ONLY_NO_CONTROL_DELIVERY"))));
           var relayClient =
               new CellRpcClient(
-                  "test",
-                  Map.of(
-                      "c001",
-                      new CellRpcClient.Endpoint(
-                          "localhost", ingress.server().port(), "localhost")),
-                  RpcTlsContexts.clients(
                       "test",
-                      RelayGatewayFixture.cert("ca.crt"),
-                      RelayGatewayFixture.cert("gateway.crt"),
-                      RelayGatewayFixture.cert("gateway.key")),
-                  new RpcAdmission(16, 1048576, 16, 1048576))) {
+                      Map.of(
+                          "c001",
+                          new CellRpcClient.Endpoint(
+                              "localhost", ingress.server().port(), "localhost")),
+                      RpcTlsContexts.clients(
+                          "test",
+                          RelayGatewayFixture.cert("ca.crt"),
+                          RelayGatewayFixture.cert("gateway.crt"),
+                          RelayGatewayFixture.cert("gateway.key")),
+                      new RpcAdmission(16, 1048576, 16, 1048576))
+                  .compatibility(TestOnlyNativeCapabilities.cells("c001"))) {
+        gatewayClient.compatibility(
+            TestOnlyNativeCapabilities.gateway("c001", "gw-1", recipientGateway.boot.bootId()));
+        ingress.server().compatibility(TestOnlyNativeCapabilities.cells("c001"));
         var protocol = new ProtocolValidator(ProtocolLimits.v1());
         var originalOffer = new java.util.concurrent.atomic.AtomicReference<CallCommand>();
         var originalOfferProof = new java.util.concurrent.atomic.AtomicReference<String>();
@@ -508,6 +522,7 @@ class NativeActorCompositionIT {
               context.getEnvironment().setActiveProfiles("actor");
             })
         .withPropertyValues(
+            "CELL_ID=c001",
             "signaling.identity.issuer=TEST_ONLY_ISSUER",
             "signaling.identity.audience=TEST_ONLY_AUDIENCE")
         .run(
@@ -595,6 +610,7 @@ class NativeActorCompositionIT {
                       cert("gateway.key")),
                   new RpcAdmission(8, 1048576, 8, 1048576),
                   stream::send)
+              .compatibility(TestOnlyNativeCapabilities.gateway("c001", "gw-1", boot.bootId()))
               .start();
       var currentBoot = new java.util.concurrent.atomic.AtomicReference<>(boot);
       renewalTask =
@@ -652,14 +668,15 @@ class NativeActorCompositionIT {
 
     GatewayRelayRpcClient client() throws Exception {
       return new GatewayRelayRpcClient(
-          "test",
-          2,
-          Map.of(
-              new GatewayRelayRpcClient.Target("c001", "gw-1", boot.bootId()),
-              new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
-          RpcTlsContexts.gatewayClients(
-              "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
-          new RpcAdmission(8, 1048576, 8, 1048576));
+              "test",
+              2,
+              Map.of(
+                  new GatewayRelayRpcClient.Target("c001", "gw-1", boot.bootId()),
+                  new CellRpcClient.Endpoint("localhost", server.port(), "localhost")),
+              RpcTlsContexts.gatewayClients(
+                  "test", cert("ca.crt"), cert("actor.crt"), cert("actor.key")),
+              new RpcAdmission(8, 1048576, 8, 1048576))
+          .compatibility(TestOnlyNativeCapabilities.gateway("c001", "gw-1", boot.bootId()));
     }
 
     com.fasterxml.jackson.databind.JsonNode take(AuthenticatedSession recipient) throws Exception {

@@ -200,6 +200,7 @@ class NativeActorStartupFailureIT {
               () ->
                   application.run(
                       "--spring.profiles.active=actor",
+                      "--CELL_ID=c001",
                       "--signaling.identity.issuer=TEST_ONLY_ISSUER",
                       "--signaling.identity.audience=TEST_ONLY_AUDIENCE"));
       try {
@@ -292,6 +293,7 @@ class NativeActorStartupFailureIT {
                 () ->
                     application.run(
                         "--spring.profiles.active=actor",
+                        "--CELL_ID=c001",
                         "--signaling.identity.issuer=TEST_ONLY_ISSUER",
                         "--signaling.identity.audience=TEST_ONLY_AUDIENCE"));
         assertThat(failure).isNotNull();

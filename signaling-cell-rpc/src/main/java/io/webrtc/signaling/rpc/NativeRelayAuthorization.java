@@ -64,6 +64,12 @@ public final class NativeRelayAuthorization {
   private final Function<CallId, Optional<AuthoritySql.GroupToken>> currentGroup;
   private final Clock clock;
   private final BooleanSupplier trusted;
+  private Supplier<RecoveryOutcomeSink> recoveryOutcomes = () -> RecoveryOutcomeSink.NONE;
+
+  public NativeRelayAuthorization recoveryOutcomes(Supplier<RecoveryOutcomeSink> sink) {
+    recoveryOutcomes = Objects.requireNonNull(sink);
+    return this;
+  }
 
   public NativeRelayAuthorization(
       CallCommandService commands,
@@ -225,6 +231,9 @@ public final class NativeRelayAuthorization {
                                                           + Duration.ofSeconds(5)
                                                               .minus(CLOCK_MARGIN)
                                                               .toNanos()));
+                                          var sink = recoveryOutcomes.get();
+                                          RecoveryOutcomeSink.safely(
+                                              sink, () -> sink.active(snapshot, token));
                                           return new AuthorizedRound(
                                               authorization,
                                               committedGrant(snapshot, token, started, startedWall),

@@ -12,6 +12,7 @@ public record RpcOperation<T>(CompletionStage<T> logical, CompletionStage<?> phy
     Objects.requireNonNull(logical);
     Objects.requireNonNull(physicalCompletion);
     logical = io.webrtc.signaling.observability.ContextualStage.readOnly(logical);
-    physicalCompletion = io.webrtc.signaling.observability.ContextualStage.readOnly(physicalCompletion);
+    physicalCompletion =
+        io.webrtc.signaling.observability.ContextualStage.readOnly(physicalCompletion);
   }
 }

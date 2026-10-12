@@ -25,6 +25,7 @@ public record SignalEnvelope(
     ANSWER,
     ICE_CANDIDATES,
     END_OF_CANDIDATES,
+    INITIAL_ICE_RECEIPT,
     NEGOTIATE_REQUEST,
     RESUME,
     SYNC_CALL,

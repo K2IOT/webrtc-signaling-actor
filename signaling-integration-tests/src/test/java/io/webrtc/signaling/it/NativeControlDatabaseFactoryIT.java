@@ -154,7 +154,9 @@ class NativeControlDatabaseFactoryIT {
               })
           .withBean(NativeControlDatabaseEnrollment.class, () -> enrollment)
           .withPropertyValues(
-              "signaling.identity.issuer=TEST_ONLY", "signaling.identity.audience=TEST_ONLY")
+              "CELL_ID=c001",
+              "signaling.identity.issuer=TEST_ONLY",
+              "signaling.identity.audience=TEST_ONLY")
           .run(
               context -> {
                 assertThat(context).hasNotFailed();

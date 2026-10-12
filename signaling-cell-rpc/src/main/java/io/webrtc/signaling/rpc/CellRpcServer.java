@@ -82,9 +82,11 @@ public final class CellRpcServer implements AutoCloseable {
   private Server server;
   private NativeSessionHandler sessions;
   private volatile RuntimeCapabilities capabilities = RuntimeCapabilities.DENY;
-  private volatile java.util.function.Supplier<CompatibilityObservationReply> compatibilityFacts = () -> null;
+  private volatile java.util.function.Supplier<CompatibilityObservationReply> compatibilityFacts =
+      () -> null;
 
-  public CellRpcServer compatibilityFacts(java.util.function.Supplier<CompatibilityObservationReply> source) {
+  public CellRpcServer compatibilityFacts(
+      java.util.function.Supplier<CompatibilityObservationReply> source) {
     compatibilityFacts = Objects.requireNonNull(source);
     return this;
   }
@@ -163,7 +165,9 @@ public final class CellRpcServer implements AutoCloseable {
                         : controlExecutor;
                   }
                 })
-            .addService(new CompatibilityObservationService(cell, "", "", admission, PEER::get, () -> compatibilityFacts.get()))
+            .addService(
+                new CompatibilityObservationService(
+                    cell, "", "", admission, PEER::get, () -> compatibilityFacts.get()))
             .intercept(NativeRpcTelemetry.server())
             .intercept(
                 new ServerInterceptor() {

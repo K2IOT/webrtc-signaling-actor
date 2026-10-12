@@ -71,15 +71,18 @@ public class NativeActorSourceConfiguration {
       RevocationReconciler reconciler,
       NativeTelemetry telemetry) {
     var endpoint = enrollment.revocations();
-    var source = new NativeRevocationSource(
-        endpoint.uri(),
-        endpoint.tls(),
-        verifier,
-        reconciler,
-        enrollment.podUid(),
-        enrollment.processBoot());
+    var source =
+        new NativeRevocationSource(
+            endpoint.uri(),
+            endpoint.tls(),
+            verifier,
+            reconciler,
+            enrollment.podUid(),
+            enrollment.processBoot());
     telemetry.metrics().securityHardBound(reconciler.freshness());
-    telemetry.lagSource(io.webrtc.signaling.observability.SignalingMetrics.Lag.REVOCATION, source::freshnessAgeNanos);
+    telemetry.lagSource(
+        io.webrtc.signaling.observability.SignalingMetrics.Lag.REVOCATION,
+        source::freshnessAgeNanos);
     return source;
   }
 

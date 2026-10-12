@@ -24,16 +24,18 @@ public final class NativeRuntimeStartup {
 
   static void requireInstalled(SignalingApplication.Plane plane, ApplicationContext context) {
     try {
-      boolean localResources = "local-minikube".equals(
-          context.getEnvironment().getProperty("SIGNALING_DEPLOYMENT_MODE"))
-          && "LOCAL_TEST_ONLY".equals(
-              context.getEnvironment().getProperty("SIGNALING_LOCAL_ACKNOWLEDGEMENT"));
+      boolean localResources =
+          "local-minikube".equals(context.getEnvironment().getProperty("SIGNALING_DEPLOYMENT_MODE"))
+              && "LOCAL_TEST_ONLY"
+                  .equals(context.getEnvironment().getProperty("SIGNALING_LOCAL_ACKNOWLEDGEMENT"));
       if (!localResources && plane != SignalingApplication.Plane.GATEWAY) {
         one(context, NativeDatabaseProviderContract.class, plane);
         var boundaries = context.getBeansOfType(io.webrtc.signaling.storage.DbBoundary.class);
         var sqlOwners = context.getBeansOfType(io.webrtc.signaling.storage.SqlTransactions.class);
         if (boundaries.isEmpty() && sqlOwners.isEmpty()) throw new MissingRuntime(plane);
-        boundaries.values().forEach(io.webrtc.signaling.storage.DbBoundary::requireProductionProfiles);
+        boundaries
+            .values()
+            .forEach(io.webrtc.signaling.storage.DbBoundary::requireProductionProfiles);
         sqlOwners.values().forEach(sql -> sql.boundary().requireProductionProfiles());
       }
       switch (plane) {
@@ -46,7 +48,8 @@ public final class NativeRuntimeStartup {
           one(context, NativeActorSafetySources.class, plane);
           var maintenance = one(context, NativeActorMaintenance.class, plane);
           var workers = one(context, NativeWorkerScheduler.class, plane);
-          if (!actors.participantRenewalInstalled() || !maintenance.installed()
+          if (!actors.participantRenewalInstalled()
+              || !maintenance.installed()
               || !workers.installedJobs(NativeActorMaintenance.REQUIRED_JOBS))
             throw new MissingRuntime(plane);
           bound(one(context, NativeActorRpcIngress.class, plane).server().port(), plane);

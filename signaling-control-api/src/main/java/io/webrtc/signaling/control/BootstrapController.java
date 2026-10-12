@@ -20,7 +20,12 @@ public final class BootstrapController {
       int retryAfterMillis) {}
 
   private OperationObservation observations = OperationObservation.NONE;
-  public BootstrapController observe(OperationObservation observations) { this.observations = java.util.Objects.requireNonNull(observations); return this; }
+
+  public BootstrapController observe(OperationObservation observations) {
+    this.observations = java.util.Objects.requireNonNull(observations);
+    return this;
+  }
+
   private final DirectoryService directory;
   private final BoundedTokenVerifier verifier;
   private final BiFunction<AuthPrincipal, Instant, AuthorizationStatus> security;
@@ -72,15 +77,25 @@ public final class BootstrapController {
 
   public CompletionStage<BootstrapResponse> bootstrap(AuthPrincipal principal) {
     var receipt = OperationObservation.safeLogicalStart(observations, Operation.BOOTSTRAP);
-    if (!allowed(principal)) { receipt.logical(Outcome.FORBIDDEN); return CompletableFuture.failedFuture(new AuthException()); }
-    var result = directory
-        .resolveHome(principal.userId(), clock.instant())
-        .thenApply(
-            route -> {
-              if (!allowed(principal)) throw new AuthException();
-              return new BootstrapResponse(route.wssUrl(), "webrtc-signaling.v1", route.epoch(), 0);
-            });
-    result.whenComplete((value, error) -> receipt.logical(error == null ? Outcome.READ : error instanceof AuthException ? Outcome.FORBIDDEN : Outcome.UNAVAILABLE));
+    if (!allowed(principal)) {
+      receipt.logical(Outcome.FORBIDDEN);
+      return CompletableFuture.failedFuture(new AuthException());
+    }
+    var result =
+        directory
+            .resolveHome(principal.userId(), clock.instant())
+            .thenApply(
+                route -> {
+                  if (!allowed(principal)) throw new AuthException();
+                  return new BootstrapResponse(
+                      route.wssUrl(), "webrtc-signaling.v1", route.epoch(), 0);
+                });
+    result.whenComplete(
+        (value, error) ->
+            receipt.logical(
+                error == null
+                    ? Outcome.READ
+                    : error instanceof AuthException ? Outcome.FORBIDDEN : Outcome.UNAVAILABLE));
     return result;
   }
 }

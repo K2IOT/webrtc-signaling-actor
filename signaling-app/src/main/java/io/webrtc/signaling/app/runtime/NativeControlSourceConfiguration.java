@@ -43,6 +43,7 @@ public class NativeControlSourceConfiguration {
   @Bean(destroyMethod = "")
   NativeWorkerScheduler nativeControlClockWorkers(
       NativeControlSourceEnrollment inputs, NativeClockSource source, NativeTelemetry telemetry) {
-    return new NativeWorkerScheduler(List.of(source.job(Duration.ofMillis(100))), inputs.events()).observe(telemetry::workerStarted);
+    return new NativeWorkerScheduler(List.of(source.job(Duration.ofMillis(100))), inputs.events())
+        .observe(telemetry::workerStarted);
   }
 }

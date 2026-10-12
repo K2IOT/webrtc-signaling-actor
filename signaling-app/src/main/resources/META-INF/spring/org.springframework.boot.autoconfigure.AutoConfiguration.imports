@@ -20,3 +20,5 @@ io.webrtc.signaling.app.runtime.NativeControlIngressConfiguration
 io.webrtc.signaling.app.runtime.NativeWalConfiguration
 
 io.webrtc.signaling.app.runtime.NativeCompatibilityObservationConfiguration
+
+io.webrtc.signaling.app.runtime.NativeRecoveryAccountingConfiguration

@@ -42,20 +42,25 @@ public class NativeGatewayLifecycleConfiguration {
       NativeGatewaySafety safety,
       ObjectProvider<NativeWorkerScheduler> workers,
       ObjectProvider<NativeClockSource> clocks,
-      ObjectProvider<NativeCachedRevocationSource> sources, NativeTelemetry telemetry, NativeCompatibility compatibility)
+      ObjectProvider<NativeCachedRevocationSource> sources,
+      NativeTelemetry telemetry,
+      NativeCompatibility compatibility)
       throws Exception {
-    var lifecycle = new NativeGatewaySpringLifecycle(
-        ingress,
-        boot,
-        cache,
-        client,
-        inputs,
-        tokens,
-        safety,
-        workers.orderedStream().toList(),
-        clocks.orderedStream().toList(),
-        sources.orderedStream().toList(), telemetry);
-    lifecycle.compatibility(() -> compatibility.gatewayReady(boot.identity().gatewayId(), boot.identity().bootId()));
+    var lifecycle =
+        new NativeGatewaySpringLifecycle(
+            ingress,
+            boot,
+            cache,
+            client,
+            inputs,
+            tokens,
+            safety,
+            workers.orderedStream().toList(),
+            clocks.orderedStream().toList(),
+            sources.orderedStream().toList(),
+            telemetry);
+    lifecycle.compatibility(
+        () -> compatibility.gatewayReady(boot.identity().gatewayId(), boot.identity().bootId()));
     return lifecycle;
   }
 

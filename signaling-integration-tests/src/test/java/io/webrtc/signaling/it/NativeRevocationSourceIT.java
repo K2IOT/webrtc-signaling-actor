@@ -99,6 +99,7 @@ class NativeRevocationSourceIT {
                     context.getEnvironment().setActiveProfiles("actor");
                   })
               .withPropertyValues(
+                  "CELL_ID=c001",
                   "signaling.identity.issuer=TEST_ONLY_ISSUER",
                   "signaling.identity.audience=TEST_ONLY_AUDIENCE")
               .run(
@@ -140,6 +141,7 @@ class NativeRevocationSourceIT {
                     context.getEnvironment().setActiveProfiles("actor");
                   })
               .withPropertyValues(
+                  "CELL_ID=c001",
                   "signaling.identity.issuer=TEST_ONLY_ISSUER",
                   "signaling.identity.audience=TEST_ONLY_AUDIENCE")
               .run(
@@ -525,6 +527,7 @@ class NativeRevocationSourceIT {
                         .setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));
                   })
               .withPropertyValues(
+                  "CELL_ID=c001",
                   "signaling.identity.issuer=" + identity.issuer(),
                   "signaling.identity.audience=" + identity.audience())
               .run(
@@ -634,7 +637,7 @@ class NativeRevocationSourceIT {
                                   () -> true,
                                   () -> "TEST_ONLY\n"))
                       .isInstanceOf(IllegalArgumentException.class)
-                      .hasMessageContaining("Maintenance"),
+                      .hasMessageContaining("maintenance"),
               () ->
                   assertThatThrownBy(
                           () ->
@@ -648,7 +651,7 @@ class NativeRevocationSourceIT {
                                   () -> true,
                                   () -> "TEST_ONLY\n"))
                       .isInstanceOf(IllegalArgumentException.class)
-                      .hasMessageContaining("Maintenance"));
+                      .hasMessageContaining("maintenance"));
           var sourceOwners = new AtomicReference<NativeActorSafetySources>();
           var workerOwner = new AtomicReference<NativeWorkerScheduler>();
           var healthOwner = new AtomicReference<PrivateHealthServer>();
@@ -668,8 +671,46 @@ class NativeRevocationSourceIT {
                       "TEST_ONLY_defaults",
                       new org.springframework.core.io.FileSystemResource(
                           "../config/production-defaults.yaml"));
+          var isolatedSources =
+              new NativeActorSafetySources(
+                  system,
+                  readiness,
+                  scheduling.azRoles(),
+                  scheduling.fingerprint(),
+                  monitor,
+                  clockSource,
+                  primary,
+                  revocations);
+          var isolatedWorkers = new NativeWorkerScheduler(isolatedSources.jobs(), event -> {});
+          var isolatedHealth =
+              new PrivateHealthServer(
+                  scheduling.healthAddress(),
+                  scheduling.live(),
+                  readiness::businessReady,
+                  scheduling.metrics());
+          isolatedHealth.start().toCompletableFuture().get(2, TimeUnit.SECONDS);
           new org.springframework.boot.test.context.runner.ApplicationContextRunner()
-              .withUserConfiguration(io.webrtc.signaling.app.SignalingApplication.class)
+              .withBean(
+                  NativeActorSafetySources.class,
+                  () -> isolatedSources,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
+              .withBean(
+                  NativeWorkerScheduler.class,
+                  () -> isolatedWorkers,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
+              .withBean(
+                  PrivateHealthServer.class,
+                  () -> isolatedHealth,
+                  definition ->
+                      ((org.springframework.beans.factory.support.AbstractBeanDefinition)
+                              definition)
+                          .setDestroyMethodName(""))
               .withBean(NativeActorSchedulingEnrollment.class, () -> scheduling)
               .withBean(ClusterReadiness.class, () -> readiness)
               .withBean(ClockSafetyMonitor.class, () -> monitor)
@@ -701,6 +742,7 @@ class NativeRevocationSourceIT {
                     context.getEnvironment().setActiveProfiles("actor");
                   })
               .withPropertyValues(
+                  "CELL_ID=c001",
                   "signaling.identity.issuer=TEST_ONLY_ISSUER",
                   "signaling.identity.audience=TEST_ONLY_AUDIENCE")
               .run(
@@ -725,7 +767,8 @@ class NativeRevocationSourceIT {
             var facts = sources.refresh();
             assertThat(facts.fingerprintValid()).isTrue();
             assertThat(facts.cellActive()).isTrue();
-            assertThat(facts.safetyPoolUsable()).isTrue();
+            // No WAL enrollment in this source-only fixture: safety stays closed.
+            assertThat(facts.safetyPoolUsable()).isFalse();
             assertThat(facts.clockBoundValid()).isTrue();
             assertThat(readiness.businessReady()).isFalse();
             assertThat(facts.upActors()).isZero();
@@ -803,6 +846,7 @@ class NativeRevocationSourceIT {
                               .setActiveProfiles(plane.name().toLowerCase(Locale.ROOT));
                         })
                     .withPropertyValues(
+                        "CELL_ID=c001",
                         "signaling.identity.issuer=TEST_ONLY_ISSUER",
                         "signaling.identity.audience=TEST_ONLY_AUDIENCE")
                     .run(
@@ -837,8 +881,11 @@ class NativeRevocationSourceIT {
                   .until(
                       () -> {
                         sources.refresh();
-                        return readiness.businessReady();
+                        return readiness.snapshot().regionsRegistered()
+                            && readiness.snapshot().upActors() == 4;
                       });
+              // Partial source enrollment has no trusted WAL/compatibility facts.
+              assertThat(readiness.businessReady()).isFalse();
               assertThat(readiness.snapshot().upActors()).isEqualTo(4);
               assertThat(readiness.snapshot().reachableAzCount()).isEqualTo(3);
               assertThat(readiness.snapshot().regionsRegistered()).isTrue();

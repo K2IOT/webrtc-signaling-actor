@@ -14,7 +14,8 @@ public final class CompatibilityWindow {
     STORAGE_DOMAIN_ADOPTION_V1,
     NATIVE_CONTROL_RECEIPT_V1,
     HOME_PROOF_HIGH_WATER_V1,
-    NATIVE_ACTOR_TRACE_V1
+    NATIVE_ACTOR_TRACE_V1,
+    NATIVE_INITIAL_ICE_RECEIPT_V1
   }
 
   public record Peer(

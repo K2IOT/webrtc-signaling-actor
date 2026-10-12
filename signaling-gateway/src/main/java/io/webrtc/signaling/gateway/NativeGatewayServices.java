@@ -2,9 +2,9 @@ package io.webrtc.signaling.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
+import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.observability.*;
 import io.webrtc.signaling.observability.SignalingMetrics;
-import io.webrtc.signaling.auth.*;
 import io.webrtc.signaling.protocol.*;
 import io.webrtc.signaling.protocol.Identity.UserId;
 import io.webrtc.signaling.protocol.internal.*;
@@ -39,7 +39,12 @@ public final class NativeGatewayServices implements GatewayServices {
   }
 
   private OperationObservation observation = OperationObservation.NONE;
-  public NativeGatewayServices observe(OperationObservation observation) { this.observation = Objects.requireNonNull(observation); return this; }
+
+  public NativeGatewayServices observe(OperationObservation observation) {
+    this.observation = Objects.requireNonNull(observation);
+    return this;
+  }
+
   private final ContextCommands contextCommands;
   private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
   private final GatewayBootController boot;
@@ -48,6 +53,33 @@ public final class NativeGatewayServices implements GatewayServices {
   private final Function<UserId, Home> homes;
   private final CellRpcClient client;
   private final Commands commands;
+  private volatile RuntimeCapabilities capabilities = RuntimeCapabilities.DENY;
+
+  public NativeGatewayServices compatibility(RuntimeCapabilities value) {
+    capabilities = Objects.requireNonNull(value);
+    return this;
+  }
+
+  @Override
+  public boolean supportsInitialIceReceipts() {
+    var identity = boot.identity();
+    return currentBoot()
+        && capabilities.permits(identity.cell(), RuntimeCapabilities.NATIVE_INITIAL_ICE_RECEIPT_V1)
+        && capabilities.permitsGateway(
+            identity.cell(),
+            identity.gatewayId(),
+            identity.bootId(),
+            RuntimeCapabilities.NATIVE_INITIAL_ICE_RECEIPT_V1);
+  }
+
+  private void requireIceCapability(CallCommand command) {
+    if (InitialIceReceipt.requiresCapability(command)
+        && (!supportsInitialIceReceipts()
+            || !capabilities.permits(
+                command.callId().coordinatorCell(),
+                RuntimeCapabilities.NATIVE_INITIAL_ICE_RECEIPT_V1)))
+      throw new IllegalStateException("Initial ICE receipt capability unavailable");
+  }
 
   public NativeGatewayServices(
       GatewayBootController boot,
@@ -123,6 +155,7 @@ public final class NativeGatewayServices implements GatewayServices {
   }
 
   public CompletionStage<String> command(CallCommand command, Duration budget) {
+    requireIceCapability(command);
     if (!currentBoot())
       return CompletableFuture.failedFuture(new IllegalStateException("Gateway boot unavailable"));
     if (commands == null)
@@ -133,6 +166,7 @@ public final class NativeGatewayServices implements GatewayServices {
 
   public CompletionStage<String> command(
       CallCommand command, SessionRepository.Route route, String token, Duration budget) {
+    requireIceCapability(command);
     if (contextCommands == null) return command(command, budget);
     if (!currentBoot()
         || route == null
@@ -147,7 +181,8 @@ public final class NativeGatewayServices implements GatewayServices {
         || !route.connectionId().equals(command.sender().connectionId()))
       return CompletableFuture.failedFuture(
           new IllegalStateException("Invalid native session provenance"));
-    return observed(operation(command), () -> contextCommands.execute(command, route, token, budget));
+    return observed(
+        operation(command), () -> contextCommands.execute(command, route, token, budget));
   }
 
   private CompletionStage<SessionReply> mutate(
@@ -182,25 +217,34 @@ public final class NativeGatewayServices implements GatewayServices {
             .setRemainingBudgetMs(Math.max(1, budget.toMillis()))
             .setPayload(ByteString.copyFrom(RpcBusinessHandler.encode(request)))
             .build();
-    return observed(type.equals("REGISTER") ? SignalingMetrics.Operation.REGISTER_SESSION : type.equals("REFRESH") ? SignalingMetrics.Operation.AUTH_REFRESH : SignalingMetrics.Operation.SESSION_CLOSE, () -> client
-        .session(command, budget)
-        .thenApply(
-            value -> {
-              if (!value.getAckCommitted()
-                  || !value.getStatus().equals("COMMITTED")
-                  || !value.getOperationId().equals(command.getOperationId()))
-                throw new CompletionException(
-                    new IllegalStateException("Native session outcome unavailable"));
-              return value;
-            }));
+    return observed(
+        type.equals("REGISTER")
+            ? SignalingMetrics.Operation.REGISTER_SESSION
+            : type.equals("REFRESH")
+                ? SignalingMetrics.Operation.AUTH_REFRESH
+                : SignalingMetrics.Operation.SESSION_CLOSE,
+        () ->
+            client
+                .session(command, budget)
+                .thenApply(
+                    value -> {
+                      if (!value.getAckCommitted()
+                          || !value.getStatus().equals("COMMITTED")
+                          || !value.getOperationId().equals(command.getOperationId()))
+                        throw new CompletionException(
+                            new IllegalStateException("Native session outcome unavailable"));
+                      return value;
+                    }));
   }
 
-  private <T> CompletionStage<T> observed(SignalingMetrics.Operation operation, Supplier<CompletionStage<T>> action) {
+  private <T> CompletionStage<T> observed(
+      SignalingMetrics.Operation operation, Supplier<CompletionStage<T>> action) {
     var receipt = OperationObservation.safeLogicalStart(observation, operation);
     try (var scope = receipt.activate()) {
       var result = action.get();
-      result.whenComplete((value, error) -> receipt.logical(error == null ? observedOutcome(value)
-          : observedFailure(error)));
+      result.whenComplete(
+          (value, error) ->
+              receipt.logical(error == null ? observedOutcome(value) : observedFailure(error)));
       return result;
     } catch (Exception failure) {
       receipt.logical(observedFailure(failure));
@@ -209,8 +253,11 @@ public final class NativeGatewayServices implements GatewayServices {
   }
 
   private static SignalingMetrics.Outcome observedFailure(Throwable error) {
-    for (int wrappers = 0; wrappers < 16 && (error instanceof CompletionException
-        || error instanceof ExecutionException) && error.getCause() != null; wrappers++) error = error.getCause();
+    for (int wrappers = 0;
+        wrappers < 16
+            && (error instanceof CompletionException || error instanceof ExecutionException)
+            && error.getCause() != null;
+        wrappers++) error = error.getCause();
     if (error instanceof AuthException) return SignalingMetrics.Outcome.FORBIDDEN;
     if (error instanceof RejectedExecutionException) return SignalingMetrics.Outcome.BACKPRESSURE;
     if (error instanceof TimeoutException) return SignalingMetrics.Outcome.DEADLINE_EXCEEDED;
@@ -220,25 +267,39 @@ public final class NativeGatewayServices implements GatewayServices {
 
   private static SignalingMetrics.Outcome observedOutcome(Object value) {
     if (value instanceof SessionReply reply)
-      return NativeRpcTelemetry.outcome(reply.getErrorCode().isEmpty() ? reply.getStatus() : reply.getErrorCode());
+      return NativeRpcTelemetry.outcome(
+          reply.getErrorCode().isEmpty() ? reply.getStatus() : reply.getErrorCode());
     if (value instanceof String payload) {
       try {
         if (payload.length() > 81920) return SignalingMetrics.Outcome.INTERNAL_ERROR;
         var wire = JSON.readTree(payload);
-        if (wire.has("error")) return NativeRpcTelemetry.outcome(wire.path("error").path("code").asText());
+        if (wire.has("error"))
+          return NativeRpcTelemetry.outcome(wire.path("error").path("code").asText());
         String code = wire.path("result").path("code").asText();
-        if (java.util.Set.of("USER_BUSY", "CALL_ENDED", "TOKEN_EXPIRED", "FORBIDDEN", "STALE_VERSION", "OUTCOME_UNKNOWN", "WORKFLOW_PENDING").contains(code))
-          return NativeRpcTelemetry.outcome(code);
+        if (java.util.Set.of(
+                "USER_BUSY",
+                "CALL_ENDED",
+                "TOKEN_EXPIRED",
+                "FORBIDDEN",
+                "STALE_VERSION",
+                "OUTCOME_UNKNOWN",
+                "WORKFLOW_PENDING")
+            .contains(code)) return NativeRpcTelemetry.outcome(code);
         if (wire.path("ackCommitted").asBoolean(false)) return SignalingMetrics.Outcome.COMMITTED;
         return SignalingMetrics.Outcome.READ;
-      } catch (Exception invalid) { return SignalingMetrics.Outcome.INTERNAL_ERROR; }
+      } catch (Exception invalid) {
+        return SignalingMetrics.Outcome.INTERNAL_ERROR;
+      }
     }
     return SignalingMetrics.Outcome.READ;
   }
 
   private static SignalingMetrics.Operation operation(CallCommand command) {
-    try { return SignalingMetrics.Operation.valueOf(command.type().name()); }
-    catch (IllegalArgumentException unsupported) { return SignalingMetrics.Operation.QUERY; }
+    try {
+      return SignalingMetrics.Operation.valueOf(command.type().name());
+    } catch (IllegalArgumentException unsupported) {
+      return SignalingMetrics.Operation.QUERY;
+    }
   }
 
   private static <T> T decode(SessionReply reply, Class<T> type) {
