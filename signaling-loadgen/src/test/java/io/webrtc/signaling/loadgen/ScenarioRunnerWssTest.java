@@ -500,7 +500,20 @@ class ScenarioRunnerWssTest {
       if (abuse != null) {
         var security = summary.path("observed").path("security");
         assertThat(security.path("scope").asText()).isEqualTo("offeredSetupFrameArrivals");
-        assertThat(security.path("attempted").asLong()).isPositive();
+        if (slow) {
+          var firstSample =
+              JSON.readTree(Files.readAllLines(evidence.resolve("generator.jsonl")).get(0));
+          assertThat(firstSample.path("elapsedNanos").asLong())
+              .as("the first resource sample must be inside the scheduled workload")
+              .isPositive();
+        }
+        assertThat(security.path("attempted").asLong())
+            .as(
+                "Security workload did not run: status=%s failures=%s samples=%s",
+                summary.path("status"),
+                summary.path("failures"),
+                Files.readAllLines(evidence.resolve("generator.jsonl")))
+            .isPositive();
         assertThat(security.path("verifiedRejected").asLong())
             .isEqualTo(security.path("attempted").asLong());
         assertThat(security.path("pendingPhysical").asLong()).isZero();

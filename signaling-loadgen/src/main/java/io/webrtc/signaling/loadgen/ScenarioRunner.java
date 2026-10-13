@@ -415,7 +415,7 @@ public final class ScenarioRunner {
     long relayOrdinal = worker,
         registerOrdinal = worker,
         connected = 0,
-        lastSample = warmup,
+        lastSample = start,
         lastRefreshPoll = warmup,
         scan = range.start();
     long connectRate = config.path("connectsPerSecond").asLong();
