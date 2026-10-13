@@ -76,9 +76,9 @@ Tests beneath matching `src/test/java/io/webrtc/signaling/identity/`: `IdentityP
 - [x] Run `./mvnw -B -pl signaling-identity -am verify`; require all selected reactor modules pass tests and packaging/Spotless.
 - [x] Smoke executable JAR from temporary cwd on a free port using process cleanup trap, poll readiness with bounded timeout, login and fetch JWKS over HTTP, confirm token signature/public key compatibility. Never print token/private-key material in evidence output.
 - [x] Run generator regression, `git diff --check`, then `./mvnw -B verify` for full reactor verification. Do not repeat broad verification without new changes or an unresolved concern.
-- [ ] Perform final Java/code review of all changes, resolve actionable findings and rerun affected checks. GitNexus stale/unavailable limitations must be recorded; direct staged diff remains scope evidence.
-- [ ] Run detect_changes, inspect staged scope, commit `docs: document and verify test identity service`. Report test counts, packaging smoke result, remaining gates, commits, and no push unless requested.
+- [x] Perform final Java/code review of all changes, resolve actionable findings and rerun affected checks. GitNexus stale/unavailable limitations must be recorded; direct staged diff remains scope evidence.
+- [x] Run detect_changes, inspect staged scope, commit `docs: document and verify test identity service`. Report test counts, packaging smoke result, remaining gates, commits, and no push unless requested.
 
 ## Execution handoff
 
-Execution method: native inline execution selected by the user on 2026-10-13. All four tasks were implemented. The full reactor verify ran; its only failure was the browser integration test expecting `/usr/bin/chromium`. That test passed on rerun with `CHROMIUM_PATH=/usr/bin/google-chrome`; the module-scoped `./mvnw -B -pl signaling-identity -am verify` passed after final changes.
+Execution method: native inline execution selected by the user on 2026-10-13. All four tasks were implemented. Final review was a self-review because this run used inline execution with no independent review agent. The full reactor verify ran; its only failure was the browser integration test expecting `/usr/bin/chromium`. That test passed on rerun with `CHROMIUM_PATH=/usr/bin/google-chrome`; the module-scoped `./mvnw -B -pl signaling-identity -am verify` passed after final changes.
