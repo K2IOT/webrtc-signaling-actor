@@ -9,11 +9,11 @@ signaling:
     issuer: http://localhost:8081
     audience: webrtc-signaling
     token-ttl: 15m
-    key-id: test-key-1
+    key-id: signaling-identity-key
     accounts:
-      - username: alice
-        password: alice123
-        user-id: alice
-      - username: bob
-        password: bob123
-        user-id: bob
+      - username: admin
+        password: admin123
+        user-id: 6acdfd9e63f4055d3f6672d3
+      - username: mod
+        password: mod123
+        user-id: 6acdfda663f4055d3f6672d7

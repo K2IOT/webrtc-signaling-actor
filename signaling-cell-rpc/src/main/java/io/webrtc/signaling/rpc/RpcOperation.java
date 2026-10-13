@@ -8,11 +8,11 @@ import java.util.concurrent.CompletionStage;
  * Exceptional cleanup remains UNKNOWN.
  */
 public record RpcOperation<T>(CompletionStage<T> logical, CompletionStage<?> physicalCompletion) {
-  public RpcOperation {
-    Objects.requireNonNull(logical);
-    Objects.requireNonNull(physicalCompletion);
-    logical = io.webrtc.signaling.observability.ContextualStage.readOnly(logical);
-    physicalCompletion =
-        io.webrtc.signaling.observability.ContextualStage.readOnly(physicalCompletion);
-  }
+    public RpcOperation {
+        Objects.requireNonNull(logical);
+        Objects.requireNonNull(physicalCompletion);
+        logical = io.webrtc.signaling.observability.ContextualStage.readOnly(logical);
+        physicalCompletion =
+                io.webrtc.signaling.observability.ContextualStage.readOnly(physicalCompletion);
+    }
 }

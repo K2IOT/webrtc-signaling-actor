@@ -7,7 +7,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @EnableConfigurationProperties(IdentityProperties.class)
 public class SignalingIdentityApplication {
-  public static void main(String[] args) {
-    SpringApplication.run(SignalingIdentityApplication.class, args);
-  }
+    public static void main(String[] args) {
+        SpringApplication.run(SignalingIdentityApplication.class, args);
+    }
 }

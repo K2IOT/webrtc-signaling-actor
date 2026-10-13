@@ -1,20 +1,11 @@
 package io.webrtc.signaling.storage;
 
-import static org.assertj.core.api.Assertions.*;
-
-import io.webrtc.signaling.app.*;
+import io.webrtc.signaling.app.SignalingApplication;
 import io.webrtc.signaling.app.runtime.*;
 import io.webrtc.signaling.auth.*;
-import io.webrtc.signaling.control.*;
-import java.net.*;
-import java.net.http.*;
-import java.nio.charset.StandardCharsets;
-import java.security.*;
-import java.security.interfaces.RSAPublicKey;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicReference;
+import io.webrtc.signaling.control.BootstrapController;
+import io.webrtc.signaling.control.PostgresBucketTransfer;
+import io.webrtc.signaling.control.PostgresDirectoryRepository;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.WebApplicationType;
@@ -22,296 +13,323 @@ import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.web.context.WebServerApplicationContext;
 import org.springframework.core.io.FileSystemResource;
 
-/** Native HTTPS/RSA/PostgreSQL Main; signed clock and cached security adapters are TEST_ONLY. */
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.Signature;
+import java.security.interfaces.RSAPublicKey;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Native HTTPS/RSA/PostgreSQL Main; signed clock and cached security adapters are TEST_ONLY.
+ */
 class NativeControlMainIT {
-  @Test
-  void nativeMainServesTrustedHttpsBootstrapAndRejectsLossOfClockOrSecurity() throws Exception {
-    var rsa = KeyPairGenerator.getInstance("RSA");
-    rsa.initialize(2048);
-    var keys = rsa.generateKeyPair();
-    var now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
-    var security = new AtomicReference<>(AuthorizationStatus.ALLOWED);
-    var fresh = new java.util.concurrent.atomic.AtomicBoolean(true);
-    try (var database = new LocalInviteAtomicIT.Fixture();
-        var transferTarget = new LocalInviteAtomicIT.Fixture();
-        var clockFixture =
-            new NativeGatewayCommandIT.MainGateway(
-                KeyPairGenerator.getInstance("Ed25519").generateKeyPair())) {
-      Flyway.configure()
-          .dataSource(database.url, PgFixture.PG.getUsername(), PgFixture.PG.getPassword())
-          .table("TEST_ONLY_directory_history")
-          .baselineOnMigrate(true)
-          .baselineVersion("0")
-          .locations("classpath:db/directory/migration")
-          .load()
-          .migrate();
-      try (var c = database.connection();
-          var q = c.createStatement()) {
-        q.execute(
-            "INSERT INTO directory_bucket VALUES(175,'c001',7,'wss://cell.test/ws',clock_timestamp())");
-      }
-      var directory =
-          new PostgresDirectoryRepository(
-              database.runtime.sql, database.runtime.sql, "c001", 1, () -> true);
-      var contract =
-          new IdentitySecurityContract(
-              "https://issuer.test",
-              "control-test",
-              Duration.ofMinutes(15),
-              Duration.ofSeconds(30),
-              Duration.ofSeconds(2),
-              Duration.ofSeconds(5),
-              true,
-              "TEST_ONLY_HIGH_WATER");
-      try (var tokens =
-          new BoundedTokenVerifier(
-              new Rs256TokenVerifier(
-                  contract,
-                  new TrustedRsaKeys(
-                      Map.of("test", (RSAPublicKey) keys.getPublic()), null, Duration.ofSeconds(1)),
-                  8192),
-              1,
-              8,
-              Duration.ofSeconds(1))) {
-        clockFixture.refreshClock();
-        clockFixture.reports.scheduleAtFixedRate(
-            clockFixture::refreshClock, 1, 1, TimeUnit.SECONDS);
-        var business =
-            new NativeControlBusinessEnrollment(
-                directory,
-                tokens,
-                (p, n) -> security.get(),
-                fresh::get,
-                clockFixture.clock,
-                Duration.ofSeconds(30));
-        var tls =
-            io.netty.handler.ssl.SslContextBuilder.forServer(
-                    NativeGatewayCommandIT.cert("gateway.crt"),
-                    NativeGatewayCommandIT.cert("gateway.key"))
-                .sslProvider(io.netty.handler.ssl.SslProvider.JDK)
-                .protocols("TLSv1.3")
-                .build();
-        var inputs =
-            new NativeControlIngressEnrollment(
-                new InetSocketAddress("127.0.0.1", 0),
-                tls,
-                new InetSocketAddress("127.0.0.1", 0),
-                () -> true,
-                () -> "TEST_ONLY 1\n");
-        var defaults =
-            new YamlPropertySourceLoader()
-                .load(
-                    "TEST_ONLY_defaults",
-                    new FileSystemResource("../config/production-defaults.yaml"));
-        var application = SignalingApplication.application();
-        application.setWebApplicationType(WebApplicationType.REACTIVE);
-        application.setRegisterShutdownHook(false);
-        application.addInitializers(
-            context -> {
-              defaults.forEach(s -> context.getEnvironment().getPropertySources().addLast(s));
-              context.getBeanFactory().registerSingleton("TEST_ONLY_business", business);
-              context
-                  .getBeanFactory()
-                  .registerSingleton(
-                      "TEST_ONLY_transfer",
-                      new NativeBucketTransferEnrollment(
-                          new PostgresBucketTransfer.Store(database.runtime.sql, "c001", 1),
-                          new PostgresBucketTransfer.Store(transferTarget.runtime.sql, "c002", 1)));
-              context.getBeanFactory().registerSingleton("TEST_ONLY_ingress", inputs);
-              context.getBeanFactory().registerSingleton("TEST_ONLY_sql", database.runtime.sql);
-              context
-                  .getBeanFactory()
-                  .registerSingleton("TEST_ONLY_boundary", database.runtime.boundary);
-              context.getBeanFactory().registerSingleton("TEST_ONLY_pools", database.runtime.pools);
-            });
-        try (var context =
-            application.run(
-                "--spring.profiles.active=control",
-                "--SIGNALING_DEPLOYMENT_MODE=local-minikube",
-                "--SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
-                "--CELL_ID=c001",
-                "--spring.main.web-application-type=reactive",
-                "--signaling.identity.issuer=https://issuer.test",
-                "--signaling.identity.audience=control-test")) {
-          assertThat(context.getBeansOfType(BootstrapController.class)).hasSize(1);
-          int port = ((WebServerApplicationContext) context).getWebServer().getPort();
-          var store = KeyStore.getInstance(KeyStore.getDefaultType());
-          store.load(null, null);
-          try (var in = new java.io.FileInputStream(NativeGatewayCommandIT.cert("ca.crt"))) {
-            store.setCertificateEntry(
-                "TEST_ONLY",
-                java.security.cert.CertificateFactory.getInstance("X.509").generateCertificate(in));
-          }
-          var trust =
-              javax.net.ssl.TrustManagerFactory.getInstance(
-                  javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
-          trust.init(store);
-          var clientTls = javax.net.ssl.SSLContext.getInstance("TLSv1.3");
-          clientTls.init(null, trust.getTrustManagers(), null);
-          try (var client =
-              HttpClient.newBuilder()
-                  .sslContext(clientTls)
-                  .connectTimeout(Duration.ofSeconds(2))
-                  .build()) {
-            var request =
-                HttpRequest.newBuilder(
-                        URI.create("https://localhost:" + port + "/v1/signaling/bootstrap"))
-                    .timeout(Duration.ofSeconds(3))
-                    .header("Authorization", "Bearer " + token(keys, now))
-                    .POST(HttpRequest.BodyPublishers.noBody())
-                    .build();
-            assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
-                .isEqualTo(401);
-            context
-                .getBean(NativeControlReadiness.class)
-                .compatibility(
-                    () -> TestOnlyNativeCapabilities.cells("c001").permits("c001", "session-s1"));
-            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            assertThat(response.statusCode()).isEqualTo(200);
-            var body = NativeGatewayCommandIT.JSON.readTree(response.body());
-            assertThat(body.path("directoryEpoch").isTextual()).isTrue();
-            assertThat(body.path("directoryEpoch").asLong()).isEqualTo(7);
-            assertThat(body.path("wssUrl").asText()).isEqualTo("wss://cell.test/ws");
-            var health = context.getBean(PrivateHealthServer.class);
-            int healthPort = health.port();
-            assertThat(
-                    client
-                        .send(
-                            PrivateHealthServerTestRequest.of(healthPort, "/ready"),
-                            HttpResponse.BodyHandlers.ofString())
-                        .statusCode())
-                .isEqualTo(200);
-            fresh.set(false);
-            assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
-                .isEqualTo(401);
-            assertThat(
-                    client
-                        .send(
-                            PrivateHealthServerTestRequest.of(healthPort, "/ready"),
-                            HttpResponse.BodyHandlers.ofString())
-                        .statusCode())
-                .isEqualTo(503);
-            fresh.set(true);
-            security.set(AuthorizationStatus.REVOKED);
-            assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
-                .isEqualTo(401);
-            security.set(AuthorizationStatus.ALLOWED);
-            clockFixture.reports.shutdownNow();
-            clockFixture.clock.invalidate();
-            assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
-                .isEqualTo(401);
-            assertThat(
-                    client
-                        .send(
-                            PrivateHealthServerTestRequest.of(healthPort, "/ready"),
-                            HttpResponse.BodyHandlers.ofString())
-                        .statusCode())
-                .isEqualTo(503);
-            clockFixture.refreshClock();
-            assertThat(
-                    client
-                        .send(
-                            PrivateHealthServerTestRequest.of(healthPort, "/ready"),
-                            HttpResponse.BodyHandlers.ofString())
-                        .statusCode())
-                .isEqualTo(200);
-            var entered = new CountDownLatch(1);
-            var release = new CountDownLatch(1);
-            // TEST_ONLY physical tail after the original native SQL COMMIT; no DB timeout is
-            // relaxed.
-            var original =
-                database.runtime.boundary.submitTracked(
-                    DbClass.RECOVERY,
-                    Duration.ofMillis(100),
-                    () -> {
-                      database
-                          .runtime
-                          .sql
-                          .submit(
-                              DbClass.RECOVERY,
-                              Duration.ofSeconds(2),
-                              c -> {
-                                try (var q = c.createStatement()) {
-                                  q.execute(
-                                      "INSERT INTO directory_bucket VALUES(176,'c001',9,'wss://cell.test/ws',clock_timestamp())");
-                                }
-                                return true;
-                              })
-                          .toCompletableFuture()
-                          .join();
-                      entered.countDown();
-                      release.await();
-                      return true;
-                    });
-            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
-            var stopping = CompletableFuture.runAsync(context::stop);
-            try {
-              assertThatThrownBy(
-                      () -> original.logical().toCompletableFuture().get(1, TimeUnit.SECONDS))
-                  .hasCauseInstanceOf(DbOutcomeUnknownException.class);
-              assertThatThrownBy(() -> stopping.get(200, TimeUnit.MILLISECONDS))
-                  .isInstanceOf(TimeoutException.class);
-              assertThat(original.physicalCompletion().toCompletableFuture().isDone()).isFalse();
-              assertThat(database.runtime.pools.closed()).isFalse();
-              assertThat(
-                      client
-                          .send(
-                              PrivateHealthServerTestRequest.of(healthPort, "/ready"),
-                              HttpResponse.BodyHandlers.ofString())
-                          .statusCode())
-                  .isEqualTo(503);
-            } finally {
-              release.countDown();
-            }
-            stopping.get(5, TimeUnit.SECONDS);
-            original.physicalCompletion().toCompletableFuture().get(1, TimeUnit.SECONDS);
+    static String token(KeyPair keys, Instant now) throws Exception {
+        var encoding = Base64.getUrlEncoder().withoutPadding();
+        var header = "{\"alg\":\"RS256\",\"kid\":\"test\"}";
+        var claims =
+                "{\"iss\":\"https://issuer.test\",\"aud\":\"control-test\",\"userId\":\"alice\",\"jti\":\"TEST_ONLY\",\"iat\":"
+                        + now.getEpochSecond()
+                        + ",\"exp\":"
+                        + now.plusSeconds(600).getEpochSecond()
+                        + "}";
+        var input =
+                encoding.encodeToString(header.getBytes(StandardCharsets.UTF_8))
+                        + "."
+                        + encoding.encodeToString(claims.getBytes(StandardCharsets.UTF_8));
+        var signature = Signature.getInstance("SHA256withRSA");
+        signature.initSign(keys.getPrivate());
+        signature.update(input.getBytes(StandardCharsets.US_ASCII));
+        return input + "." + encoding.encodeToString(signature.sign());
+    }
+
+    @Test
+    void nativeMainServesTrustedHttpsBootstrapAndRejectsLossOfClockOrSecurity() throws Exception {
+        var rsa = KeyPairGenerator.getInstance("RSA");
+        rsa.initialize(2048);
+        var keys = rsa.generateKeyPair();
+        var now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        var security = new AtomicReference<>(AuthorizationStatus.ALLOWED);
+        var fresh = new java.util.concurrent.atomic.AtomicBoolean(true);
+        try (var database = new LocalInviteAtomicIT.Fixture();
+             var transferTarget = new LocalInviteAtomicIT.Fixture();
+             var clockFixture =
+                     new NativeGatewayCommandIT.MainGateway(
+                             KeyPairGenerator.getInstance("Ed25519").generateKeyPair())) {
+            Flyway.configure()
+                    .dataSource(database.url, PgFixture.PG.getUsername(), PgFixture.PG.getPassword())
+                    .table("TEST_ONLY_directory_history")
+                    .baselineOnMigrate(true)
+                    .baselineVersion("0")
+                    .locations("classpath:db/directory/migration")
+                    .load()
+                    .migrate();
             try (var c = database.connection();
-                var q = c.createStatement();
-                var result =
-                    q.executeQuery(
-                        "SELECT directory_epoch FROM directory_bucket WHERE bucket_id=176")) {
-              assertThat(result.next()).isTrue();
-              assertThat(result.getLong(1)).isEqualTo(9);
+                 var q = c.createStatement()) {
+                q.execute(
+                        "INSERT INTO directory_bucket VALUES(175,'c001',7,'wss://cell.test/ws',clock_timestamp())");
             }
-            context.close();
-            assertThatThrownBy(() -> new Socket("127.0.0.1", port))
-                .isInstanceOf(java.io.IOException.class);
-            assertThatThrownBy(() -> new Socket("127.0.0.1", healthPort))
-                .isInstanceOf(java.io.IOException.class);
-            assertThat(database.runtime.pools.closed())
-                .as("Main must retire its enrolled original database pools")
-                .isTrue();
-          }
+            var directory =
+                    new PostgresDirectoryRepository(
+                            database.runtime.sql, database.runtime.sql, "c001", 1, () -> true);
+            var contract =
+                    new IdentitySecurityContract(
+                            "https://issuer.test",
+                            "control-test",
+                            Duration.ofMinutes(15),
+                            Duration.ofSeconds(30),
+                            Duration.ofSeconds(2),
+                            Duration.ofSeconds(5),
+                            true,
+                            "TEST_ONLY_HIGH_WATER");
+            try (var tokens =
+                         new BoundedTokenVerifier(
+                                 new Rs256TokenVerifier(
+                                         contract,
+                                         new TrustedRsaKeys(
+                                                 Map.of("test", (RSAPublicKey) keys.getPublic()), null, Duration.ofSeconds(1)),
+                                         8192),
+                                 1,
+                                 8,
+                                 Duration.ofSeconds(1))) {
+                clockFixture.refreshClock();
+                clockFixture.reports.scheduleAtFixedRate(
+                        clockFixture::refreshClock, 1, 1, TimeUnit.SECONDS);
+                var business =
+                        new NativeControlBusinessEnrollment(
+                                directory,
+                                tokens,
+                                (p, n) -> security.get(),
+                                fresh::get,
+                                clockFixture.clock,
+                                Duration.ofSeconds(30));
+                var tls =
+                        io.netty.handler.ssl.SslContextBuilder.forServer(
+                                        NativeGatewayCommandIT.cert("gateway.crt"),
+                                        NativeGatewayCommandIT.cert("gateway.key"))
+                                .sslProvider(io.netty.handler.ssl.SslProvider.JDK)
+                                .protocols("TLSv1.3")
+                                .build();
+                var inputs =
+                        new NativeControlIngressEnrollment(
+                                new InetSocketAddress("127.0.0.1", 0),
+                                tls,
+                                new InetSocketAddress("127.0.0.1", 0),
+                                () -> true,
+                                () -> "TEST_ONLY 1\n");
+                var defaults =
+                        new YamlPropertySourceLoader()
+                                .load(
+                                        "TEST_ONLY_defaults",
+                                        new FileSystemResource("../config/production-defaults.yaml"));
+                var application = SignalingApplication.application();
+                application.setWebApplicationType(WebApplicationType.REACTIVE);
+                application.setRegisterShutdownHook(false);
+                application.addInitializers(
+                        context -> {
+                            defaults.forEach(s -> context.getEnvironment().getPropertySources().addLast(s));
+                            context.getBeanFactory().registerSingleton("TEST_ONLY_business", business);
+                            context
+                                    .getBeanFactory()
+                                    .registerSingleton(
+                                            "TEST_ONLY_transfer",
+                                            new NativeBucketTransferEnrollment(
+                                                    new PostgresBucketTransfer.Store(database.runtime.sql, "c001", 1),
+                                                    new PostgresBucketTransfer.Store(transferTarget.runtime.sql, "c002", 1)));
+                            context.getBeanFactory().registerSingleton("TEST_ONLY_ingress", inputs);
+                            context.getBeanFactory().registerSingleton("TEST_ONLY_sql", database.runtime.sql);
+                            context
+                                    .getBeanFactory()
+                                    .registerSingleton("TEST_ONLY_boundary", database.runtime.boundary);
+                            context.getBeanFactory().registerSingleton("TEST_ONLY_pools", database.runtime.pools);
+                        });
+                try (var context =
+                             application.run(
+                                     "--spring.profiles.active=control",
+                                     "--SIGNALING_DEPLOYMENT_MODE=local-minikube",
+                                     "--SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
+                                     "--CELL_ID=c001",
+                                     "--spring.main.web-application-type=reactive",
+                                     "--signaling.identity.issuer=https://issuer.test",
+                                     "--signaling.identity.audience=control-test")) {
+                    assertThat(context.getBeansOfType(BootstrapController.class)).hasSize(1);
+                    int port = ((WebServerApplicationContext) context).getWebServer().getPort();
+                    var store = KeyStore.getInstance(KeyStore.getDefaultType());
+                    store.load(null, null);
+                    try (var in = new java.io.FileInputStream(NativeGatewayCommandIT.cert("ca.crt"))) {
+                        store.setCertificateEntry(
+                                "TEST_ONLY",
+                                java.security.cert.CertificateFactory.getInstance("X.509").generateCertificate(in));
+                    }
+                    var trust =
+                            javax.net.ssl.TrustManagerFactory.getInstance(
+                                    javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+                    trust.init(store);
+                    var clientTls = javax.net.ssl.SSLContext.getInstance("TLSv1.3");
+                    clientTls.init(null, trust.getTrustManagers(), null);
+                    try (var client =
+                                 HttpClient.newBuilder()
+                                         .sslContext(clientTls)
+                                         .connectTimeout(Duration.ofSeconds(2))
+                                         .build()) {
+                        var request =
+                                HttpRequest.newBuilder(
+                                                URI.create("https://localhost:" + port + "/v1/signaling/bootstrap"))
+                                        .timeout(Duration.ofSeconds(3))
+                                        .header("Authorization", "Bearer " + token(keys, now))
+                                        .POST(HttpRequest.BodyPublishers.noBody())
+                                        .build();
+                        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+                                .isEqualTo(401);
+                        context
+                                .getBean(NativeControlReadiness.class)
+                                .compatibility(
+                                        () -> TestOnlyNativeCapabilities.cells("c001").permits("c001", "session-s1"));
+                        var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                        assertThat(response.statusCode()).isEqualTo(200);
+                        var body = NativeGatewayCommandIT.JSON.readTree(response.body());
+                        assertThat(body.path("directoryEpoch").isTextual()).isTrue();
+                        assertThat(body.path("directoryEpoch").asLong()).isEqualTo(7);
+                        assertThat(body.path("wssUrl").asText()).isEqualTo("wss://cell.test/ws");
+                        var health = context.getBean(PrivateHealthServer.class);
+                        int healthPort = health.port();
+                        assertThat(
+                                client
+                                        .send(
+                                                PrivateHealthServerTestRequest.of(healthPort, "/ready"),
+                                                HttpResponse.BodyHandlers.ofString())
+                                        .statusCode())
+                                .isEqualTo(200);
+                        fresh.set(false);
+                        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+                                .isEqualTo(401);
+                        assertThat(
+                                client
+                                        .send(
+                                                PrivateHealthServerTestRequest.of(healthPort, "/ready"),
+                                                HttpResponse.BodyHandlers.ofString())
+                                        .statusCode())
+                                .isEqualTo(503);
+                        fresh.set(true);
+                        security.set(AuthorizationStatus.REVOKED);
+                        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+                                .isEqualTo(401);
+                        security.set(AuthorizationStatus.ALLOWED);
+                        clockFixture.reports.shutdownNow();
+                        clockFixture.clock.invalidate();
+                        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+                                .isEqualTo(401);
+                        assertThat(
+                                client
+                                        .send(
+                                                PrivateHealthServerTestRequest.of(healthPort, "/ready"),
+                                                HttpResponse.BodyHandlers.ofString())
+                                        .statusCode())
+                                .isEqualTo(503);
+                        clockFixture.refreshClock();
+                        assertThat(
+                                client
+                                        .send(
+                                                PrivateHealthServerTestRequest.of(healthPort, "/ready"),
+                                                HttpResponse.BodyHandlers.ofString())
+                                        .statusCode())
+                                .isEqualTo(200);
+                        var entered = new CountDownLatch(1);
+                        var release = new CountDownLatch(1);
+                        // TEST_ONLY physical tail after the original native SQL COMMIT; no DB timeout is
+                        // relaxed.
+                        var original =
+                                database.runtime.boundary.submitTracked(
+                                        DbClass.RECOVERY,
+                                        Duration.ofMillis(100),
+                                        () -> {
+                                            database
+                                                    .runtime
+                                                    .sql
+                                                    .submit(
+                                                            DbClass.RECOVERY,
+                                                            Duration.ofSeconds(2),
+                                                            c -> {
+                                                                try (var q = c.createStatement()) {
+                                                                    q.execute(
+                                                                            "INSERT INTO directory_bucket VALUES(176,'c001',9,'wss://cell.test/ws',clock_timestamp())");
+                                                                }
+                                                                return true;
+                                                            })
+                                                    .toCompletableFuture()
+                                                    .join();
+                                            entered.countDown();
+                                            release.await();
+                                            return true;
+                                        });
+                        assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+                        var stopping = CompletableFuture.runAsync(context::stop);
+                        try {
+                            assertThatThrownBy(
+                                    () -> original.logical().toCompletableFuture().get(1, TimeUnit.SECONDS))
+                                    .hasCauseInstanceOf(DbOutcomeUnknownException.class);
+                            assertThatThrownBy(() -> stopping.get(200, TimeUnit.MILLISECONDS))
+                                    .isInstanceOf(TimeoutException.class);
+                            assertThat(original.physicalCompletion().toCompletableFuture().isDone()).isFalse();
+                            assertThat(database.runtime.pools.closed()).isFalse();
+                            assertThat(
+                                    client
+                                            .send(
+                                                    PrivateHealthServerTestRequest.of(healthPort, "/ready"),
+                                                    HttpResponse.BodyHandlers.ofString())
+                                            .statusCode())
+                                    .isEqualTo(503);
+                        } finally {
+                            release.countDown();
+                        }
+                        stopping.get(5, TimeUnit.SECONDS);
+                        original.physicalCompletion().toCompletableFuture().get(1, TimeUnit.SECONDS);
+                        try (var c = database.connection();
+                             var q = c.createStatement();
+                             var result =
+                                     q.executeQuery(
+                                             "SELECT directory_epoch FROM directory_bucket WHERE bucket_id=176")) {
+                            assertThat(result.next()).isTrue();
+                            assertThat(result.getLong(1)).isEqualTo(9);
+                        }
+                        context.close();
+                        assertThatThrownBy(() -> new Socket("127.0.0.1", port))
+                                .isInstanceOf(java.io.IOException.class);
+                        assertThatThrownBy(() -> new Socket("127.0.0.1", healthPort))
+                                .isInstanceOf(java.io.IOException.class);
+                        assertThat(database.runtime.pools.closed())
+                                .as("Main must retire its enrolled original database pools")
+                                .isTrue();
+                    }
+                }
+            }
         }
-      }
     }
-  }
 
-  static String token(KeyPair keys, Instant now) throws Exception {
-    var encoding = Base64.getUrlEncoder().withoutPadding();
-    var header = "{\"alg\":\"RS256\",\"kid\":\"test\"}";
-    var claims =
-        "{\"iss\":\"https://issuer.test\",\"aud\":\"control-test\",\"userId\":\"alice\",\"jti\":\"TEST_ONLY\",\"iat\":"
-            + now.getEpochSecond()
-            + ",\"exp\":"
-            + now.plusSeconds(600).getEpochSecond()
-            + "}";
-    var input =
-        encoding.encodeToString(header.getBytes(StandardCharsets.UTF_8))
-            + "."
-            + encoding.encodeToString(claims.getBytes(StandardCharsets.UTF_8));
-    var signature = Signature.getInstance("SHA256withRSA");
-    signature.initSign(keys.getPrivate());
-    signature.update(input.getBytes(StandardCharsets.US_ASCII));
-    return input + "." + encoding.encodeToString(signature.sign());
-  }
-
-  static final class PrivateHealthServerTestRequest {
-    static HttpRequest of(int port, String path) {
-      return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
-          .timeout(Duration.ofSeconds(2))
-          .GET()
-          .build();
+    static final class PrivateHealthServerTestRequest {
+        static HttpRequest of(int port, String path) {
+            return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                    .timeout(Duration.ofSeconds(2))
+                    .GET()
+                    .build();
+        }
     }
-  }
 }

@@ -1,1 +1,3 @@
-TEST ONLY: disposable local TLS1.3 relay fixtures. Exact SPIFFE actor/gateway workload IDs. CA private key discarded after issuing leaves. Never use these private keys in deployment. No production identity, authority or capacity evidence.
+TEST ONLY: disposable local TLS1.3 relay fixtures. Exact SPIFFE actor/gateway workload IDs. CA private key discarded
+after issuing leaves. Never use these private keys in deployment. No production identity, authority or capacity
+evidence.

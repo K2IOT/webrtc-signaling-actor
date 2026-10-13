@@ -1,9 +1,12 @@
 package io.webrtc.signaling.gateway;
 
-import io.webrtc.signaling.auth.*;
+import io.webrtc.signaling.auth.AuthPrincipal;
+import io.webrtc.signaling.auth.AuthorizationStatus;
 import io.webrtc.signaling.protocol.CallCommand;
 import io.webrtc.signaling.storage.SessionRepository;
-import java.time.*;
+
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 
@@ -11,44 +14,44 @@ import java.util.concurrent.CompletionStage;
  * Non-blocking ports. cachedSecurity and currentBoot must be local bounded reads, never JDBC/JPA.
  */
 public interface GatewayServices {
-  boolean currentBoot();
+    boolean currentBoot();
 
-  default boolean supportsInitialIceReceipts() {
-    return false;
-  }
+    default boolean supportsInitialIceReceipts() {
+        return false;
+    }
 
-  CompletionStage<AuthPrincipal> verify(String token, Instant now);
+    CompletionStage<AuthPrincipal> verify(String token, Instant now);
 
-  AuthorizationStatus cachedSecurity(AuthPrincipal principal, Instant now);
+    AuthorizationStatus cachedSecurity(AuthPrincipal principal, Instant now);
 
-  CompletionStage<SessionRepository.Route> register(
-      AuthPrincipal principal, UUID connection, Duration budget);
+    CompletionStage<SessionRepository.Route> register(
+            AuthPrincipal principal, UUID connection, Duration budget);
 
-  CompletionStage<SessionRepository.Route> refresh(
-      SessionRepository.Route route, AuthPrincipal principal, Duration budget);
+    CompletionStage<SessionRepository.Route> refresh(
+            SessionRepository.Route route, AuthPrincipal principal, Duration budget);
 
-  default CompletionStage<SessionRepository.Route> register(
-      AuthPrincipal principal, String originalVerifiedToken, UUID connection, Duration budget) {
-    return register(principal, connection, budget);
-  }
+    default CompletionStage<SessionRepository.Route> register(
+            AuthPrincipal principal, String originalVerifiedToken, UUID connection, Duration budget) {
+        return register(principal, connection, budget);
+    }
 
-  default CompletionStage<SessionRepository.Route> refresh(
-      SessionRepository.Route route,
-      AuthPrincipal principal,
-      String originalVerifiedToken,
-      Duration budget) {
-    return refresh(route, principal, budget);
-  }
+    default CompletionStage<SessionRepository.Route> refresh(
+            SessionRepository.Route route,
+            AuthPrincipal principal,
+            String originalVerifiedToken,
+            Duration budget) {
+        return refresh(route, principal, budget);
+    }
 
-  CompletionStage<Void> close(SessionRepository.Route route);
+    CompletionStage<Void> close(SessionRepository.Route route);
 
-  CompletionStage<String> command(CallCommand command, Duration budget);
+    CompletionStage<String> command(CallCommand command, Duration budget);
 
-  default CompletionStage<String> command(
-      CallCommand command,
-      SessionRepository.Route route,
-      String originalVerifiedToken,
-      Duration budget) {
-    return command(command, budget);
-  }
+    default CompletionStage<String> command(
+            CallCommand command,
+            SessionRepository.Route route,
+            String originalVerifiedToken,
+            Duration budget) {
+        return command(command, budget);
+    }
 }

@@ -1,19 +1,21 @@
 <configuration>
-  <appender name="SAFE_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-      <layout class="io.webrtc.signaling.observability.PrivacySafeLogbackLayout"/>
-    </encoder>
-  </appender>
-  <appender name="SAFE_ASYNC" class="io.webrtc.signaling.observability.BoundedAsyncLogAppender">
-    <queueSize>1024</queueSize>
-    <neverBlock>true</neverBlock>
-    <discardingThreshold>0</discardingThreshold>
-    <maxFlushTime>2000</maxFlushTime>
-    <appender-ref ref="SAFE_CONSOLE"/>
-  </appender>
-  <logger name="org.hibernate.SQL" level="OFF"/>
-  <logger name="org.hibernate.orm.jdbc.bind" level="OFF"/>
-  <logger name="org.postgresql" level="OFF"/>
-  <logger name="io.netty.handler.logging" level="OFF"/>
-  <root level="INFO"><appender-ref ref="SAFE_ASYNC"/></root>
+    <appender name="SAFE_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+            <layout class="io.webrtc.signaling.observability.PrivacySafeLogbackLayout"/>
+        </encoder>
+    </appender>
+    <appender name="SAFE_ASYNC" class="io.webrtc.signaling.observability.BoundedAsyncLogAppender">
+        <queueSize>1024</queueSize>
+        <neverBlock>true</neverBlock>
+        <discardingThreshold>0</discardingThreshold>
+        <maxFlushTime>2000</maxFlushTime>
+        <appender-ref ref="SAFE_CONSOLE"/>
+    </appender>
+    <logger name="org.hibernate.SQL" level="OFF"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="OFF"/>
+    <logger name="org.postgresql" level="OFF"/>
+    <logger name="io.netty.handler.logging" level="OFF"/>
+    <root level="INFO">
+        <appender-ref ref="SAFE_ASYNC"/>
+    </root>
 </configuration>

@@ -1,70 +1,74 @@
 package io.webrtc.signaling.auth;
 
-import io.webrtc.signaling.protocol.Identity.*;
-import java.time.*;
+import io.webrtc.signaling.protocol.Identity.SessionKey;
+import io.webrtc.signaling.protocol.Identity.UserId;
+
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 
 public final class RevocationState {
-  public record Event(
-      String issuer,
-      UserId userId,
-      String jti,
-      long epoch,
-      long sourceOffset,
-      Instant committedAt) {
-    public Event {
-      new SessionKey(issuer, jti == null ? "user-scope" : jti);
-      Objects.requireNonNull(userId);
-      Objects.requireNonNull(committedAt);
-      if (epoch < 0 || sourceOffset < 0) throw new IllegalArgumentException("security epoch");
+    private final Store store;
+    private final Duration freshness;
+
+    public RevocationState(Store store, Duration freshness) {
+        this.store = Objects.requireNonNull(store);
+        if (freshness == null || freshness.isNegative() || freshness.isZero())
+            throw new IllegalArgumentException("freshness bound");
+        this.freshness = freshness;
     }
-  }
 
-  public record Progress(long offset, Instant checkedAt) {}
+    public boolean apply(Event event) {
+        return store.apply(event);
+    }
 
-  /**
-   * Implementations commit atomically before returning; runtime storage supplies a PostgreSQL
-   * adapter.
-   */
-  public interface Store {
-    boolean apply(Event event);
+    public void markReconciled(long offset, Instant now) {
+        store.reconcile(offset, now);
+    }
 
-    long epoch(String issuer, UserId user, String jti);
+    public AuthorizationStatus checkRevocation(AuthPrincipal principal, Instant now) {
+        if (!principal.expiresAt().isAfter(now)) return AuthorizationStatus.TOKEN_EXPIRED;
+        if (store.epoch(principal.key().issuer(), principal.userId(), principal.key().jti())
+                >= principal.securityEpoch()
+                || store.epoch(principal.key().issuer(), principal.userId(), null)
+                >= principal.securityEpoch()) return AuthorizationStatus.REVOKED;
+        var p = store.progress();
+        if (p == null
+                || p.checkedAt().isAfter(now)
+                || Duration.between(p.checkedAt(), now).compareTo(freshness) > 0)
+            return AuthorizationStatus.FRESHNESS_UNKNOWN;
+        return AuthorizationStatus.ALLOWED;
+    }
 
-    Progress progress();
+    /**
+     * Implementations commit atomically before returning; runtime storage supplies a PostgreSQL
+     * adapter.
+     */
+    public interface Store {
+        boolean apply(Event event);
 
-    void reconcile(long offset, Instant checkedAt);
-  }
+        long epoch(String issuer, UserId user, String jti);
 
-  private final Store store;
-  private final Duration freshness;
+        Progress progress();
 
-  public RevocationState(Store store, Duration freshness) {
-    this.store = Objects.requireNonNull(store);
-    if (freshness == null || freshness.isNegative() || freshness.isZero())
-      throw new IllegalArgumentException("freshness bound");
-    this.freshness = freshness;
-  }
+        void reconcile(long offset, Instant checkedAt);
+    }
 
-  public boolean apply(Event event) {
-    return store.apply(event);
-  }
+    public record Event(
+            String issuer,
+            UserId userId,
+            String jti,
+            long epoch,
+            long sourceOffset,
+            Instant committedAt) {
+        public Event {
+            new SessionKey(issuer, jti == null ? "user-scope" : jti);
+            Objects.requireNonNull(userId);
+            Objects.requireNonNull(committedAt);
+            if (epoch < 0 || sourceOffset < 0) throw new IllegalArgumentException("security epoch");
+        }
+    }
 
-  public void markReconciled(long offset, Instant now) {
-    store.reconcile(offset, now);
-  }
-
-  public AuthorizationStatus checkRevocation(AuthPrincipal principal, Instant now) {
-    if (!principal.expiresAt().isAfter(now)) return AuthorizationStatus.TOKEN_EXPIRED;
-    if (store.epoch(principal.key().issuer(), principal.userId(), principal.key().jti())
-            >= principal.securityEpoch()
-        || store.epoch(principal.key().issuer(), principal.userId(), null)
-            >= principal.securityEpoch()) return AuthorizationStatus.REVOKED;
-    var p = store.progress();
-    if (p == null
-        || p.checkedAt().isAfter(now)
-        || Duration.between(p.checkedAt(), now).compareTo(freshness) > 0)
-      return AuthorizationStatus.FRESHNESS_UNKNOWN;
-    return AuthorizationStatus.ALLOWED;
-  }
+    public record Progress(long offset, Instant checkedAt) {
+    }
 }

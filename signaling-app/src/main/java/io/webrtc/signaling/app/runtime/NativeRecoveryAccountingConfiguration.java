@@ -11,12 +11,12 @@ import org.springframework.context.annotation.Profile;
 @Profile("actor")
 @ConditionalOnBean(NativeRecoveryEnrollment.class)
 public class NativeRecoveryAccountingConfiguration {
-  @Bean(destroyMethod = "")
-  NativeRecoveryAccounting nativeRecoveryAccounting(
-      NativeActorComposition actors,
-      NativeRecoveryEnrollment enrollment,
-      SignalingMetrics metrics,
-      NativeTelemetry telemetry) {
-    return new NativeRecoveryAccounting(actors, enrollment, metrics, telemetry);
-  }
+    @Bean(destroyMethod = "")
+    NativeRecoveryAccounting nativeRecoveryAccounting(
+            NativeActorComposition actors,
+            NativeRecoveryEnrollment enrollment,
+            SignalingMetrics metrics,
+            NativeTelemetry telemetry) {
+        return new NativeRecoveryAccounting(actors, enrollment, metrics, telemetry);
+    }
 }

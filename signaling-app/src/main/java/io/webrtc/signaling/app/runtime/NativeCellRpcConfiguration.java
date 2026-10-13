@@ -2,27 +2,31 @@ package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.rpc.CellRpcClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.*;
-import org.springframework.context.annotation.*;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Profile;
 
-/** Build one lazy native client; the plane lifecycle owns its original physical drain. */
+/**
+ * Build one lazy native client; the plane lifecycle owns its original physical drain.
+ */
 @AutoConfiguration(
-    before = {NativeActorIngressConfiguration.class, NativeGatewayBusinessConfiguration.class})
+        before = {NativeActorIngressConfiguration.class, NativeGatewayBusinessConfiguration.class})
 @Profile({"actor", "gateway"})
 @ConditionalOnBean(NativeCellRpcEnrollment.class)
 public class NativeCellRpcConfiguration {
-  @Bean(destroyMethod = "")
-  @ConditionalOnMissingBean(CellRpcClient.class)
-  CellRpcClient nativeCellRpcClient(
-      NativeCellRpcEnrollment enrollment,
-      NativeTelemetry telemetry,
-      NativeCompatibility compatibility) {
-    return new CellRpcClient(
-            enrollment.environment(),
-            enrollment.destinations(),
-            enrollment.tls(),
-            enrollment.admission())
-        .observe(telemetry)
-        .compatibility(compatibility);
-  }
+    @Bean(destroyMethod = "")
+    @ConditionalOnMissingBean(CellRpcClient.class)
+    CellRpcClient nativeCellRpcClient(
+            NativeCellRpcEnrollment enrollment,
+            NativeTelemetry telemetry,
+            NativeCompatibility compatibility) {
+        return new CellRpcClient(
+                enrollment.environment(),
+                enrollment.destinations(),
+                enrollment.tls(),
+                enrollment.admission())
+                .observe(telemetry)
+                .compatibility(compatibility);
+    }
 }

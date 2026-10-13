@@ -12,19 +12,19 @@ import io.netty.handler.codec.http.websocketx.CorruptedWebSocketFrameException;
  * original one-second cleanup window.
  */
 public final class DecoderRejectionHandler extends ChannelInboundHandlerAdapter {
-  @Override
-  public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-    if (!(cause instanceof CorruptedWebSocketFrameException nativeError)) {
-      ctx.fireExceptionCaught(cause);
-      return;
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        if (!(cause instanceof CorruptedWebSocketFrameException nativeError)) {
+            ctx.fireExceptionCaught(cause);
+            return;
+        }
+        var status = nativeError.closeStatus();
+        var reason =
+                status != null && status.code() == 1009
+                        ? GatewayRejection.Reason.PROTOCOL_FRAME_TOO_LARGE
+                        : status != null && status.code() == 1007
+                        ? GatewayRejection.Reason.PROTOCOL_INVALID_UTF8
+                        : GatewayRejection.Reason.PROTOCOL_REJECTED;
+        GatewayRejection.closeDecoder(ctx.channel(), reason);
     }
-    var status = nativeError.closeStatus();
-    var reason =
-        status != null && status.code() == 1009
-            ? GatewayRejection.Reason.PROTOCOL_FRAME_TOO_LARGE
-            : status != null && status.code() == 1007
-                ? GatewayRejection.Reason.PROTOCOL_INVALID_UTF8
-                : GatewayRejection.Reason.PROTOCOL_REJECTED;
-    GatewayRejection.closeDecoder(ctx.channel(), reason);
-  }
 }

@@ -1,75 +1,81 @@
 package io.webrtc.signaling.app.runtime;
 
-import io.webrtc.signaling.storage.*;
-import java.util.*;
+import io.webrtc.signaling.storage.DbAdmission;
+import io.webrtc.signaling.storage.DbClass;
+import io.webrtc.signaling.storage.DbResourceProfile;
+
+import java.util.Map;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 
 /**
  * Explicit regional directory/local cell databases, fixed quotas and independent local authority.
  */
 public record NativeControlDatabaseEnrollment(
-    Database regional,
-    Database local,
-    String cell,
-    long storageEpoch,
-    BooleanSupplier admittedRegionalWriter) {
-  public NativeControlDatabaseEnrollment {
-    Objects.requireNonNull(regional);
-    Objects.requireNonNull(local);
-    Objects.requireNonNull(admittedRegionalWriter);
-    if (cell == null || !cell.matches("[a-z][a-z0-9-]{0,23}") || storageEpoch < 1)
-      throw new IllegalArgumentException("Invalid control database authority");
-  }
-
-  public record Database(
-      String jdbcUrl,
-      String username,
-      String password,
-      Map<DbClass, Integer> quotas,
-      int safetyMax,
-      int controlMax,
-      Map<DbClass, DbResourceProfile> resourceProfiles) {
-    /** Count-only enrollment is explicitly LOCAL_TEST_ONLY and cannot launch production. */
-    public Database(
-        String jdbcUrl,
-        String username,
-        String password,
-        Map<DbClass, Integer> quotas,
-        int safetyMax,
-        int controlMax) {
-      this(
-          jdbcUrl,
-          username,
-          password,
-          quotas,
-          safetyMax,
-          controlMax,
-          DbResourceProfile.localTestOnly(quotas));
+        Database regional,
+        Database local,
+        String cell,
+        long storageEpoch,
+        BooleanSupplier admittedRegionalWriter) {
+    public NativeControlDatabaseEnrollment {
+        Objects.requireNonNull(regional);
+        Objects.requireNonNull(local);
+        Objects.requireNonNull(admittedRegionalWriter);
+        if (cell == null || !cell.matches("[a-z][a-z0-9-]{0,23}") || storageEpoch < 1)
+            throw new IllegalArgumentException("Invalid control database authority");
     }
 
-    public Database {
-      if (jdbcUrl == null
-          || !jdbcUrl.startsWith("jdbc:postgresql:")
-          || username == null
-          || username.isBlank()
-          || password == null)
-        throw new IllegalArgumentException("Explicit PostgreSQL database credentials required");
-      quotas = Map.copyOf(quotas);
-      resourceProfiles = Map.copyOf(resourceProfiles);
-      var admission = new DbAdmission(quotas, resourceProfiles);
-      if (safetyMax < 1
-          || controlMax < 1
-          || admission.poolCapacity(true) > safetyMax
-          || admission.poolCapacity(false) > controlMax
-          || !quotas.containsKey(DbClass.RECOVERY)
-          || !quotas.containsKey(DbClass.CRITICAL))
-        throw new IllegalArgumentException(
-            "Control database quotas exceed fixed pool budget or omit directory work");
-    }
+    public record Database(
+            String jdbcUrl,
+            String username,
+            String password,
+            Map<DbClass, Integer> quotas,
+            int safetyMax,
+            int controlMax,
+            Map<DbClass, DbResourceProfile> resourceProfiles) {
+        /**
+         * Count-only enrollment is explicitly LOCAL_TEST_ONLY and cannot launch production.
+         */
+        public Database(
+                String jdbcUrl,
+                String username,
+                String password,
+                Map<DbClass, Integer> quotas,
+                int safetyMax,
+                int controlMax) {
+            this(
+                    jdbcUrl,
+                    username,
+                    password,
+                    quotas,
+                    safetyMax,
+                    controlMax,
+                    DbResourceProfile.localTestOnly(quotas));
+        }
 
-    @Override
-    public String toString() {
-      return "ControlDatabase[credentials=redacted]";
+        public Database {
+            if (jdbcUrl == null
+                    || !jdbcUrl.startsWith("jdbc:postgresql:")
+                    || username == null
+                    || username.isBlank()
+                    || password == null)
+                throw new IllegalArgumentException("Explicit PostgreSQL database credentials required");
+            quotas = Map.copyOf(quotas);
+            resourceProfiles = Map.copyOf(resourceProfiles);
+            var admission = new DbAdmission(quotas, resourceProfiles);
+            if (safetyMax < 1
+                    || controlMax < 1
+                    || admission.poolCapacity(true) > safetyMax
+                    || admission.poolCapacity(false) > controlMax
+                    || !quotas.containsKey(DbClass.RECOVERY)
+                    || !quotas.containsKey(DbClass.CRITICAL))
+                throw new IllegalArgumentException(
+                        "Control database quotas exceed fixed pool budget or omit directory work");
+        }
+
+        @Override
+        public String toString() {
+            return "ControlDatabase[credentials=redacted]";
+        }
     }
-  }
 }

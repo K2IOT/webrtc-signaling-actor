@@ -1,466 +1,482 @@
 package io.webrtc.signaling.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.netty.channel.*;
-import io.netty.handler.codec.http.websocketx.*;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.util.ReferenceCountUtil;
-import io.webrtc.signaling.auth.*;
-import io.webrtc.signaling.protocol.*;
-import io.webrtc.signaling.protocol.Identity.*;
+import io.webrtc.signaling.auth.AuthException;
+import io.webrtc.signaling.auth.AuthorizationStatus;
+import io.webrtc.signaling.protocol.Identity.AuthenticatedSession;
+import io.webrtc.signaling.protocol.InitialIceReceipt;
+import io.webrtc.signaling.protocol.ProtocolLimits;
+import io.webrtc.signaling.protocol.ProtocolValidator;
+import io.webrtc.signaling.protocol.SignalEnvelope;
 import io.webrtc.signaling.storage.SessionRepository;
-import java.time.*;
-import java.util.*;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.util.AbstractMap;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.*;
 
-/** AUTH_OK is emitted only after committed native registration and a still-current gateway boot. */
+/**
+ * AUTH_OK is emitted only after committed native registration and a still-current gateway boot.
+ */
 public final class AuthHandler extends ChannelInboundHandlerAdapter {
-  static final io.netty.util.AttributeKey<Boolean> INITIAL_ICE_RECEIPTS =
-      io.netty.util.AttributeKey.valueOf("signaling.initialIceReceiptsV1");
-  private final ConnectionRegistry registry;
-  private final GatewayServices services;
-  private final Clock clock;
-  private final ProtocolValidator protocol = new ProtocolValidator(ProtocolLimits.v1());
-  private static final Executor DEFAULT_CPU =
-      new ThreadPoolExecutor(
-          2,
-          2,
-          0,
-          TimeUnit.SECONDS,
-          new ArrayBlockingQueue<>(1024),
-          Thread.ofPlatform().daemon().name("gateway-binding-", 0).factory(),
-          new ThreadPoolExecutor.AbortPolicy());
-  private final Executor cpu;
-  private UUID connection;
-  private SessionRepository.Route route;
-  private String verifiedToken;
-  private volatile boolean verifying;
-  private io.netty.util.concurrent.ScheduledFuture<?> authTimeout;
+    static final io.netty.util.AttributeKey<Boolean> INITIAL_ICE_RECEIPTS =
+            io.netty.util.AttributeKey.valueOf("signaling.initialIceReceiptsV1");
+    private static final Executor DEFAULT_CPU =
+            new ThreadPoolExecutor(
+                    2,
+                    2,
+                    0,
+                    TimeUnit.SECONDS,
+                    new ArrayBlockingQueue<>(1024),
+                    Thread.ofPlatform().daemon().name("gateway-binding-", 0).factory(),
+                    new ThreadPoolExecutor.AbortPolicy());
+    private final ConnectionRegistry registry;
+    private final GatewayServices services;
+    private final Clock clock;
+    private final ProtocolValidator protocol = new ProtocolValidator(ProtocolLimits.v1());
+    private final Executor cpu;
+    private UUID connection;
+    private SessionRepository.Route route;
+    private String verifiedToken;
+    private volatile boolean verifying;
+    private io.netty.util.concurrent.ScheduledFuture<?> authTimeout;
 
-  public AuthHandler(ConnectionRegistry registry, GatewayServices services, Clock clock) {
-    this(registry, services, clock, DEFAULT_CPU);
-  }
+    public AuthHandler(ConnectionRegistry registry, GatewayServices services, Clock clock) {
+        this(registry, services, clock, DEFAULT_CPU);
+    }
 
-  public AuthHandler(
-      ConnectionRegistry registry, GatewayServices services, Clock clock, Executor cpu) {
-    this.cpu = Objects.requireNonNull(cpu);
-    this.registry = Objects.requireNonNull(registry);
-    this.services = Objects.requireNonNull(services);
-    this.clock = Objects.requireNonNull(clock);
-  }
+    public AuthHandler(
+            ConnectionRegistry registry, GatewayServices services, Clock clock, Executor cpu) {
+        this.cpu = Objects.requireNonNull(cpu);
+        this.registry = Objects.requireNonNull(registry);
+        this.services = Objects.requireNonNull(services);
+        this.clock = Objects.requireNonNull(clock);
+    }
 
-  @Override
-  public void channelActive(ChannelHandlerContext ctx) {
-    try {
-      connection = ctx.channel().attr(ConnectionRegistry.CONNECTION).get();
-      if (connection == null) connection = registry.attach(ctx.channel());
-      authTimeout =
-          ctx.executor()
-              .schedule(
-                  () -> {
-                    if (route == null) ctx.close();
-                  },
-                  5,
-                  TimeUnit.SECONDS);
-      ctx.fireChannelActive();
-    } catch (RejectedExecutionException full) {
-      ctx.close();
-    }
-  }
-
-  @Override
-  public void channelRead(ChannelHandlerContext ctx, Object message) {
-    if (GatewayRejection.rejecting(ctx.channel())) {
-      if (message instanceof FrameAdmissionHandler.Admitted admitted) admitted.release().run();
-      else ReferenceCountUtil.release(message);
-      return;
-    }
-    if (!(message instanceof FrameAdmissionHandler.Admitted frame)) {
-      if (message instanceof CloseWebSocketFrame) {
-        ReferenceCountUtil.release(message);
-        ctx.close();
-        return;
-      }
-      if (route == null) {
-        ReferenceCountUtil.release(message);
-        ctx.close();
-        return;
-      }
-      ctx.fireChannelRead(message);
-      return;
-    }
-    var envelope = frame.envelope();
-    if (!services.currentBoot()) {
-      frame.release().run();
-      ctx.close();
-      return;
-    }
-    if (route != null && !registry.current(connection, route)) {
-      frame.release().run();
-      GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.STALE_CONNECTION);
-      return;
-    }
-    if (envelope.type() == SignalEnvelope.Type.AUTH
-        || envelope.type() == SignalEnvelope.Type.AUTH_REFRESH) {
-      boolean refresh = envelope.type() == SignalEnvelope.Type.AUTH_REFRESH;
-      if (verifying || refresh != (route != null)) {
-        frame.release().run();
-        ctx.close();
-        return;
-      }
-      verify(ctx, frame, refresh);
-      return;
-    }
-    var binding = registry.binding(connection);
-    if (route == null || binding == null) {
-      frame.release().run();
-      GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.AUTH_REQUIRED);
-      return;
-    }
-    var security = services.cachedSecurity(binding.principal(), clock.instant());
-    if (security != AuthorizationStatus.ALLOWED) {
-      frame.release().run();
-      if (security == null) ctx.close();
-      else GatewayRejection.close(ctx.channel(), GatewayRejection.security(security));
-      return;
-    }
-    try {
-      var sender =
-          new AuthenticatedSession(
-              route.user(),
-              route.key(),
-              route.incarnation(),
-              route.connectionGeneration(),
-              connection);
-      var committedRoute = route;
-      var originalToken = verifiedToken;
-      cpu.execute(
-          () -> {
-            try {
-              var command = protocol.bind(envelope, sender);
-              if (InitialIceReceipt.requiresCapability(command)
-                  && (!Boolean.TRUE.equals(ctx.channel().attr(INITIAL_ICE_RECEIPTS).get())
-                      || !services.supportsInitialIceReceipts()))
-                throw new IllegalStateException("Unnegotiated initial ICE receipts");
-              var result =
-                  services.command(command, committedRoute, originalToken, remaining(frame));
-              respond(ctx, frame, result, false);
-            } catch (RuntimeException invalid) {
-              completion(ctx, () -> ctx.close(), () -> disconnectRejected(ctx), frame.release());
+    private static void rejectKnownOrClose(ChannelHandlerContext ctx, Throwable error) {
+        for (int depth = 0; depth < 8; depth++) {
+            if (error instanceof NativeSecurityRejection known) {
+                GatewayRejection.close(ctx.channel(), GatewayRejection.security(known.status));
+                return;
             }
-          });
-    } catch (RuntimeException invalid) {
-      frame.release().run();
-      ctx.close();
-    }
-  }
-
-  private Duration remaining(FrameAdmissionHandler.Admitted frame) {
-    long left = TimeUnit.SECONDS.toNanos(2) - (System.nanoTime() - frame.submittedNanos());
-    if (left <= 0) throw new RejectedExecutionException("INGRESS_EXPIRED");
-    return Duration.ofNanos(left);
-  }
-
-  private void verify(
-      ChannelHandlerContext ctx, FrameAdmissionHandler.Admitted frame, boolean refresh) {
-    verifying = true;
-    SessionRepository.Route expected = route;
-    var failed = new java.util.concurrent.atomic.AtomicBoolean();
-    var nativeClosed = new java.util.concurrent.atomic.AtomicBoolean();
-    var committed = new java.util.concurrent.atomic.AtomicReference<SessionRepository.Route>();
-    var credits = new CompletionCredits(frame.release());
-    CompletionStage<?> physical = null;
-    java.util.function.Consumer<SessionRepository.Route> closeOnce =
-        nativeRoute -> {
-          if (nativeRoute != null && nativeClosed.compareAndSet(false, true))
-            services.close(nativeRoute);
-        };
-    try {
-      boolean receiptRequested =
-          new ObjectMapper()
-              .readTree(frame.envelope().payloadJson())
-              .path("initialIceReceiptsV1")
-              .asBoolean(false);
-      String token =
-          new ObjectMapper().readTree(frame.envelope().payloadJson()).path("token").asText();
-      var checked =
-          services
-              .verify(token, clock.instant())
-              .thenCompose(
-                  principal -> {
-                    if (!services.currentBoot())
-                      return CompletableFuture.failedFuture(
-                          new IllegalStateException("Gateway boot unavailable"));
-                    var security = services.cachedSecurity(principal, clock.instant());
-                    if (security != AuthorizationStatus.ALLOWED)
-                      return CompletableFuture.failedFuture(
-                          security == null
-                              ? new IllegalStateException("Security source unavailable")
-                              : new NativeSecurityRejection(security));
-                    if (refresh
-                        && (!principal.userId().equals(expected.user())
-                            || !principal.key().equals(expected.key())))
-                      return CompletableFuture.failedFuture(new AuthException());
-                    var original =
-                        refresh
-                            ? services.refresh(expected, principal, token, remaining(frame))
-                            : services.register(principal, token, connection, remaining(frame));
-                    // Keep the original completion independent of the logical deadline. A late
-                    // COMMIT still needs cleanup.
-                    original.whenComplete(
-                        (nativeRoute, error) -> {
-                          if (nativeRoute != null) committed.set(nativeRoute);
-                          if (nativeRoute != null
-                              && (failed.get()
-                                  || !ctx.channel().isActive()
-                                  || System.nanoTime() - frame.submittedNanos()
-                                      >= TimeUnit.SECONDS.toNanos(2)))
-                            closeOnce.accept(nativeRoute);
-                        });
-                    return original.thenApply(
-                        registered ->
-                            new AbstractMap.SimpleImmutableEntry<>(principal, registered));
-                  });
-      physical = checked;
-      deadline(checked, frame, credits)
-          .whenComplete(
-              (value, error) -> {
-                if (error != null) failed.set(true);
-                completion(
-                    ctx,
-                    () -> {
-                      verifying = false;
-                      try {
-                        if (error != null) {
-                          failed.set(true);
-                          closeOnce.accept(committed.get());
-                          rejectKnownOrClose(ctx, error);
-                          return;
-                        }
-                        if (!ctx.channel().isActive() || !services.currentBoot()) {
-                          failed.set(true);
-                          closeOnce.accept(value.getValue());
-                          ctx.close();
-                          return;
-                        }
-                        var security = services.cachedSecurity(value.getKey(), clock.instant());
-                        if (security != AuthorizationStatus.ALLOWED) {
-                          failed.set(true);
-                          closeOnce.accept(value.getValue());
-                          if (security == null) ctx.close();
-                          else
-                            GatewayRejection.close(
-                                ctx.channel(), GatewayRejection.security(security));
-                          return;
-                        }
-                        if (!registry.bind(connection, value.getValue(), value.getKey())) {
-                          failed.set(true);
-                          closeOnce.accept(value.getValue());
-                          GatewayRejection.close(
-                              ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
-                          return;
-                        }
-                        route = value.getValue();
-                        verifiedToken = token;
-                        boolean receiptEnabled =
-                            receiptRequested && services.supportsInitialIceReceipts();
-                        ctx.channel().attr(INITIAL_ICE_RECEIPTS).set(receiptEnabled);
-                        authTimeout.cancel(false);
-                        ctx.fireUserEventTriggered(
-                            new GatewayServer.Authenticated(registry.binding(connection)));
-                        ctx.writeAndFlush(
-                            new TextWebSocketFrame(
-                                "{\"v\":1,\"type\":\"AUTH_OK\",\"sessionIncarnation\":\""
-                                    + route.incarnation().value()
-                                    + "\",\"connectionGeneration\":\""
-                                    + route.connectionGeneration()
-                                    + "\""
-                                    + (receiptRequested
-                                        ? ",\"initialIceReceiptsV1\":" + receiptEnabled
-                                        : "")
-                                    + "}"));
-                      } catch (RuntimeException invalid) {
-                        failed.set(true);
-                        closeOnce.accept(committed.get());
-                        ctx.close();
-                      }
-                    },
-                    () -> {
-                      failed.set(true);
-                      verifying = false;
-                      try {
-                        closeOnce.accept(committed.get());
-                      } finally {
-                        disconnectRejected(ctx);
-                      }
-                    },
-                    credits::logicalDone);
-              });
-    } catch (Exception invalid) {
-      failed.set(true);
-      verifying = false;
-      try {
-        closeOnce.accept(committed.get());
-        ctx.close();
-      } finally {
-        if (physical == null) credits.physicalDone();
-        else physical.whenComplete((value, error) -> credits.physicalDone());
-        credits.logicalDone();
-      }
-    }
-  }
-
-  private static final class NativeSecurityRejection extends RuntimeException {
-    final AuthorizationStatus status;
-
-    NativeSecurityRejection(AuthorizationStatus status) {
-      super("Native authorization rejected");
-      this.status = status;
-    }
-  }
-
-  private static void rejectKnownOrClose(ChannelHandlerContext ctx, Throwable error) {
-    for (int depth = 0; depth < 8; depth++) {
-      if (error instanceof NativeSecurityRejection known) {
-        GatewayRejection.close(ctx.channel(), GatewayRejection.security(known.status));
-        return;
-      }
-      if (error instanceof AuthException) {
-        GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
-        return;
-      }
-      if ((error instanceof CompletionException || error instanceof ExecutionException)
-          && error.getCause() != null
-          && error.getCause() != error) error = error.getCause();
-      else break;
-    }
-    ctx.close();
-  }
-
-  private void respond(
-      ChannelHandlerContext ctx,
-      FrameAdmissionHandler.Admitted frame,
-      CompletionStage<String> response,
-      boolean auth) {
-    var credits = new CompletionCredits(frame.release());
-    deadline(response, frame, credits)
-        .whenComplete(
-            (value, error) ->
-                completion(
-                    ctx,
-                    () -> {
-                      if (ctx.channel().isActive()
-                          && services.currentBoot()
-                          && registry.current(connection, route)) {
-                        String output =
-                            error == null ? value : "{\"v\":1,\"type\":\"OUTCOME_UNKNOWN\"}";
-                        if (output == null
-                            || output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
-                                > 98304) {
-                          ctx.close();
-                          return;
-                        }
-                        ctx.writeAndFlush(new TextWebSocketFrame(output));
-                      }
-                    },
-                    () -> disconnectRejected(ctx),
-                    credits::logicalDone));
-  }
-
-  /** Timeout the reply only; the original asynchronous operation still owns its frame credits. */
-  private <T> CompletableFuture<T> deadline(
-      CompletionStage<T> physical,
-      FrameAdmissionHandler.Admitted frame,
-      CompletionCredits credits) {
-    var reply = new CompletableFuture<T>();
-    physical.whenComplete(
-        (value, error) -> {
-          try {
-            if (error == null) reply.complete(value);
-            else reply.completeExceptionally(error);
-          } finally {
-            credits.physicalDone();
-          }
-        });
-    try {
-      reply.orTimeout(remaining(frame).toNanos(), TimeUnit.NANOSECONDS);
-    } catch (RejectedExecutionException expired) {
-      reply.completeExceptionally(expired);
-    }
-    return reply;
-  }
-
-  /** Every accepted or rejected callback completes its logical ownership exactly once. */
-  private static void completion(
-      ChannelHandlerContext ctx, Runnable accepted, Runnable rejected, Runnable done) {
-    try {
-      ctx.executor()
-          .execute(
-              () -> {
-                try {
-                  accepted.run();
-                } finally {
-                  done.run();
-                }
-              });
-    } catch (RejectedExecutionException stopped) {
-      try {
-        rejected.run();
-      } finally {
-        done.run();
-      }
-    }
-  }
-
-  private void disconnectRejected(ChannelHandlerContext ctx) {
-    var binding = registry.binding(connection);
-    registry.remove(connection);
-    try {
-      if (binding != null) services.close(binding.route());
-    } finally {
-      ctx.channel().close();
-    }
-  }
-
-  private static final class CompletionCredits {
-    private final Runnable release;
-    private final java.util.concurrent.atomic.AtomicInteger state =
-        new java.util.concurrent.atomic.AtomicInteger();
-
-    CompletionCredits(Runnable release) {
-      this.release = release;
-    }
-
-    void physicalDone() {
-      finish(1);
-    }
-
-    void logicalDone() {
-      finish(2);
-    }
-
-    private void finish(int flag) {
-      while (true) {
-        int previous = state.get(), updated = previous | flag;
-        if ((updated & 3) == 3) updated |= 4;
-        if (state.compareAndSet(previous, updated)) {
-          if ((previous & 4) == 0 && (updated & 4) != 0) release.run();
-          return;
+            if (error instanceof AuthException) {
+                GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
+                return;
+            }
+            if ((error instanceof CompletionException || error instanceof ExecutionException)
+                    && error.getCause() != null
+                    && error.getCause() != error) error = error.getCause();
+            else break;
         }
-      }
+        ctx.close();
     }
-  }
 
-  @Override
-  public void channelInactive(ChannelHandlerContext ctx) {
-    if (authTimeout != null) authTimeout.cancel(false);
-    if (connection != null) registry.remove(connection);
-    if (route != null) services.close(route);
-    verifiedToken = null;
-    ctx.fireChannelInactive();
-  }
+    /**
+     * Every accepted or rejected callback completes its logical ownership exactly once.
+     */
+    private static void completion(
+            ChannelHandlerContext ctx, Runnable accepted, Runnable rejected, Runnable done) {
+        try {
+            ctx.executor()
+                    .execute(
+                            () -> {
+                                try {
+                                    accepted.run();
+                                } finally {
+                                    done.run();
+                                }
+                            });
+        } catch (RejectedExecutionException stopped) {
+            try {
+                rejected.run();
+            } finally {
+                done.run();
+            }
+        }
+    }
 
-  @Override
-  public void exceptionCaught(ChannelHandlerContext ctx, Throwable error) {
-    ctx.close();
-  }
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) {
+        try {
+            connection = ctx.channel().attr(ConnectionRegistry.CONNECTION).get();
+            if (connection == null) connection = registry.attach(ctx.channel());
+            authTimeout =
+                    ctx.executor()
+                            .schedule(
+                                    () -> {
+                                        if (route == null) ctx.close();
+                                    },
+                                    5,
+                                    TimeUnit.SECONDS);
+            ctx.fireChannelActive();
+        } catch (RejectedExecutionException full) {
+            ctx.close();
+        }
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object message) {
+        if (GatewayRejection.rejecting(ctx.channel())) {
+            if (message instanceof FrameAdmissionHandler.Admitted admitted) admitted.release().run();
+            else ReferenceCountUtil.release(message);
+            return;
+        }
+        if (!(message instanceof FrameAdmissionHandler.Admitted frame)) {
+            if (message instanceof CloseWebSocketFrame) {
+                ReferenceCountUtil.release(message);
+                ctx.close();
+                return;
+            }
+            if (route == null) {
+                ReferenceCountUtil.release(message);
+                ctx.close();
+                return;
+            }
+            ctx.fireChannelRead(message);
+            return;
+        }
+        var envelope = frame.envelope();
+        if (!services.currentBoot()) {
+            frame.release().run();
+            ctx.close();
+            return;
+        }
+        if (route != null && !registry.current(connection, route)) {
+            frame.release().run();
+            GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.STALE_CONNECTION);
+            return;
+        }
+        if (envelope.type() == SignalEnvelope.Type.AUTH
+                || envelope.type() == SignalEnvelope.Type.AUTH_REFRESH) {
+            boolean refresh = envelope.type() == SignalEnvelope.Type.AUTH_REFRESH;
+            if (verifying || refresh != (route != null)) {
+                frame.release().run();
+                ctx.close();
+                return;
+            }
+            verify(ctx, frame, refresh);
+            return;
+        }
+        var binding = registry.binding(connection);
+        if (route == null || binding == null) {
+            frame.release().run();
+            GatewayRejection.close(ctx.channel(), GatewayRejection.Reason.AUTH_REQUIRED);
+            return;
+        }
+        var security = services.cachedSecurity(binding.principal(), clock.instant());
+        if (security != AuthorizationStatus.ALLOWED) {
+            frame.release().run();
+            if (security == null) ctx.close();
+            else GatewayRejection.close(ctx.channel(), GatewayRejection.security(security));
+            return;
+        }
+        try {
+            var sender =
+                    new AuthenticatedSession(
+                            route.user(),
+                            route.key(),
+                            route.incarnation(),
+                            route.connectionGeneration(),
+                            connection);
+            var committedRoute = route;
+            var originalToken = verifiedToken;
+            cpu.execute(
+                    () -> {
+                        try {
+                            var command = protocol.bind(envelope, sender);
+                            if (InitialIceReceipt.requiresCapability(command)
+                                    && (!Boolean.TRUE.equals(ctx.channel().attr(INITIAL_ICE_RECEIPTS).get())
+                                    || !services.supportsInitialIceReceipts()))
+                                throw new IllegalStateException("Unnegotiated initial ICE receipts");
+                            var result =
+                                    services.command(command, committedRoute, originalToken, remaining(frame));
+                            respond(ctx, frame, result, false);
+                        } catch (RuntimeException invalid) {
+                            completion(ctx, () -> ctx.close(), () -> disconnectRejected(ctx), frame.release());
+                        }
+                    });
+        } catch (RuntimeException invalid) {
+            frame.release().run();
+            ctx.close();
+        }
+    }
+
+    private Duration remaining(FrameAdmissionHandler.Admitted frame) {
+        long left = TimeUnit.SECONDS.toNanos(2) - (System.nanoTime() - frame.submittedNanos());
+        if (left <= 0) throw new RejectedExecutionException("INGRESS_EXPIRED");
+        return Duration.ofNanos(left);
+    }
+
+    private void verify(
+            ChannelHandlerContext ctx, FrameAdmissionHandler.Admitted frame, boolean refresh) {
+        verifying = true;
+        SessionRepository.Route expected = route;
+        var failed = new java.util.concurrent.atomic.AtomicBoolean();
+        var nativeClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        var committed = new java.util.concurrent.atomic.AtomicReference<SessionRepository.Route>();
+        var credits = new CompletionCredits(frame.release());
+        CompletionStage<?> physical = null;
+        java.util.function.Consumer<SessionRepository.Route> closeOnce =
+                nativeRoute -> {
+                    if (nativeRoute != null && nativeClosed.compareAndSet(false, true))
+                        services.close(nativeRoute);
+                };
+        try {
+            boolean receiptRequested =
+                    new ObjectMapper()
+                            .readTree(frame.envelope().payloadJson())
+                            .path("initialIceReceiptsV1")
+                            .asBoolean(false);
+            String token =
+                    new ObjectMapper().readTree(frame.envelope().payloadJson()).path("token").asText();
+            var checked =
+                    services
+                            .verify(token, clock.instant())
+                            .thenCompose(
+                                    principal -> {
+                                        if (!services.currentBoot())
+                                            return CompletableFuture.failedFuture(
+                                                    new IllegalStateException("Gateway boot unavailable"));
+                                        var security = services.cachedSecurity(principal, clock.instant());
+                                        if (security != AuthorizationStatus.ALLOWED)
+                                            return CompletableFuture.failedFuture(
+                                                    security == null
+                                                            ? new IllegalStateException("Security source unavailable")
+                                                            : new NativeSecurityRejection(security));
+                                        if (refresh
+                                                && (!principal.userId().equals(expected.user())
+                                                || !principal.key().equals(expected.key())))
+                                            return CompletableFuture.failedFuture(new AuthException());
+                                        var original =
+                                                refresh
+                                                        ? services.refresh(expected, principal, token, remaining(frame))
+                                                        : services.register(principal, token, connection, remaining(frame));
+                                        // Keep the original completion independent of the logical deadline. A late
+                                        // COMMIT still needs cleanup.
+                                        original.whenComplete(
+                                                (nativeRoute, error) -> {
+                                                    if (nativeRoute != null) committed.set(nativeRoute);
+                                                    if (nativeRoute != null
+                                                            && (failed.get()
+                                                            || !ctx.channel().isActive()
+                                                            || System.nanoTime() - frame.submittedNanos()
+                                                            >= TimeUnit.SECONDS.toNanos(2)))
+                                                        closeOnce.accept(nativeRoute);
+                                                });
+                                        return original.thenApply(
+                                                registered ->
+                                                        new AbstractMap.SimpleImmutableEntry<>(principal, registered));
+                                    });
+            physical = checked;
+            deadline(checked, frame, credits)
+                    .whenComplete(
+                            (value, error) -> {
+                                if (error != null) failed.set(true);
+                                completion(
+                                        ctx,
+                                        () -> {
+                                            verifying = false;
+                                            try {
+                                                if (error != null) {
+                                                    failed.set(true);
+                                                    closeOnce.accept(committed.get());
+                                                    rejectKnownOrClose(ctx, error);
+                                                    return;
+                                                }
+                                                if (!ctx.channel().isActive() || !services.currentBoot()) {
+                                                    failed.set(true);
+                                                    closeOnce.accept(value.getValue());
+                                                    ctx.close();
+                                                    return;
+                                                }
+                                                var security = services.cachedSecurity(value.getKey(), clock.instant());
+                                                if (security != AuthorizationStatus.ALLOWED) {
+                                                    failed.set(true);
+                                                    closeOnce.accept(value.getValue());
+                                                    if (security == null) ctx.close();
+                                                    else
+                                                        GatewayRejection.close(
+                                                                ctx.channel(), GatewayRejection.security(security));
+                                                    return;
+                                                }
+                                                if (!registry.bind(connection, value.getValue(), value.getKey())) {
+                                                    failed.set(true);
+                                                    closeOnce.accept(value.getValue());
+                                                    GatewayRejection.close(
+                                                            ctx.channel(), GatewayRejection.Reason.AUTHORIZATION_REJECTED);
+                                                    return;
+                                                }
+                                                route = value.getValue();
+                                                verifiedToken = token;
+                                                boolean receiptEnabled =
+                                                        receiptRequested && services.supportsInitialIceReceipts();
+                                                ctx.channel().attr(INITIAL_ICE_RECEIPTS).set(receiptEnabled);
+                                                authTimeout.cancel(false);
+                                                ctx.fireUserEventTriggered(
+                                                        new GatewayServer.Authenticated(registry.binding(connection)));
+                                                ctx.writeAndFlush(
+                                                        new TextWebSocketFrame(
+                                                                "{\"v\":1,\"type\":\"AUTH_OK\",\"sessionIncarnation\":\""
+                                                                        + route.incarnation().value()
+                                                                        + "\",\"connectionGeneration\":\""
+                                                                        + route.connectionGeneration()
+                                                                        + "\""
+                                                                        + (receiptRequested
+                                                                        ? ",\"initialIceReceiptsV1\":" + receiptEnabled
+                                                                        : "")
+                                                                        + "}"));
+                                            } catch (RuntimeException invalid) {
+                                                failed.set(true);
+                                                closeOnce.accept(committed.get());
+                                                ctx.close();
+                                            }
+                                        },
+                                        () -> {
+                                            failed.set(true);
+                                            verifying = false;
+                                            try {
+                                                closeOnce.accept(committed.get());
+                                            } finally {
+                                                disconnectRejected(ctx);
+                                            }
+                                        },
+                                        credits::logicalDone);
+                            });
+        } catch (Exception invalid) {
+            failed.set(true);
+            verifying = false;
+            try {
+                closeOnce.accept(committed.get());
+                ctx.close();
+            } finally {
+                if (physical == null) credits.physicalDone();
+                else physical.whenComplete((value, error) -> credits.physicalDone());
+                credits.logicalDone();
+            }
+        }
+    }
+
+    private void respond(
+            ChannelHandlerContext ctx,
+            FrameAdmissionHandler.Admitted frame,
+            CompletionStage<String> response,
+            boolean auth) {
+        var credits = new CompletionCredits(frame.release());
+        deadline(response, frame, credits)
+                .whenComplete(
+                        (value, error) ->
+                                completion(
+                                        ctx,
+                                        () -> {
+                                            if (ctx.channel().isActive()
+                                                    && services.currentBoot()
+                                                    && registry.current(connection, route)) {
+                                                String output =
+                                                        error == null ? value : "{\"v\":1,\"type\":\"OUTCOME_UNKNOWN\"}";
+                                                if (output == null
+                                                        || output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                                                        > 98304) {
+                                                    ctx.close();
+                                                    return;
+                                                }
+                                                ctx.writeAndFlush(new TextWebSocketFrame(output));
+                                            }
+                                        },
+                                        () -> disconnectRejected(ctx),
+                                        credits::logicalDone));
+    }
+
+    /**
+     * Timeout the reply only; the original asynchronous operation still owns its frame credits.
+     */
+    private <T> CompletableFuture<T> deadline(
+            CompletionStage<T> physical,
+            FrameAdmissionHandler.Admitted frame,
+            CompletionCredits credits) {
+        var reply = new CompletableFuture<T>();
+        physical.whenComplete(
+                (value, error) -> {
+                    try {
+                        if (error == null) reply.complete(value);
+                        else reply.completeExceptionally(error);
+                    } finally {
+                        credits.physicalDone();
+                    }
+                });
+        try {
+            reply.orTimeout(remaining(frame).toNanos(), TimeUnit.NANOSECONDS);
+        } catch (RejectedExecutionException expired) {
+            reply.completeExceptionally(expired);
+        }
+        return reply;
+    }
+
+    private void disconnectRejected(ChannelHandlerContext ctx) {
+        var binding = registry.binding(connection);
+        registry.remove(connection);
+        try {
+            if (binding != null) services.close(binding.route());
+        } finally {
+            ctx.channel().close();
+        }
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        if (authTimeout != null) authTimeout.cancel(false);
+        if (connection != null) registry.remove(connection);
+        if (route != null) services.close(route);
+        verifiedToken = null;
+        ctx.fireChannelInactive();
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable error) {
+        ctx.close();
+    }
+
+    private static final class NativeSecurityRejection extends RuntimeException {
+        final AuthorizationStatus status;
+
+        NativeSecurityRejection(AuthorizationStatus status) {
+            super("Native authorization rejected");
+            this.status = status;
+        }
+    }
+
+    private static final class CompletionCredits {
+        private final Runnable release;
+        private final java.util.concurrent.atomic.AtomicInteger state =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        CompletionCredits(Runnable release) {
+            this.release = release;
+        }
+
+        void physicalDone() {
+            finish(1);
+        }
+
+        void logicalDone() {
+            finish(2);
+        }
+
+        private void finish(int flag) {
+            while (true) {
+                int previous = state.get(), updated = previous | flag;
+                if ((updated & 3) == 3) updated |= 4;
+                if (state.compareAndSet(previous, updated)) {
+                    if ((previous & 4) == 0 && (updated & 4) != 0) release.run();
+                    return;
+                }
+            }
+        }
+    }
 }
