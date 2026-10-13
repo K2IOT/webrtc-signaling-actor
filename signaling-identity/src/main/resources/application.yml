@@ -1,0 +1,16 @@
+server:
+  port: 8081
+
+signaling:
+  identity:
+    issuer: http://localhost:8081
+    audience: webrtc-signaling
+    token-ttl: 15m
+    key-id: test-key-1
+    accounts:
+      - username: alice
+        password: alice123
+        user-id: alice
+      - username: bob
+        password: bob123
+        user-id: bob
