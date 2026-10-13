@@ -1,5 +1,6 @@
 package io.webrtc.signaling.identity;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,5 +24,14 @@ public class IdentityConfiguration {
         resourceLoader.getResource("classpath:keys/private.pem"),
         resourceLoader.getResource("classpath:keys/public.pem"),
         properties.keyId());
+  }
+
+  @Bean
+  JwtTokenIssuer jwtTokenIssuer(
+      IdentityProperties properties,
+      RsaKeyMaterial keys,
+      ObjectMapper objectMapper,
+      Clock identityClock) {
+    return new JwtTokenIssuer(properties, keys, objectMapper, identityClock);
   }
 }
