@@ -1,7 +1,7 @@
 # WebRTC Signaling Platform trên Minikube — production-like local deployment
 
 Date: 2026-10-13
-Status: DRAFT_FOR_REVIEW — specification only; implementation and deployment NOT_RUN.
+Status: APPROVED_FOR_PLANNING — user approved 2026-10-13; implementation and deployment NOT_RUN.
 Environment: **LOCAL_TEST_ONLY** / `local-minikube` / `local-test-only`.
 Qualification: **NOT_QUALIFIED**. Minikube acceptance can become `LOCAL_QUALIFIED` only; production, HA, physical fencing and 10M capacity remain `NOT_QUALIFIED`.
 Source baseline: `main`, `dd94cd49c54b89dbc67976e739fb0df450f689cf`; existing unrelated working-tree edits are outside this design.
@@ -52,17 +52,17 @@ Các gap trên là prerequisite bắt buộc. Không dùng fixture Testcontainer
 
 ### 4.1 Namespace và workload
 
-Namespace prefix đề xuất: `wsa-local-*`; tất cả có label/annotation `signaling.qualification=LOCAL_TEST_ONLY` và run/environment ID.
+Namespace prefix đề xuất: `wsa-*`; tất cả có label/annotation `signaling.qualification=LOCAL_TEST_ONLY` và run/environment ID.
 
 | Namespace | Workloads và replica mặc định | Authority và quyền truy cập |
 | --- | --- | --- |
-| `wsa-local-edge` | 1 edge TCP/TLS SNI router | Public HTTPS/WSS; chuyển tiếp TLS tới đúng service, không authorize JWT hoặc chọn home cell |
-| `wsa-local-identity` | 1 `signaling-identity` | Login, JWT signing, public/internal JWKS; chỉ workload này mount JWT private keys |
-| `wsa-local-regional` | `control-c001`: 1, `control-c002`: 1; Directory PostgreSQL: primary + standby | Một logical Regional Control Plane, shared regional directory; mỗi control instance có đúng một cell scope cho local bucket authority |
-| `wsa-local-c001` | Gateway: 1; actors: 6; Cell PostgreSQL: primary + standby | Cell `c001`; workers chạy trong actor processes, cell-local actor discovery/DB |
-| `wsa-local-c002` | Gateway: 1; actors: 6; Cell PostgreSQL: primary + standby | Cell `c002`; không join discovery, remoting hoặc SQL authority của `c001` |
-| `wsa-local-platform` | Local authority/source service: 1; source PostgreSQL: primary + standby; node clock observer: 1/node; bounded enrollment Jobs | Clock/revocation/key-retirement source, enrollment, local fence evidence; source DB chỉ chứa source-control state |
-| `wsa-local-observability` | Prometheus, OTEL Collector, trace/log backend, dashboard: mỗi loại 1 | Thu metrics/logs/traces bằng TLS/mTLS; không có business authority |
+| `wsa-edge` | 1 edge TCP/TLS SNI router | Public HTTPS/WSS; chuyển tiếp TLS tới đúng service, không authorize JWT hoặc chọn home cell |
+| `wsa-identity` | 1 `signaling-identity` | Login, JWT signing, public/internal JWKS; chỉ workload này mount JWT private keys |
+| `wsa-regional` | `control-c001`: 1, `control-c002`: 1; Directory PostgreSQL: primary + standby | Một logical Regional Control Plane, shared regional directory; mỗi control instance có đúng một cell scope cho local bucket authority |
+| `wsa-c001` | Gateway: 1; actors: 6; Cell PostgreSQL: primary + standby | Cell `c001`; workers chạy trong actor processes, cell-local actor discovery/DB |
+| `wsa-c002` | Gateway: 1; actors: 6; Cell PostgreSQL: primary + standby | Cell `c002`; không join discovery, remoting hoặc SQL authority của `c001` |
+| `wsa-platform` | Local authority/source service: 1; source PostgreSQL: primary + standby; node clock observer: 1/node; bounded enrollment Jobs | Clock/revocation/key-retirement source, enrollment, local fence evidence; source DB chỉ chứa source-control state |
+| `wsa-observability` | Prometheus, OTEL Collector, trace/log backend, dashboard: mỗi loại 1 | Thu metrics/logs/traces bằng TLS/mTLS; không có business authority |
 | `cnpg-system` | Operator theo pin repository | Chỉ quản lý DB, không phải bằng chứng writer fencing |
 
 Source PostgreSQL bổ sung giữ durable revocation log, monotonic source sequence/high-water và retirement tombstones. Không dùng Regional Directory tables hoặc cell tables cho state của Identity/source. Một physical source DB với schema/role tách biệt cho source events là chấp nhận được; ba signaling authority DB tuyệt đối không gộp vào đó.
@@ -440,4 +440,4 @@ Trước editing existing symbols khi triển khai, phải chạy GitNexus upstr
 - Không commit key/credential/enrollment; deployed Identity image không chứa old classpath private keys. All local artifacts marked LOCAL_TEST_ONLY.
 - Local evidence ghi exact candidate và explicit unrun subcases; successful Minikube run không tuyên bố production/HA/10M qualification.
 
-Written spec phải được user review trước implementation plan và execution theo Superpowers Architectural workflow. Yêu cầu hiện tại chỉ tạo spec; chưa build/modify runtime/chart, deploy cluster hoặc chạy qualification.
+User đã duyệt spec và yêu cầu viết implementation plan ngày 2026-10-13. Namespace dùng `wsa-*` theo correction của user. Implementation plan vẫn phải được review trước execution; chưa build/modify runtime/chart, deploy cluster hoặc chạy qualification.
