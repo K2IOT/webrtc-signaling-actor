@@ -58,7 +58,9 @@ public record IdentityProperties(
     if (value.isBlank()
         || !value.equals(value.strip())
         || value.getBytes(StandardCharsets.UTF_8).length > maxBytes
-        || value.codePoints().anyMatch(Character::isISOControl)) {
+        || value
+            .codePoints()
+            .anyMatch(c -> Character.isISOControl(c) || c >= 0xd800 && c <= 0xdfff)) {
       throw new IllegalArgumentException("invalid bounded " + name);
     }
     return value;

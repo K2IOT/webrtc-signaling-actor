@@ -99,6 +99,27 @@ class IdentityPropertiesTest {
                     "key-id",
                     List.of(new IdentityProperties.Account("alice", " ", "alice"))))
         .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                new IdentityProperties(
+                    "i".repeat(513),
+                    "audience",
+                    Duration.ofMinutes(15),
+                    "key-id",
+                    valid().accounts()))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                new IdentityProperties(
+                    "issuer",
+                    "audience",
+                    Duration.ofMinutes(15),
+                    "key-id",
+                    List.of(new IdentityProperties.Account("alice", "secret", "u".repeat(257)))))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () -> new IdentityProperties.Account("alice", "secret", "invalid-\ud800-user"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

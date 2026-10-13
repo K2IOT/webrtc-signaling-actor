@@ -81,6 +81,12 @@ class RsaKeyMaterialTest {
     assertThatThrownBy(() -> load(validPair, " ")).isInstanceOf(IllegalArgumentException.class);
   }
 
+  @Test
+  void doesNotExposePrivateKeyAsPublicApi() throws Exception {
+    var privateKeyMethod = RsaKeyMaterial.class.getDeclaredMethod("privateKey");
+    assertThat(java.lang.reflect.Modifier.isPublic(privateKeyMethod.getModifiers())).isFalse();
+  }
+
   private static RsaKeyMaterial load(KeyPair pair) {
     return load(pair, "test-key-1");
   }

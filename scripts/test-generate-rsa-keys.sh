@@ -13,7 +13,7 @@ public_key="$key_dir/public.pem"
 
 (cd / && bash "$fixture/scripts/generate-rsa-keys.sh")
 openssl pkey -in "$private_key" -check -noout >/dev/null
-openssl pkey -pubin -in "$public_key" -text -noout | rg -q 'Public-Key: \(2048 bit\)'
+openssl pkey -pubin -in "$public_key" -text -noout | grep -Fq 'Public-Key: (2048 bit)'
 cmp <(openssl pkey -in "$private_key" -pubout) "$public_key"
 before="$(sha256sum "$private_key" "$public_key")"
 

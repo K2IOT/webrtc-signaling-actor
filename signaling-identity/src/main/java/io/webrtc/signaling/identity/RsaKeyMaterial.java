@@ -68,7 +68,7 @@ public final class RsaKeyMaterial {
     }
   }
 
-  public RSAPrivateKey privateKey() {
+  RSAPrivateKey privateKey() {
     return privateKey;
   }
 

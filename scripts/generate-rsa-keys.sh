@@ -46,7 +46,7 @@ trap cleanup EXIT
 openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$temporary_dir/private.pem"
 openssl pkey -in "$temporary_dir/private.pem" -check -noout >/dev/null
 openssl pkey -in "$temporary_dir/private.pem" -pubout -out "$temporary_dir/public.pem"
-openssl pkey -pubin -in "$temporary_dir/public.pem" -text -noout | rg -q 'Public-Key: \(2048 bit\)'
+openssl pkey -pubin -in "$temporary_dir/public.pem" -text -noout | grep -Fq 'Public-Key: (2048 bit)'
 cmp <(openssl pkey -in "$temporary_dir/private.pem" -pubout) "$temporary_dir/public.pem"
 chmod 600 "$temporary_dir/private.pem"
 
