@@ -1,6 +1,9 @@
 server:
   port: 8081
-
+spring:
+  threads:
+    virtual:
+      enabled: true
 signaling:
   identity:
     issuer: http://localhost:8081
