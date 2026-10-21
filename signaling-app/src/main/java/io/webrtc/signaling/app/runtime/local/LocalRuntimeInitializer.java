@@ -72,11 +72,11 @@ public final class LocalRuntimeInitializer
         }
     }
 
-    // Tasks 4-6 replace these with the per-plane installers.
     static void installActor(GenericApplicationContext ctx, LocalRuntimeContract c) {
-        throw new UnsupportedOperationException("not installed until Task 4/5/6");
+        LocalActorInstaller.install(ctx, c);
     }
 
+    // Tasks 5-6 replace these with the per-plane installers.
     static void installGateway(GenericApplicationContext ctx, LocalRuntimeContract c) {
         throw new UnsupportedOperationException("not installed until Task 4/5/6");
     }

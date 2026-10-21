@@ -242,13 +242,26 @@ class LocalRuntimeInitializerTest {
     }
 
     @ParameterizedTest
-    @EnumSource(SignalingApplication.Plane.class)
+    @EnumSource(value = SignalingApplication.Plane.class, names = {"GATEWAY", "CONTROL"})
     void openGateDispatchesToThePlaneInstaller(SignalingApplication.Plane plane) throws Exception {
         LocalRuntimeFixtures.install(mount, plane.name());
         var context = context(plane.name().toLowerCase(Locale.ROOT));
         assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("not installed until Task 4/5/6");
+    }
+
+    @Test
+    void openGateDispatchesTheActorPlaneToTheActorInstaller() throws Exception {
+        // The fixture mount has no PKI, keys or cluster secrets: the actor installer, not a stub,
+        // refuses it with a specific local runtime failure.
+        LocalRuntimeFixtures.install(mount, "ACTOR");
+        var context = context("actor");
+        assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
+                .isInstanceOf(LocalRuntimeFailure.class);
+        assertThat(context.getBeanDefinitionCount())
+                .as("a refused actor mount registers no enrollment")
+                .isEqualTo(context(new String[0]).getBeanDefinitionCount());
     }
 
     @Test

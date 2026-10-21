@@ -452,3 +452,62 @@ discovery loss and client identity rejection. The fixture's existing peers join
 manually only to establish its test cluster; the Main child joins exclusively
 through Kubernetes discovery. This verifies the explicit owner factory, not a
 mounted production enrollment, full serving topology or capacity/HA qualification.
+
+## Local process profile
+
+LOCAL_TEST_ONLY containers (`SIGNALING_DEPLOYMENT_MODE=local-minikube`,
+`SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY`) read the mounted native
+contract (schema v1, unchanged) plus a per-container process profile. Every file
+either names is opened only through the contract directory confinement. None of
+this is a production enrollment and none of it qualifies a deployment.
+
+Actor plane (`LocalActorInstaller`) uses these profile fields:
+
+- `privacyPseudonymKey`: absolute path of a file holding the raw privacy
+  pseudonym key, 32 to 64 bytes, no encoding. Absent or shorter is refused.
+- `wal`: the observed writer facts for `NativeWalEnrollment`, always with
+  `localSingleWriter=false`. An empty `replicas` set or `synchronousReplicas < 1`
+  is refused; there is no standby-less local mode.
+- `azRole`, `podIp`, `healthPort`, `businessPort`, `compatibility`, `kube`: Pekko
+  roles, private health address (`podIp:healthPort`), cell RPC listener port, the
+  build identity and approved window, and discovery inputs.
+
+The actor opens only `cellDatabase`. It never reads `directoryDatabase`.
+Privacy detachment has no production implementation yet; the local actor
+enrolls one that refuses every detachment, so deletion requests stay pending and
+are never reported as complete. Epoch adoption is likewise refused.
+
+### Directory snapshot
+
+`directorySnapshot` names a UTF-8 JSON file of at most 64 KiB. Its exact bytes
+must hash (SHA-256, lower-case hex) to `directorySnapshotSha256`. The parser is
+as strict as the contract parser: unknown, duplicate and missing fields, and
+trailing content are rejected.
+
+```json
+{
+  "schemaVersion": 1,
+  "qualification": "LOCAL_TEST_ONLY",
+  "buckets": [
+    {"first": 0, "last": 8191, "cell": "c001", "directoryEpoch": 1, "storageEpoch": 1},
+    {"first": 8192, "last": 16383, "cell": "c002", "directoryEpoch": 1, "storageEpoch": 1}
+  ],
+  "gatewayBoots": [
+    {"cell": "c001", "gatewayId": "gw-c001-a", "bootId": "<the gateway profile's gatewayBootId>"}
+  ]
+}
+```
+
+- `buckets`: 1 to 1024 inclusive ranges over buckets 0..16383 (the bucket of a
+  user is `SessionRegistryService.bucket`). Ranges must not overlap. Each cell
+  must be one of the contract's `cells`, with that cell's `storageEpoch`. A
+  range maps every bucket in it to the trusted home
+  `(cell, directoryEpoch, storageEpoch)`. The split must equal the seeded
+  `directory_bucket` rows. A bucket that no range covers has no trusted home and
+  every home check for its users fails.
+- `gatewayBoots`: exactly one entry for every contract `gateways` entry, and no
+  other. It pins the boot id the actor's gateway relay client and compatibility
+  observation address for that gateway; it must equal the `gatewayBootId` of
+  that gateway's process profile.
+
+Any defect fails startup with `Local runtime contract: INVALID`.
