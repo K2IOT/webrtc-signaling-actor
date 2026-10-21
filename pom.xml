@@ -8,7 +8,7 @@
     <spring-boot.version>3.5.6</spring-boot.version><pekko.version>2.0.0-M4</pekko.version><pekko-management.version>2.0.0-M1</pekko-management.version>
     <netty.version>4.1.127.Final</netty.version><grpc.version>1.75.0</grpc.version><protobuf.version>4.32.1</protobuf.version>
   </properties>
-  <modules><module>signaling-protocol</module><module>signaling-auth</module><module>signaling-storage</module><module>signaling-cell-rpc</module><module>signaling-actors</module><module>signaling-gateway</module><module>signaling-control-api</module><module>signaling-observability</module><module>signaling-app</module><module>signaling-identity</module><module>signaling-integration-tests</module><module>signaling-loadgen</module></modules>
+  <modules><module>signaling-protocol</module><module>signaling-auth</module><module>signaling-storage</module><module>signaling-cell-rpc</module><module>signaling-actors</module><module>signaling-gateway</module><module>signaling-control-api</module><module>signaling-observability</module><module>signaling-app</module><module>signaling-identity</module><module>signaling-local-platform</module><module>signaling-integration-tests</module><module>signaling-loadgen</module></modules>
   <dependencyManagement><dependencies>
     <dependency><groupId>org.apache.pekko</groupId><artifactId>pekko-bom_2.13</artifactId><version>${pekko.version}</version><type>pom</type><scope>import</scope></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-dependencies</artifactId><version>${spring-boot.version}</version><type>pom</type><scope>import</scope></dependency>
