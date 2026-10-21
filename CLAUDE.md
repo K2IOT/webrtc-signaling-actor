@@ -1,7 +1,70 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Status and constraints
+
+- Release status is **NOT_QUALIFIED**. Tasks 23–24 (external three-AZ, PKI/identity enrollment, staged capacity, deployed-candidate evidence) are open. Do not add claims of production readiness or 10M capacity.
+- Identity values (issuer, audience, JWT lifetime, revocation bounds) are deliberately not fabricated. Startup fails closed on empty or unresolved values. Use reserved documentation addresses and `TEST_ONLY` markers in fixtures; never make a fixture look deployable.
+- The authoritative spec, plan and execution log are under `docs/superpowers/` (`specs/`, `plans/`, `execution/`). Read them before changing contract behaviour.
+
+## Commands
+
+Java 21 is required. The wrapper pins Maven 3.9.11.
+
+```sh
+./mvnw verify                                                        # full reactor: unit + failsafe ITs + spotless check
+./mvnw spotless:apply                                                # fix google-java-format violations
+./mvnw -pl signaling-loadgen test -Dtest=CallScheduleTest            # single unit test (surefire) - verified passing
+./mvnw -pl signaling-storage verify -Dit.test=NativeHomeClaimSecurityIT -Dspotless.check.skip=true   # single IT (failsafe) - verified passing
+```
+
+- **The spotless check currently fails** on about 40 pre-existing files, so `./mvnw verify` and any `verify` run stop with `BUILD FAILURE` after the tests have run. Pass `-Dspotless.check.skip=true` to run tests through `verify` until the formatting debt is cleared.
+
+- `*IT` classes run under failsafe in `signaling-actors`, `signaling-cell-rpc`, `signaling-control-api`, `signaling-gateway`, `signaling-integration-tests` and `signaling-storage`. They use Testcontainers PostgreSQL 17.6, so Docker is required.
+- `signaling-integration-tests` also needs Chromium. Run `npm ci` in `signaling-integration-tests/src/test/webrtc` first; `CHROMIUM_PATH` selects the browser (default `/usr/bin/chromium`).
+- Python qualification regression: `python3 -m unittest discover -s qualification/scenarios/tests` (the pinned venv setup is in `qualification/scenarios/README.md`).
+- Local fault suite (Task 22): `qualification/scenarios/fault_suite.py`. It needs Linux, Docker, Node and Chromium, and takes a long time. Its output is `LOCAL TEST ONLY` evidence.
+- Deployment render check: `bash qualification/scenarios/deployment-contract.sh` (needs Helm 3.19.0 and PyYAML). It checks Kubernetes object semantics only.
+- Browser client (`clients/native-browser`): ES modules with `*.test.mjs` / `*.test.cjs` files. `package.json` defines no test script.
+
+### Running the application
+
+One jar, `signaling-app/target/signaling-app-0.1.0-SNAPSHOT-exec.jar`, serves all planes. Exactly one of the Spring profiles `gateway`, `actor` or `control` must be active. Also set `SIGNALING_IDENTITY_ISSUER` and `SIGNALING_IDENTITY_AUDIENCE`. `SIGNALING_RUNTIME_CONTRACT` may point to an absolute YAML file that overrides the packaged `production-defaults.yaml`. Schema: `config/schema/signaling-config.schema.json`.
+
+## Architecture
+
+**Planes.** The same Spring Boot app (`signaling-app`) composes three planes, selected by profile:
+- `gateway` (`signaling-gateway`): public WSS on 8443 with subprotocol `webrtc-signaling.v1`. Input is strict JSON. It routes commands to cells over gRPC/protobuf (`signaling-cell-rpc`).
+- `actor` (`signaling-actors`): Apache Pekko cluster members (remoting on 25520) that hold live call and session state. Call IDs are `<coordinatorCell>.e<routingEpoch>.<UUID>`, and the coordinator cell in the ID determines routing. A call ID provides routing only, not authorization.
+- `control` (`signaling-control-api`): control-plane API, private management with mutual TLS.
+
+**Authority of truth.** Call and session state is fenced in PostgreSQL (CloudNativePG; `signaling-storage`), which also holds authority epochs, WAL facts and negotiation grants. Public identity and routing come from authenticated server context, and critical repositories must validate them again at the store.
+
+**Command scoping and idempotency.** INVITE is scoped to the caller's home cell. Call-bound commands are scoped `CALL:<callId>` at the original coordinator. The canonical SHA-256 intent hash covers command type, scope, authenticated issuer/jti/user and the validated payload. Transport retry generation, incarnation, trace and deadline are excluded, so a retry is the same intent. Reservations and scoped replay are backed by the native outbox. Bounded delivery and reconciliation workers run in `signaling-storage` (`worker` package).
+
+**Identity and protocol.** `signaling-auth` validates JWTs and revocation feeds. `signaling-identity` ships as its own executable jar. `signaling-protocol` owns the generated protobuf/gRPC contracts. Its frozen previous-release fixture covers adjacent internal minor versions 0 and 1. The fixture is a schema test, not a rolling-upgrade test. User IDs are case-sensitive NFC with no trimming. Public JSON counters are decimal strings.
+
+**Observability and contracts.** `signaling-observability` holds telemetry and its contract test. Telemetry and deployment contracts are documented under `docs/operations/` and `docs/contracts/`.
+
+**Module dependencies** (upstream → downstream):
+`signaling-protocol`, `signaling-observability` → `signaling-auth` → `signaling-storage` → `signaling-actors` / `signaling-control-api` → `signaling-cell-rpc` → `signaling-gateway` → `signaling-app`. `signaling-loadgen` depends on `signaling-auth` and `signaling-gateway`. `signaling-integration-tests` depends on `signaling-app`, `signaling-gateway` and `signaling-storage`.
+
+**Outside the reactor:**
+- `clients/native-browser`: an ES module client for the WSS `v:1` contract. It takes an injected `RTCPeerConnection`. It never persists SDP or ICE. Its durable command journal is IndexedDB and holds only allow-listed intents.
+- `qualification/`: Python scenario runner, fault matrix, and evidence verifier. Evidence is written to git-ignored `.superpowers/` directories or to `qualification/evidence/`.
+- `deploy/`: Helm chart and CloudNativePG manifests. `runbooks/` holds operator procedures for failover, drain and PITR restore.
+- `config/`: packaged production defaults, the compatibility manifest (pins an unqualified candidate), and native-source contract notes.
+
+## Conventions specific to this repo
+
+- Formatting is google-java-format (GOOGLE style) via spotless, but the tree already fails the check. Do not run `./mvnw spotless:apply` repo-wide for an unrelated change; it rewrites about 40 files. Match the formatting of the code around your edit.
+- Do not record deployment values, digests or credentials in tracked files. Use the `TEST_ONLY` fixtures and keep real values out of git.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **webrtc-signaling-actor** (8916 symbols, 23766 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **webrtc-signaling-actor** (9181 symbols, 24105 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
