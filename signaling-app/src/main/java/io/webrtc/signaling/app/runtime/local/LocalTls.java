@@ -126,6 +126,22 @@ public final class LocalTls {
     }
 
     /**
+     * Control-plane client contexts for observing actor compatibility. The mounted leaf must carry
+     * exactly this cell's control identity; actor servers admit it for compatibility observation and
+     * refuse it for everything else. A wrong identity is {@code IDENTITY/IDENTITY_MISMATCH}.
+     */
+    public static RpcTlsContexts.ClientTls controlRpcClients(LocalRuntimeContract c) {
+        return rpc(
+                () ->
+                        RpcTlsContexts.controlClients(
+                                c.contract().environment(),
+                                c.contract().cell(),
+                                file(c, c.contract().tls().ca()),
+                                file(c, c.contract().tls().certificate()),
+                                file(c, c.contract().tls().privateKey())));
+    }
+
+    /**
      * Actor-to-gateway relay client contexts; each pins the destination gateway's identity. The
      * mounted leaf must be an actor workload.
      */

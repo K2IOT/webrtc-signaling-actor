@@ -8,11 +8,17 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Profile;
 
 /**
- * Build one lazy native client; the plane lifecycle owns its original physical drain.
+ * Build one lazy native client; the plane lifecycle owns its original physical drain. On the control
+ * plane the client presents the control workload identity, which actor servers admit for
+ * compatibility observation only, and {@link NativeControlProcess} owns its drain.
  */
 @AutoConfiguration(
-        before = {NativeActorIngressConfiguration.class, NativeGatewayBusinessConfiguration.class})
-@Profile({"actor", "gateway"})
+        before = {
+                NativeActorIngressConfiguration.class,
+                NativeGatewayBusinessConfiguration.class,
+                NativeControlBusinessConfiguration.class
+        })
+@Profile({"actor", "gateway", "control"})
 @ConditionalOnBean(NativeCellRpcEnrollment.class)
 public class NativeCellRpcConfiguration {
     @Bean(destroyMethod = "")

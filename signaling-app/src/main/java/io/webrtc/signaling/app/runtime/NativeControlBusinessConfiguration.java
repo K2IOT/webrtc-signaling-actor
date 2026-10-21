@@ -4,6 +4,7 @@ import io.webrtc.signaling.auth.BoundedTokenVerifier;
 import io.webrtc.signaling.control.BootstrapController;
 import io.webrtc.signaling.control.DirectoryService;
 import io.webrtc.signaling.control.PostgresBucketTransfer;
+import io.webrtc.signaling.rpc.CellRpcClient;
 import io.webrtc.signaling.storage.SqlTransactions;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -63,7 +64,8 @@ public class NativeControlBusinessConfiguration {
             ObjectProvider<NativeRevocationSource> revocations,
             ObjectProvider<NativeCellHealthSource> primaries,
             ObjectProvider<NativeCachedRevocationSource> cachedSources,
-            ObjectProvider<PostgresBucketTransfer> transfers) {
+            ObjectProvider<PostgresBucketTransfer> transfers,
+            ObjectProvider<CellRpcClient> rpcClients) {
         return new NativeControlProcess(
                 inputs,
                 tokens,
@@ -73,6 +75,7 @@ public class NativeControlBusinessConfiguration {
                 revocations.orderedStream().toList(),
                 primaries.orderedStream().toList(),
                 cachedSources.orderedStream().toList(),
-                transfers.getIfAvailable());
+                transfers.getIfAvailable(),
+                rpcClients.orderedStream().toList());
     }
 }

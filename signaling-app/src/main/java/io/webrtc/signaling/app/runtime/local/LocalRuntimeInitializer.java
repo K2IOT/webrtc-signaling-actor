@@ -80,9 +80,8 @@ public final class LocalRuntimeInitializer
         LocalGatewayInstaller.install(ctx, c);
     }
 
-    // Task 6 replaces this with the control installer.
     static void installControl(GenericApplicationContext ctx, LocalRuntimeContract c) {
-        throw new UnsupportedOperationException("not installed until Task 4/5/6");
+        LocalControlInstaller.install(ctx, c);
     }
 
     private static Plane activePlane(Environment env) {

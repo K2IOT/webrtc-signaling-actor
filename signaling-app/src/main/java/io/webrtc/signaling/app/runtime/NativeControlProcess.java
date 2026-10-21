@@ -2,6 +2,7 @@ package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.auth.BoundedTokenVerifier;
 import io.webrtc.signaling.control.PostgresBucketTransfer;
+import io.webrtc.signaling.rpc.CellRpcClient;
 import io.webrtc.signaling.storage.DbBoundary;
 import io.webrtc.signaling.storage.DbPools;
 import io.webrtc.signaling.storage.SqlTransactions;
@@ -25,6 +26,7 @@ public final class NativeControlProcess implements SmartLifecycle {
     private final List<NativeRevocationSource> revocations;
     private final List<NativeCellHealthSource> primaries;
     private final List<NativeCachedRevocationSource> cachedSources;
+    private final List<CellRpcClient> rpcClients;
     private PrivateHealthServer health;
     private volatile boolean running;
     private CompletionStage<Void> drained;
@@ -52,6 +54,34 @@ public final class NativeControlProcess implements SmartLifecycle {
             List<NativeCellHealthSource> primaries,
             List<NativeCachedRevocationSource> cachedSources,
             PostgresBucketTransfer transfer) {
+        this(
+                business,
+                tokens,
+                sql,
+                workers,
+                clocks,
+                revocations,
+                primaries,
+                cachedSources,
+                transfer,
+                List.of());
+    }
+
+    /**
+     * {@code rpcClients} are the compatibility-observation clients this process owns (the control
+     * identity may call nothing else); they are drained with the other physical owners.
+     */
+    NativeControlProcess(
+            NativeControlBusinessEnrollment business,
+            BoundedTokenVerifier tokens,
+            List<SqlTransactions> sql,
+            List<NativeWorkerScheduler> workers,
+            List<NativeClockSource> clocks,
+            List<NativeRevocationSource> revocations,
+            List<NativeCellHealthSource> primaries,
+            List<NativeCachedRevocationSource> cachedSources,
+            PostgresBucketTransfer transfer,
+            List<CellRpcClient> rpcClients) {
         if (tokens != business.tokens())
             throw new IllegalArgumentException("Native control verifier ownership differs");
         if (!sql.containsAll(business.directory().transactionOwners()))
@@ -69,6 +99,7 @@ public final class NativeControlProcess implements SmartLifecycle {
         this.revocations = distinct(revocations);
         this.primaries = distinct(primaries);
         this.cachedSources = distinct(cachedSources);
+        this.rpcClients = distinct(rpcClients);
     }
 
     private static <T> List<T> distinct(List<T> values) {
@@ -116,6 +147,8 @@ public final class NativeControlProcess implements SmartLifecycle {
                 .forEach(source -> physical.add(source.drain().toCompletableFuture()));
         of(owners, NativeCachedRevocationSource.class)
                 .forEach(source -> physical.add(source.drain().toCompletableFuture()));
+        of(owners, CellRpcClient.class)
+                .forEach(client -> physical.add(client.drain().toCompletableFuture()));
         distinct(tokens).forEach(token -> physical.add(token.drain().toCompletableFuture()));
         distinct(boundaries).forEach(boundary -> physical.add(boundary.drain().toCompletableFuture()));
         return CompletableFuture.allOf(physical.toArray(CompletableFuture[]::new))
@@ -179,6 +212,7 @@ public final class NativeControlProcess implements SmartLifecycle {
         for (var source : revocations) physical.add(source.drain().toCompletableFuture());
         for (var source : primaries) physical.add(source.drain().toCompletableFuture());
         for (var source : cachedSources) physical.add(source.drain().toCompletableFuture());
+        for (var client : rpcClients) physical.add(client.drain().toCompletableFuture());
         physical.add(tokens.drain().toCompletableFuture());
         for (var boundary : boundaries) physical.add(boundary.drain().toCompletableFuture());
         drained =

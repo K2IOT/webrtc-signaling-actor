@@ -5,8 +5,6 @@ import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.env.YamlPropertySourceLoader;
@@ -21,7 +19,6 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -241,14 +238,22 @@ class LocalRuntimeInitializerTest {
                         });
     }
 
-    @ParameterizedTest
-    @EnumSource(value = SignalingApplication.Plane.class, names = {"CONTROL"})
-    void openGateDispatchesToThePlaneInstaller(SignalingApplication.Plane plane) throws Exception {
-        LocalRuntimeFixtures.install(mount, plane.name());
-        var context = context(plane.name().toLowerCase(Locale.ROOT));
+    @Test
+    void openGateDispatchesTheControlPlaneToTheControlInstaller() throws Exception {
+        // The fixture control profile has no transfer cell: the control installer, not a stub,
+        // refuses it with a specific local runtime failure and registers nothing.
+        LocalRuntimeFixtures.install(mount, "CONTROL");
+        var context = context("control");
         assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage("not installed until Task 4/5/6");
+                .isInstanceOfSatisfying(
+                        LocalRuntimeFailure.class,
+                        failure -> {
+                            assertThat(failure.role()).isEqualTo(LocalRuntimeFailure.Role.PROFILE);
+                            assertThat(failure.category()).isEqualTo(LocalRuntimeFailure.Category.INVALID);
+                        });
+        assertThat(context.getBeanDefinitionCount())
+                .as("a refused control mount registers no enrollment")
+                .isEqualTo(context(new String[0]).getBeanDefinitionCount());
     }
 
     @Test

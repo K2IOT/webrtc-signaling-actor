@@ -212,7 +212,8 @@ public final class LocalGatewayInstaller {
         return address != null && !address.isUnresolved() && !address.getAddress().isAnyLocalAddress();
     }
 
-    private static InetSocketAddress healthAddress(LocalProcessProfile profile) {
+    /** Shared with the control installer: the private probe on the pod address. */
+    static InetSocketAddress healthAddress(LocalProcessProfile profile) {
         // podIp is a literal dotted quad (profile validation), so this performs no name lookup.
         var address = new InetSocketAddress(profile.podIp(), profile.healthPort());
         if (!concrete(address)) throw profileInvalid();
@@ -244,8 +245,11 @@ public final class LocalGatewayInstaller {
         }
     }
 
-    /** Admission facts verified against the revocation source's own keys; starts closed. */
-    private static NativeCachedSecurity security(
+    /**
+     * Admission facts verified against the revocation source's own keys; starts closed. Shared with
+     * the control installer.
+     */
+    static NativeCachedSecurity security(
             LocalRuntimeContract c,
             NativeActorSourceEnrollment.Endpoint revocations,
             Clock wall,

@@ -28,6 +28,7 @@ import io.webrtc.signaling.rpc.GatewayRelayRpcClient;
 import io.webrtc.signaling.rpc.NativeSagaEffects;
 import io.webrtc.signaling.rpc.NativeSessionHandler;
 import io.webrtc.signaling.rpc.RpcAdmission;
+import io.webrtc.signaling.rpc.RpcTlsContexts;
 import io.webrtc.signaling.storage.DbBoundary;
 import io.webrtc.signaling.storage.DbOperation;
 import io.webrtc.signaling.storage.DbPools;
@@ -315,11 +316,15 @@ public final class LocalActorInstaller {
 
     /** Shared with the gateway installer: every contract cell, pinned to its actor identity. */
     static NativeCellRpcEnrollment cells(LocalRuntimeContract c) {
+        return cells(c, LocalTls.rpcClients(c));
+    }
+
+    /** As {@link #cells(LocalRuntimeContract)}, presenting the given client identity. */
+    static NativeCellRpcEnrollment cells(LocalRuntimeContract c, RpcTlsContexts.ClientTls tls) {
         var destinations = new HashMap<String, CellRpcClient.Endpoint>();
         for (var cell : c.contract().cells())
             destinations.put(
                     cell.cell(), new CellRpcClient.Endpoint(cell.host(), cell.port(), cell.tlsAuthority()));
-        var tls = LocalTls.rpcClients(c);
         try {
             return new NativeCellRpcEnrollment(c.contract().environment(), destinations, tls, ADMISSION);
         } catch (IllegalArgumentException rejected) {

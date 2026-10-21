@@ -14,6 +14,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean;
 
 import java.util.ArrayList;
+import java.util.function.Supplier;
 
 /**
  * Explicit topology enables actual collectors on every process plane, before business readiness.
@@ -84,16 +85,27 @@ public class NativeCompatibilityObservationConfiguration {
             NativeCompatibilityObservationProducer producer,
             NativeCompatibility compatibility,
             ObjectProvider<SqlTransactions> sql,
+            ObjectProvider<NativeControlDatabaseResources> controlDatabases,
             NativeTelemetry telemetry,
             ObjectProvider<NativeRollbackCollector> rollback) {
         var jobs = new ArrayList<NativeWorkerScheduler.Job>();
         jobs.add(producer.membershipJob());
         jobs.add(collectors.pollJob());
-        var database = sql.getIfAvailable();
+        var database = schemaSource(controlDatabases.getIfAvailable(), sql::getIfAvailable);
         if (database != null) jobs.add(compatibility.schemaJob(database));
         var rollbackCollector = rollback.getIfAvailable();
         if (rollbackCollector != null) jobs.add(rollbackCollector.job());
         return new NativeCompatibilityObservationLifecycle(jobs, telemetry);
+    }
+
+    /**
+     * The database whose migration history the schema gate reads. The control plane owns two SQL
+     * owners (regional directory and its own cell), so it names its local cell database explicitly;
+     * the regional directory has no cell migrations. Other planes own at most one.
+     */
+    static SqlTransactions schemaSource(
+            NativeControlDatabaseResources control, Supplier<SqlTransactions> single) {
+        return control != null ? control.local() : single.get();
     }
 
     @Bean
