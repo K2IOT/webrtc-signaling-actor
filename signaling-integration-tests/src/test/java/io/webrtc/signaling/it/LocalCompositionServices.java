@@ -36,6 +36,7 @@ import java.security.Signature;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -71,6 +72,9 @@ final class LocalCompositionServices implements AutoCloseable {
     private final AtomicReference<String> pods = new AtomicReference<>("{\"items\":[]}");
     final Set<UUID> clockPods = ConcurrentHashMap.newKeySet();
     final Set<UUID> revocationPods = ConcurrentHashMap.newKeySet();
+    /** Monotonic time of the latest successfully answered poll, per pod. */
+    final Map<UUID, Long> lastClockNanos = new ConcurrentHashMap<>();
+    final Map<UUID, Long> lastRevocationNanos = new ConcurrentHashMap<>();
     final AtomicLong kubeRequests = new AtomicLong();
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final String kubeToken;
@@ -208,6 +212,7 @@ final class LocalCompositionServices implements AutoCloseable {
 
     private String clock(UUID pod, UUID boot) throws Exception {
         clockPods.add(pod);
+        lastClockNanos.put(pod, System.nanoTime());
         var now = Instant.now();
         var report =
                 new ClockSafetyMonitor.Report(
@@ -234,6 +239,7 @@ final class LocalCompositionServices implements AutoCloseable {
     /** An empty, caught-up page at the requested offset: no user or key is revoked. */
     private String revocations(UUID pod, long from) throws Exception {
         revocationPods.add(pod);
+        lastRevocationNanos.put(pod, System.nanoTime());
         var now = Instant.now();
         var unsigned = new RevocationReconciler.Batch(from, from, List.of(), now, "", List.of(), from);
         var signature = Signature.getInstance("Ed25519");

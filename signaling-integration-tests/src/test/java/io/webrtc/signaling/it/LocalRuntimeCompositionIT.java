@@ -52,7 +52,18 @@ class LocalRuntimeCompositionIT {
     LocalCompositionFixture.Started control;
     LocalCompositionFixture.Started gateway;
     List<LocalCompositionFixture.Actor> actors;
+    final List<LocalCompositionFixture.Started> actorProcesses = new ArrayList<>();
+    java.util.UUID controlPod;
     boolean controlUnreadyWithLiveSourcesBeforeActors;
+    /** Transient INVITE replies tolerated before the committed result (same requestId). */
+    static final int MAX_TRANSIENT_INVITE_REPLIES = 5;
+    /** Lines the packaged startup-failure renderer prints; none may appear in a started plane. */
+    static final List<String> STARTUP_FAILURES =
+            List.of(
+                    "\"errorCode\":\"STARTUP_FAILED\"",
+                    "\"errorCode\":\"LOCAL_RUNTIME_REJECTED\"",
+                    "\"errorCode\":\"NATIVE_RUNTIME_NOT_INSTALLED\"",
+                    "Native runtime not installed");
 
     @BeforeAll
     void startOutsideServices() throws Exception {
@@ -82,7 +93,7 @@ class LocalRuntimeCompositionIT {
         cell.add(control);
         await(control, Duration.ofSeconds(60), status -> status == 503);
         // Both safety sources are live for control, so only compatibility keeps it unready.
-        var controlPod = java.util.UUID.fromString(podUid(controlMount));
+        controlPod = java.util.UUID.fromString(podUid(controlMount));
         org.awaitility.Awaitility.await()
                 .atMost(Duration.ofSeconds(20))
                 .until(
@@ -99,8 +110,9 @@ class LocalRuntimeCompositionIT {
             var started =
                     fixture.launch(actor.name(), fixture.actorEnvironment(actor, mount), actor.ip(), actor.healthPort());
             cell.add(started);
+            actorProcesses.add(started);
         }
-        for (var started : cell.subList(1, cell.size())) await(started, ACTOR_READY, status -> status == 200);
+        for (var started : actorProcesses) await(started, ACTOR_READY, status -> status == 200);
         assertThat(control.process().isAlive()).isTrue();
 
         var gatewayMount = fixture.mountGateway(entry);
@@ -114,7 +126,7 @@ class LocalRuntimeCompositionIT {
         await(gateway, Duration.ofSeconds(60), status -> status == 200);
         await(control, Duration.ofSeconds(30), status -> status == 200);
 
-        var members = observeMembers();
+        var members = observeMembers(entry);
         assertThat(members.getActorsList()).hasSize(6);
         assertThat(members.getActorsList().stream().collect(Collectors.groupingBy(a -> a.getZone(), Collectors.counting())))
                 .containsExactlyInAnyOrderEntriesOf(Map.of("az-a", 3L, "az-b", 3L));
@@ -131,7 +143,7 @@ class LocalRuntimeCompositionIT {
             assertThat(started.process().isAlive()).as(started.name() + "\n" + started.transcript()).isTrue();
             assertThat(started.transcript())
                     .as(started.name())
-                    .doesNotContain("NATIVE_RUNTIME_NOT_INSTALLED", "Native runtime not installed", "errorCode");
+                    .doesNotContain(STARTUP_FAILURES.toArray(String[]::new));
         }
         assertThat(fixture.services.failure.get()).isNull();
         assertThat(fixture.services.kubeRequests.get()).isPositive();
@@ -145,6 +157,7 @@ class LocalRuntimeCompositionIT {
     @Test
     @Order(2)
     void actorListenersRejectTls12() throws Exception {
+        requireComposedCell();
         var actor = actors.getFirst();
         var probe = fixture.pki.leaf(fixture.pki.remoting, "tls-probe", "IP:127.0.0.1");
         for (int port : List.of(8558, 25520)) {
@@ -160,14 +173,19 @@ class LocalRuntimeCompositionIT {
     }
 
     /**
-     * The control compatibility gate opened through real actor observations (control was 503 with
-     * live clock and revocation sources until the actors formed), and the actor's calling policy
-     * (NativeCallingPolicyConfiguration, since the installer passes a null callingPolicy) admits an
-     * authenticated INVITE end to end: WSS AUTH at the gateway, cell RPC, the actor and PostgreSQL.
+     * The actor's calling policy (NativeCallingPolicyConfiguration, since the installer passes a
+     * null callingPolicy) admits an authenticated INVITE end to end: WSS AUTH at the gateway, cell
+     * RPC, the actor and PostgreSQL; exactly one call row results from the retried intent.
+     *
+     * <p>Control readiness depends on the actors' real observations. Proven in reverse: with only
+     * the six actors stopped, while control's signed clock and revocation polls keep succeeding,
+     * control falls back to 503. The forward direction (503 with live sources before the actors,
+     * 200 after) is consistent with this; on its own it would not exclude a slow source.
      */
     @Test
     @Order(3)
     void controlGateOpensFromActorsAndAnAuthenticatedInviteCommits() throws Exception {
+        requireComposedCell();
         assertThat(controlUnreadyWithLiveSourcesBeforeActors).isTrue();
         assertThat(LocalCompositionFixture.ready(LocalCompositionFixture.CONTROL_IP, fixture.controlHealthPort))
                 .isEqualTo(200);
@@ -194,18 +212,37 @@ class LocalRuntimeCompositionIT {
                 transient_.add(code);
                 Thread.sleep(1000);
             }
-            System.out.println("TEST_ONLY transient INVITE replies before the result: " + transient_);
-            assertThat(result.path("type").asText()).as(result.toString()).isEqualTo("ACK_COMMITTED");
-            assertThat(result.path("callId").asText()).startsWith(LocalCompositionFixture.CELL + ".e1.");
+            var retries = "transient replies before the result: " + transient_;
+            assertThat(transient_).as(retries).hasSizeLessThanOrEqualTo(MAX_TRANSIENT_INVITE_REPLIES);
+            assertThat(result.path("type").asText()).as(result + "; " + retries).isEqualTo("ACK_COMMITTED");
+            assertThat(result.path("callId").asText()).as(retries).startsWith(LocalCompositionFixture.CELL + ".e1.");
+            // call_id is the primary key; the retried intent must have produced one call in total.
             try (var c = fixture.database.admin(LocalCompositionDatabase.C001);
-                 var q = c.prepareStatement("SELECT count(*) FROM call_state WHERE call_id=?")) {
-                q.setString(1, result.path("callId").asText());
+                 var q =
+                         c.prepareStatement(
+                                 "SELECT count(*),count(*) FILTER (WHERE caller_user=? AND call_id=?) FROM call_state")) {
+                q.setString(1, caller);
+                q.setString(2, result.path("callId").asText());
                 try (var r = q.executeQuery()) {
                     r.next();
-                    assertThat(r.getInt(1)).isEqualTo(1);
+                    assertThat(r.getInt(1)).as("all calls; " + retries).isEqualTo(1);
+                    assertThat(r.getInt(2)).as("this caller's call; " + retries).isEqualTo(1);
                 }
             }
         }
+
+        // Reverse dependence: stop only the actors; the sources keep answering control.
+        fixture.stop(actorProcesses);
+        await(control, Duration.ofSeconds(30), status -> status == 503);
+        long now = System.nanoTime();
+        assertThat(now - fixture.services.lastClockNanos.get(controlPod))
+                .as("control clock poll age while unready")
+                .isLessThan(TimeUnit.SECONDS.toNanos(2));
+        assertThat(now - fixture.services.lastRevocationNanos.get(controlPod))
+                .as("control revocation poll age while unready")
+                .isLessThan(TimeUnit.SECONDS.toNanos(2));
+        assertThat(fixture.services.failure.get()).isNull();
+        assertThat(control.process().isAlive()).as(control.transcript()).isTrue();
     }
 
     /**
@@ -227,6 +264,9 @@ class LocalRuntimeCompositionIT {
         }
         cell.addAll(started);
         for (var actor : started) await(actor, ACTOR_READY, status -> status == 503);
+        // The cell formed: the cell's own observation reports six Up members, all in az-a.
+        var members = observeMembers(single.getFirst().ip());
+        assertThat(members.getActorsList()).hasSize(6).allSatisfy(a -> assertThat(a.getZone()).isEqualTo("az-a"));
         // Formed and serving, but held unready for a sustained period: no flapping to 200.
         long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         while (System.nanoTime() < end) {
@@ -238,10 +278,14 @@ class LocalRuntimeCompositionIT {
         }
         for (var actor : started) {
             assertThat(actor.process().isAlive()).as(actor.name() + "\n" + actor.transcript()).isTrue();
-            assertThat(actor.transcript())
-                    .as(actor.name())
-                    .contains("\"missingZone\":\"az-b\"")
-                    .doesNotContain("NATIVE_RUNTIME_NOT_INSTALLED", "STARTUP_FAILED");
+            assertThat(actor.transcript()).as(actor.name()).doesNotContain(STARTUP_FAILURES.toArray(String[]::new));
+            // The latest zone statement names exactly the missing zone.
+            var zoneLines =
+                    actor.transcript().lines().filter(line -> line.contains("\"missingZone\"")).toList();
+            assertThat(zoneLines).as(actor.name()).isNotEmpty();
+            assertThat(LocalCompositionFixture.JSON.readTree(zoneLines.getLast()).path("attributes").path("missingZone").asText())
+                    .as(actor.name() + " last zone line " + zoneLines.getLast())
+                    .isEqualTo("az-b");
         }
     }
 
@@ -259,6 +303,13 @@ class LocalRuntimeCompositionIT {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** Ordered tests share test 1's cell; say so instead of failing with a null pointer. */
+    private void requireComposedCell() {
+        if (actors == null || control == null || gateway == null || actorProcesses.size() != 6)
+            org.junit.jupiter.api.Assertions.fail(
+                    "oneCellStartsAllPlanesFromMountedFilesOnly did not compose the cell; this test depends on it");
+    }
 
     /** The negotiated protocol, or the handshake failure message. */
     private static String handshake(String host, int port, String protocol, javax.net.ssl.SSLContext context) {
@@ -364,7 +415,7 @@ class LocalRuntimeCompositionIT {
     }
 
     /** An external control-identity observer: the cell's own report of its Up members and zones. */
-    private CompatibilityObservationReply observeMembers() throws Exception {
+    private CompatibilityObservationReply observeMembers(String entryHost) throws Exception {
         var leaf =
                 fixture.pki.leaf(
                         fixture.pki.workload,
@@ -376,7 +427,7 @@ class LocalRuntimeCompositionIT {
                         Map.of(
                                 LocalCompositionFixture.CELL,
                                 new CellRpcClient.Endpoint(
-                                        actors.getFirst().ip(),
+                                        entryHost,
                                         fixture.entryPort,
                                         "actor.c001.local-composition.test")),
                         RpcTlsContexts.controlClients(
