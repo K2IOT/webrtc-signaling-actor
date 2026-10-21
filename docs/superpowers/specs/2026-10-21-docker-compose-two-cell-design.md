@@ -1,7 +1,7 @@
 # Docker Compose hai cell — môi trường signaling chạy được trên một máy
 
 Date: 2026-10-21
-Status: DRAFT_FOR_REVIEW — thiết kế đã được người dùng duyệt ở mức hội thoại (2026-10-21); spec bằng văn bản chờ rà soát. Implementation và deployment NOT_RUN.
+Status: DRAFT — SP1 (Local runtime adapter) đã triển khai trên `dev-docker-fix` (đến `7c75c25`, cùng image contract và tài liệu `config/native-sources.md`); thiết kế đã được người dùng duyệt ở mức hội thoại (2026-10-21). SP2, SP3 và deployment NOT_RUN. Các mục §4.1–§4.3, §4.5–§4.6, §8, §9 phản ánh những gì SP1 thực sự xây; mục còn lại vẫn là thiết kế chưa triển khai.
 Environment: **LOCAL_TEST_ONLY** / `local-minikube` / `local-test-only`.
 Qualification: **NOT_QUALIFIED**. Compose chỉ có thể đạt `LOCAL_QUALIFIED`. Không có tuyên bố production, HA thật, physical fencing hay 10M.
 Source baseline: branch `dev-docker-fix`, `9c14b4f`.
@@ -15,6 +15,8 @@ Hiện trạng làm cho mục tiêu này không đạt được chỉ bằng fil
 - Mỗi plane chỉ lắp ráp khi có bean `Native*Enrollment`; trong `src/main` chỉ `NativeCompatibilityCollectors` tạo một enrollment, phần còn lại do test đăng ký. Image hiện từ chối khởi động với `NATIVE_RUNTIME_NOT_INSTALLED` (`qualification/scenarios/image-contract.sh`).
 - `MountedNativeContract` chỉ parse và validate, không tạo bean.
 - Không có source service cho đồng hồ và revocation đã ký, không có bộ sinh PKI, không có công cụ migrate/seed, và Pekko discovery bắt buộc `kubernetes-api`.
+
+Hai gạch đầu là hiện trạng trước SP1. Sau SP1, `LocalRuntimeInitializer` (đăng ký trong `spring.factories`) dựng các enrollment từ contract mount cho cả ba plane (§4.3); gạch thứ ba vẫn đúng và thuộc SP2/SP3.
 
 Vì vậy spec này gồm ba dự án con, mỗi dự án có plan triển khai riêng:
 
@@ -87,28 +89,52 @@ Dùng `MountedNativeContract` schema v1 (`qualification=LOCAL_TEST_ONLY`, `envir
 - `directorySnapshotSha256` là SHA-256 hex của `directorySnapshot`.
 - `identity.issuer/audience` khớp `SIGNALING_IDENTITY_ISSUER/AUDIENCE`; `maximumJwtLifetime` ≥ 15 phút; `revocationPropagationSLO < hardSafetyBound < maximumJwtLifetime`; `clockSkew` ≤ 30s; `preserveJtiOnRefresh=true`.
 
+Ngoài `provider.json`, mỗi container có `process.json` trong cùng thư mục: hồ sơ process theo container (plane, `podUid`, `podIp`, các cổng, `azRole` và `cellAzRoles`, `gatewayId`/`gatewayBootId`, `wal`, `compatibility`, `kube`, `transferCells`, `privacyPseudonymKey`, `allowedOrigins`). Vị trí lấy từ `SIGNALING_LOCAL_PROCESS_PROFILE` (mặc định `/run/signaling/process.json`); vị trí contract từ `SIGNALING_NATIVE_PROVIDER_CONTRACT` (mặc định `/run/signaling/provider.json`). Schema, quy tắc validate và dạng lỗi nằm ở `config/native-sources.md`, mục "Local process profile"; renderer của SP3 phải sinh đủ mọi khóa (giá trị tùy chọn là `null` tường minh, khóa thiếu bị từ chối). Ràng buộc thêm so với contract:
+
+- `process.json` phải nằm cùng thư mục thật với `provider.json` (nếu không: `profile/PATH_ESCAPE`); mọi đường dẫn trong cả hai file, kể cả `kube.caPath` và `kube.tokenPath`, được realpath và phải nằm dưới thư mục đó.
+- **Quy tắc kích hoạt**: cần cả `SIGNALING_DEPLOYMENT_MODE=local-minikube`, `SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY` **và** một vị trí contract tường minh (`SIGNALING_NATIVE_PROVIDER_CONTRACT` hoặc `SIGNALING_LOCAL_PROCESS_PROFILE` không rỗng; compose luôn đặt biến thứ nhất). Chỉ có dấu hiệu mà thiếu vị trí thì adapter không đăng ký gì và khởi động vẫn thất bại với `NATIVE_RUNTIME_NOT_INSTALLED`. Khi cổng đã mở, file thiếu hoặc hỏng dừng khởi động bằng đúng một dòng cố định `LOCAL_RUNTIME_REJECTED` kèm vai trò và loại lỗi (không có đường dẫn, giá trị hay nguyên nhân). Contract đọc được nhưng khai báo môi trường khác `local-test-only` thì adapter không đăng ký gì.
+- `cellAzRoles` (actor): 2–3 vai trò `az-*` khác nhau, gồm `azRole` của chính actor, giống nhau trong cả cell; để rỗng ở gateway và control.
+- `compatibility`: `major` ≥ 1, `executableId` là 64 hex chữ thường, `features` chỉ gồm tên đã biết, `upperMinor = lowerMinor + 1`, `minor` thuộc cửa sổ.
+- `transferCells`: chỉ control, **đúng một** phần tử (cell còn lại).
+- `privacyPseudonymKey`: file khóa thô 32–64 byte (actor).
+
 `runtime.yaml` chỉ chứa các section `signaling` có kiểu (`identity`, `lease`, `cluster`, `protocol`, `transport`, `queues`, `calls`, `rate-limits`), một root, scalar-only.
 
 ### 4.2 Biến môi trường mỗi container
 
-`SPRING_PROFILES_ACTIVE` (đúng một trong `gateway|actor|control`), `SIGNALING_DEPLOYMENT_MODE=local-minikube`, `SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY`, `SIGNALING_CELL_ID`, `SIGNALING_CLUSTER_FINGERPRINT` (64 hex, giống nhau trong cell), `SIGNALING_IDENTITY_ISSUER`, `SIGNALING_IDENTITY_AUDIENCE`, `SIGNALING_RUNTIME_CONTRACT=/run/signaling/runtime.yaml`. Riêng actor: `SIGNALING_POD_IP`, `SIGNALING_NAMESPACE`, `SIGNALING_ACTOR_SERVICE=signaling-<cell>`, `SIGNALING_DISCOVERY_SELECTOR=app=webrtc-signaling,plane=actor,cell=<cell>`, `SIGNALING_REMOTING_KEYSTORE`, `SIGNALING_REMOTING_TRUSTSTORE` và ba biến mật khẩu (`SIGNALING_REMOTING_KEYSTORE_PASSWORD`, `SIGNALING_REMOTING_KEY_PASSWORD`, `SIGNALING_REMOTING_TRUSTSTORE_PASSWORD`) lấy từ file mount, không đặt trong file compose.
+Mọi plane: `SPRING_PROFILES_ACTIVE` (đúng một trong `gateway|actor|control`, phải khớp `plane` trong `process.json`), `SIGNALING_DEPLOYMENT_MODE=local-minikube`, `SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY`, `SIGNALING_NATIVE_PROVIDER_CONTRACT=/run/signaling/provider.json`, `SIGNALING_LOCAL_PROCESS_PROFILE=/run/signaling/process.json`, `SIGNALING_CELL_ID` (bằng `cell` của contract), `SIGNALING_POD_UID` (bằng `podUid` của profile), `SIGNALING_CLUSTER_FINGERPRINT` (64 hex chữ thường, giống nhau trong cell), `SIGNALING_IDENTITY_ISSUER` và `SIGNALING_IDENTITY_AUDIENCE` (bằng `identity` của contract), `SIGNALING_RUNTIME_CONTRACT=/run/signaling/runtime.yaml`. Lệch `SIGNALING_POD_UID`, `SIGNALING_CELL_ID`, issuer hoặc audience cho `identity/IDENTITY_MISMATCH`.
 
-`SIGNALING_POD_UID` (UUID cố định mỗi container, sinh bởi provisioner) và `SIGNALING_FORMATION_PROFILE` hiện không có mã Java nào đọc; SP1 phải tiêu thụ chúng. `processBoot` luôn được sinh mới trong JVM và đăng ký với source service trước khi lấy báo cáo đồng hồ.
+Riêng actor:
+
+- `SIGNALING_KUBE_API_HOST` và `SIGNALING_KUBE_API_PORT` phải là biến môi trường **thật** của process (không phải system property hay application property), bằng đúng `kube.apiHost` và `kube.apiPort` của profile; Pekko discovery đọc địa chỉ từ môi trường process nên chỉ nguồn này thỏa kiểm tra (lệch cho `profile/IDENTITY_MISMATCH`).
+- `SIGNALING_FORMATION_PROFILE=initial-six` ở lần dựng đầu (§4.7); giá trị khác hoặc vắng thì chỉ gia nhập cluster đã có. SP1 đã tiêu thụ biến này.
+- Ba biến mật khẩu `SIGNALING_REMOTING_KEYSTORE_PASSWORD`, `SIGNALING_REMOTING_KEY_PASSWORD`, `SIGNALING_REMOTING_TRUSTSTORE_PASSWORD` lấy từ file mount, không đặt trong file compose.
+- `SIGNALING_POD_IP`, `SIGNALING_NAMESPACE`, `SIGNALING_ACTOR_SERVICE`, `SIGNALING_DISCOVERY_SELECTOR`, `SIGNALING_REMOTING_KEYSTORE`, `SIGNALING_REMOTING_TRUSTSTORE` không còn bắt buộc: adapter đè các giá trị đó từ `podIp`, `kube.namespace`, tên cell và đường dẫn store trong contract.
+
+`SIGNALING_POD_UID` là UUID cố định mỗi container, sinh bởi provisioner. `processBoot` luôn được sinh mới trong JVM và đăng ký với source service trước khi lấy báo cáo đồng hồ.
 
 ### 4.3 Nhiệm vụ SP1 — Local runtime adapter
 
-Kích hoạt chỉ khi cả ba dấu hiệu local có mặt (mode, acknowledgement, environment); image production vẫn từ chối contract local. Adapter phải:
+Trạng thái: **đã triển khai** (`signaling-app/.../runtime/local`, commit `20b55d0`..`7c75c25`). Kích hoạt theo quy tắc tường minh ở §4.1 (hai dấu hiệu cùng vị trí contract; contract khai báo môi trường khác thì không đăng ký gì); image production vẫn từ chối contract local. Kết quả theo từng mục của nhiệm vụ:
 
-1. Dựng và đăng ký các enrollment hiện có cho từng plane (danh sách ở `docs/superpowers/plans/2026-10-13-minikube-authority-runtime.md` A6): gateway business/ingress/lifecycle/cell-RPC; actor process/source/business/ingress/scheduling/maintenance/WAL/compatibility; control database/source/business/ingress/bucket-transfer.
-2. Dựng `SqlTransactions`, `DbBoundary`, `DbPools` cho actor từ `cellDatabase`; chưa có mã nào làm việc này.
-3. Dựng `BoundedTokenVerifier` từ `jwtPublicKeys` (`TrustedRsaKeys` + `Rs256TokenVerifier`) cho mọi plane.
-4. Dựng Pekko `Config` cho actor: nạp `application-actor.conf`; vai trò `az-a`/`az-b` (3+3 mỗi cell, `CompatibilityWindow` cần ≥ 2 vùng); các khóa `signaling.compatibility.{major,minor,executable-id,features}` và `signaling.compatibility.window.*`; override discovery (`api-ca-path`, `api-token-path`, `api-service-host-env-name`, `api-service-port-env-name`); keystore/truststore PKCS12.
-5. Đăng ký `ClusterReadiness.localMinikube("LOCAL_TEST_ONLY")`, thay bean mặc định.
-6. Dựng nguồn đồng hồ/revocation phía client (`NativeClockSource`, `NativeCachedRevocationSource`, `NativeRevocationSource`) cho gateway và control; chỗ này chưa có wiring cho hai plane đó.
-7. Dựng `NativeCompatibilityEnrollment` từ quan sát thật; control cần `CellRpcClient` hoặc enrollment tương thích riêng.
-8. Dựng `NativeBucketTransferEnrollment` với hai store thuộc hai cell khác nhau (`c001`, `c002`).
+1. **Enrollment từng plane** (danh sách ở `docs/superpowers/plans/2026-10-13-minikube-authority-runtime.md` A6): gateway business/ingress/lifecycle/cell-RPC/compatibility; actor process/source/business/ingress/scheduling/maintenance/WAL/cell-RPC/compatibility; control database/source/business/ingress/bucket-transfer/cell-RPC. Mọi bean đăng ký bằng `registerBean(Class, Supplier)`, không dùng `registerSingleton`, để `@ConditionalOnBean` thấy định nghĩa.
+2. **`SqlTransactions`, `DbBoundary`, `DbPools` của actor** dựng từ `cellDatabase`; actor không bao giờ mở `directoryDatabase`.
+3. **`BoundedTokenVerifier`** dựng từ `jwtPublicKeys` (RS256, modulus RSA ≥ 2048 bit) cho cả ba plane; khóa hỏng dừng khởi động trước khi có bean nào.
+4. **Pekko `Config` của actor**: `application-actor.conf` là nền; chỉ giá trị do contract, profile và môi trường quyết định được phủ lên. Vai trò vùng lấy từ `azRole` và `cellAzRoles` (adapter chấp nhận 2–3 vùng khác nhau mỗi cell; SP3 dùng `az-a`/`az-b`, 3+3 actor mỗi cell); khóa `signaling.compatibility.*` và cửa sổ; override discovery (`api-ca-path`, `api-token-path`, tên biến môi trường host/port); keystore/truststore PKCS12; Artery và management chỉ bind `podIp`.
+5. **`ClusterReadiness.localMinikube("LOCAL_TEST_ONLY")`** thay bean mặc định.
+6. **Nguồn đồng hồ/revocation phía client**: actor qua `NativeActorSourceEnrollment`; gateway qua `NativeClockSource` và `NativeCachedRevocationSource` kèm worker; control qua `NativeControlSourceEnrollment` và `NativeCachedRevocationSource`. Gateway chỉ nạp khóa công khai để kiểm proof relay, không nạp khóa ký proof của cell.
+7. **Tương thích của control**: control mang một danh tính workload riêng `control` (`spiffe://signaling/local-test-only/cell/<cell>/control`) và quan sát tương thích của actor bằng `CellRpcClient`. Actor chỉ nhận danh tính này cho thao tác quan sát tương thích, từ chối cho execute, relay và sync. Không mượn danh tính actor hay gateway, không dùng hằng số cho cổng. Cổng `controlReady` mở từ quan sát thật.
+8. **`NativeBucketTransferEnrollment`** cần hai store: store của cell local của control và store của **đúng một** `transferCells` (cell kia). Không phần tử hoặc nhiều hơn một cho `profile/INVALID` vì enrollment chỉ nhận một nguồn và một đích.
 
-Không đưa `TestOnlyNativeCapabilities`, đồng hồ giả, WAL fact giả hay readiness vô điều kiện vào image triển khai.
+Các thành phần chưa có bản production nên SP1 dùng thế thân **từ chối mọi yêu cầu** (đóng khi lỗi, không giả thành công):
+
+- Privacy detachment từ chối mọi detachment: yêu cầu xóa dữ liệu ở lại trạng thái chờ, không bao giờ báo hoàn tất.
+- Epoch adoption bị từ chối.
+- Admission ghi vào directory của control là hằng `true` (có chú thích): compose chỉ chạy đúng một control; hàng rào thật chờ A3/A4.
+
+Với compose điều này có nghĩa: **không có xóa dữ liệu riêng tư**, **không có epoch adoption, promotion hay migration**; kịch bản nào cần chúng không chạy được cục bộ.
+
+Không đưa `TestOnlyNativeCapabilities`, đồng hồ giả, WAL fact giả hay readiness vô điều kiện vào image triển khai. Lưu ý đồng hồ do source của test tự khai (SP2 phải đo thật, §4.4).
 
 ### 4.4 Nhiệm vụ SP2 — `signaling-local-platform`
 
@@ -125,6 +151,8 @@ Server HTTPS/mTLS cổng 9443, TLS 1.3, chỉ nhận caller đã enroll; tuân t
 - **Directory DB** (`directory`): `signaling-control-api/src/main/resources/db/directory/migration/V001–V002` với bảng lịch sử riêng. **Source DB** (`source`): migration của `signaling-local-platform`, tách khỏi mọi bảng cell.
 - **Seed cell**: `cell_authority(1,'<cell>',1,'GROUPED',1,'ACTIVE')`; `bucket_authority` đủ 16384 hàng cho bucket 0–16383 (`directory_epoch=1`, `recovery_epoch=1`): bucket được gán cho cell đó có `status='ACTIVE'`, các bucket còn lại `status='FROZEN'` (không phục vụ nhưng có hàng sẵn cho transfer); phép chia bucket giữa hai cell phải trùng với seed directory; `group_owner` cho nhóm 0–1023 (`ownership_hash_version=1`, `storage_epoch=1`, `group_epoch=1`, `lease_sequence=0`, `IDLE`).
 - **Seed directory**: 16384 dòng `directory_bucket`, chia đôi giữa `c001` và `c002`, `wss_url` trỏ `wss://c001.signaling.local:8443/ws` và `wss://c002.signaling.local:8444/ws`.
+- **Directory snapshot** (`directorySnapshot`, SP3 render, SP1 đọc): JSON ≤ 64 KiB, SHA-256 hex của đúng các byte đó phải bằng `directorySnapshotSha256`, parser nghiêm ngặt (khóa lạ/trùng/thiếu, nội dung thừa, số thập phân bị từ chối). `buckets` gồm **tối đa 512 dải** không chồng lấn trên bucket 0–16383; mỗi dải gán `(cell, directoryEpoch, storageEpoch)` với `cell` thuộc `cells[]` của contract và đúng `storageEpoch` của cell đó; bucket không dải nào phủ thì không có home tin cậy và mọi kiểm tra home của user đó thất bại. Phép chia phải trùng seed `directory_bucket` (actor không đọc bảng này nên renderer chịu trách nhiệm). `gatewayBoots` (tối đa 128) có **đúng một** mục `(cell, gatewayId, bootId)` cho mỗi `gateways[]` của contract, và `bootId` phải bằng `gatewayBootId` trong `process.json` của gateway đó (gateway lệch thì dừng khởi động với `identity/IDENTITY_MISMATCH`). Mọi actor đọc cùng một snapshot, không nhân bản `gatewayBoots` vào sáu profile.
+- **`bootId` của gateway được ghim cho mỗi lần provision**: enrollment tương thích cần biết trước bootId của mọi gateway, trong khi một gateway khởi động lại không được dùng lại bootId cũ (lease boot đã hết hạn không gia hạn hay tạo lại được). Vì vậy **khởi động lại riêng container gateway không được hỗ trợ**. Cách phục hồi được hỗ trợ: provision lại và khởi động lại các container của cell đó (`compose down` rồi `up`). README của SP3 phải nêu giới hạn này.
 - **WAL**: role replication, slot hoặc `application_name` cố định cho standby; provisioner chờ standby `sync` trong `pg_stat_replication`, đọc `systemIdentifier` và timeline, ghi vào `NativeWalEnrollment` (không dùng `localSingleWriter`). Cần quyền đọc `pg_stat_replication`, `pg_control_system()` và `pg_current_wal_flush_lsn()`; provisioner cấp bằng `pg_monitor` (quyền chính xác xác minh trong plan).
 - PostgreSQL ≥ 17 vì `SET LOCAL transaction_timeout`. Image `postgres:17.6` đúng như pin trong `config/compatibility-manifest.yaml`.
 
@@ -134,12 +162,17 @@ Generator thuần `openssl` + `keytool`, deterministic theo `topology.env`, ghi 
 
 | Mục đích | CA | Certificate | Yêu cầu |
 |---|---|---|---|
-| WSS/HTTPS công khai | CA-public | gateway, control, identity (nếu bật HTTPS) | DNS SAN theo hostname §3.2 |
+| HTTPS công khai | CA-public | identity (nếu bật HTTPS) | DNS SAN theo hostname §3.2 |
 | RPC workload | CA-workload | actor, gateway | **đúng một** URI SAN `spiffe://signaling/local-test-only/cell/<cell>/(actor\|gateway)[/<id>]`, DNS SAN khớp `tlsAuthority`, TLS 1.3, EKU server+client |
+| Control (HTTPS công khai + RPC quan sát) | CA-workload (CA mà actor tin) | control | **đúng một** URI SAN `spiffe://signaling/local-test-only/cell/<cell>/control`, cộng DNS SAN công khai cho HTTPS (§3.2), TLS 1.3, EKU server+client |
 | Remoting + management | CA-remoting-`<cell>` (một CA mỗi cell) | mỗi actor, PKCS12 keystore + truststore | IP SAN theo địa chỉ tĩnh, mutual auth |
 | Database | CA-db | PG, client | `verify-full` |
 | Source | CA-source | local-platform | DNS/IP SAN; caller đã enroll |
 | Fake kube-API | CA-kube | kube-api | IP SAN; kèm file token bearer |
+
+Gateway và control chỉ nạp một leaf (`tls.certificate`) cho cả listener công khai lẫn RPC. Leaf của gateway vì vậy mang cả DNS SAN công khai lẫn URI SAN workload và chain tới CA-workload (client smoke tin CA đó); hàng "HTTPS công khai" chỉ còn áp cho identity.
+
+Danh tính `control` **không gắn với một cell khi quan sát tương thích**, theo thiết kế: server của actor chỉ kiểm vai trò, như với gateway, và control của một cell quan sát được actor của cell khác. Control poll actor qua làn admission `CONTROL` của actor (tính vào sức chứa của làn này). Danh tính này bị từ chối cho execute, relay và sync.
 
 Khóa Ed25519: proof signing mỗi cell, ký source. Mật khẩu PKCS12 sinh ngẫu nhiên, nằm trong file mount; không vào image, không vào git, không vào log.
 
@@ -189,16 +222,23 @@ Cấu trúc payload chính xác lấy từ `ProtocolValidator`, kiểm trong pla
 
 ## 8. Rủi ro đã biết và cách xử lý
 
-| Rủi ro | Xử lý |
-|---|---|
-| `NativeCompatibility` đọc `...artery.ssl.config.require-mutual-authentication` nhưng conf đặt dưới `ssl.config-ssl-engine`; gate tương thích có thể không bao giờ mở | SP1 xác minh trên process thật; sửa nơi đọc hoặc đặt khóa tương ứng trong Config được inject, kèm test |
-| Epoch phát hành của Identity so với watermark `RevocationState` (nguy cơ epoch 0 bị coi là đã revoke) | Kiểm bằng test trước khi bật smoke bước 5; không đổi ngữ nghĩa `RevocationState` |
-| Control cần `CellRpcClient`; `NativeCellRpcConfiguration` hiện chỉ profile `actor`, `gateway` | SP1 cấp enrollment tương thích riêng cho control hoặc mở rộng cấu hình có test |
-| Cổng thời gian 30s của actor khi khởi động | Khởi động đồng thời; nếu compose chậm, tăng giới hạn trong chính config có kiểm range, không bỏ kiểm tra |
-| Phép đo đồng hồ chỉ trong container | Ghi rõ trong evidence; không dùng làm bằng chứng kỷ luật đồng hồ host |
-| Control giữ credential hai cell | Chỉ `LOCAL_TEST_ONLY`; đóng bằng A3/A4 |
-| Jar `signaling-app` trong `target/` có thể cũ | Makefile/README yêu cầu `./mvnw -pl signaling-app,signaling-identity,signaling-local-platform -am package` trước khi dựng image |
-| Tài nguyên (~10 GB RAM, tải CPU cao làm flake deadline DB 2s) | README ghi yêu cầu tối thiểu; healthcheck có thời gian chờ đủ; không hạ deadline production |
+Cột "Trạng thái" phản ánh SP1 đã triển khai.
+
+| Rủi ro | Trạng thái | Xử lý |
+|---|---|---|
+| `NativeCompatibility` đọc `...artery.ssl.config.require-mutual-authentication` nhưng conf đặt dưới `ssl.config-ssl-engine`; gate tương thích có thể không bao giờ mở | **Đã sửa (SP1)**: lỗi đường dẫn khóa là có thật; nơi đọc dùng khóa hiệu lực `ssl.config-ssl-engine`, `ssl.config` chỉ là dự phòng khi thiếu | Có test; gate mở trong `LocalRuntimeCompositionIT` |
+| Epoch phát hành của Identity so với watermark `RevocationState` (nguy cơ epoch 0 bị coi là đã revoke) | Còn lại (SP2/SP3) | Kiểm bằng test trước khi bật smoke bước 5; không đổi ngữ nghĩa `RevocationState` |
+| Control cần `CellRpcClient`; `NativeCellRpcConfiguration` hiện chỉ profile `actor`, `gateway` | **Đã giải quyết (SP1)** bằng danh tính workload `control` chỉ-quan-sát (§4.3 mục 7, §4.6) | Test từ chối của server actor cho execute, relay và sync; gate control mở từ quan sát thật |
+| Cổng thời gian 30s của actor khi khởi động | Còn lại (SP3) | Khởi động đồng thời; nếu compose chậm, tăng giới hạn trong chính config có kiểm range, không bỏ kiểm tra |
+| Phép đo đồng hồ chỉ trong container | Còn lại (SP2) | Ghi rõ trong evidence; không dùng làm bằng chứng kỷ luật đồng hồ host. Source của IT SP1 không đo gì, chỉ khai mức tối đa đã enroll |
+| Control giữ credential hai cell | Chấp nhận, chỉ `LOCAL_TEST_ONLY`; SP1 giới hạn còn đúng một `transferCells` | Đóng bằng A3/A4 |
+| Cổng RPC ingress của actor (`CellRpcServer`) và relay của gateway (`GatewayRelayRpcServer`) bind mọi interface; WSS và HTTPS của control cũng vậy (chỉ Artery, management và health bind `podIp`) | **Còn lại (SP3)** | Thiết kế mạng compose phải cô lập: mỗi cổng chỉ có đường tới từ đúng mạng (§3.2); không dựa vào việc listener tự giới hạn |
+| Bằng chứng khởi động từ `-exec.jar` | **Còn lại (SP3)** | `LocalRuntimeCompositionIT` chạy các plane trong JVM con với classpath của module, không phải jar đóng gói. `image-contract.sh` chứng minh từ image đóng gói chỉ trường hợp contract thiếu (dòng `LOCAL_RUNTIME_REJECTED`, `role=contract`, `category=MISSING`); khởi động đầy đủ với contract hợp lệ là nghiệm thu của SP3 |
+| Chromium thiếu trong môi trường chạy IT | Môi trường: chỉ `WebRtcInteropIT` cần Chromium (`CHROMIUM_PATH`); thiếu thì IT đó fail, không liên quan SP1 | Cài Chromium khi chạy toàn bộ `signaling-integration-tests` |
+| `bootId` của gateway ghim cho mỗi lần provision | Giới hạn đã chấp nhận (§4.5) | Khởi động lại riêng gateway không hỗ trợ; phục hồi bằng provision lại và khởi động lại container của cell |
+| Thế thân từ chối cho privacy detachment và epoch adoption; admission ghi directory của control là hằng `true` | Giới hạn đã chấp nhận (§4.3) | Không có xóa dữ liệu riêng tư, promotion hay migration trong compose; một control duy nhất |
+| Jar `signaling-app` trong `target/` có thể cũ | Còn lại (SP3) | Makefile/README yêu cầu `./mvnw -pl signaling-app,signaling-identity,signaling-local-platform -am package` trước khi dựng image |
+| Tài nguyên (~10 GB RAM, tải CPU cao làm flake deadline DB 2s) | Còn lại (SP3) | README ghi yêu cầu tối thiểu; healthcheck có thời gian chờ đủ; không hạ deadline production |
 
 ## 9. Tiêu chí chấp nhận
 
@@ -208,5 +248,7 @@ Cấu trúc payload chính xác lấy từ `ProtocolValidator`, kiểm trong pla
 4. Fingerprint lệch, certificate sai SPIFFE hoặc thiếu contract: container từ chối khởi động với lỗi rõ.
 5. `./mvnw verify` của SP1/SP2 xanh; image triển khai không chứa `TestOnlyNativeCapabilities`.
 6. Không có secret hay private key mới trong git; mọi artifact và log in `LOCAL_TEST_ONLY` và `NOT_QUALIFIED`.
+
+Bằng chứng mức SP1, không thay thế tiêu chí nào ở trên: `LocalRuntimeCompositionIT` (`signaling-integration-tests`) dựng **một** cell từ file mount và môi trường, với sáu actor, gateway và control là các JVM riêng, PostgreSQL 17.6 thật (primary và standby streaming đồng bộ) và Pekko mTLS. Năm test của nó chứng minh: các plane khởi động chỉ từ file mount và môi trường, không có lớp test trên classpath; listener actor từ chối TLS 1.2; gate tương thích của control mở từ quan sát actor thật và một `INVITE` có xác thực được commit; cell chỉ có một vùng vẫn chưa sẵn sàng và nêu vùng thiếu; thiếu contract bị từ chối với vai trò và loại lỗi (tiêu chí 4, phần "thiếu contract", ở mức process). `image-contract.sh` chứng minh cùng kết quả từ image đóng gói. **Chưa được chứng minh**: hai cell, gọi chéo cell, chuyển bucket thật, phần còn lại của luồng cuộc gọi, mất actor hay standby, chất lượng đồng hồ, khởi động đầy đủ từ `-exec.jar`; các mục đó thuộc SP2/SP3 và tiêu chí 1–3.
 
 Đạt 1–6 chỉ cho phép trạng thái `LOCAL_QUALIFIED`. Production, HA thật, physical fencing, N−1 và 10M vẫn `NOT_QUALIFIED`.
