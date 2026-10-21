@@ -372,10 +372,10 @@ final class LocalCompositionFixture implements AutoCloseable {
         database.put(
                 "quotas",
                 Map.of(
-                        "CRITICAL", 4, "NORMAL", 2, "OUTBOX", 2, "MAINTENANCE", 1,
-                        "RENEWAL", 2, "TERMINATION", 2, "RECOVERY", 2));
-        database.put("safetyMax", 6);
-        database.put("controlMax", 9);
+                        "CRITICAL", 8, "NORMAL", 2, "OUTBOX", 2, "MAINTENANCE", 2,
+                        "RENEWAL", 2, "TERMINATION", 2, "RECOVERY", 4));
+        database.put("safetyMax", 8);
+        database.put("controlMax", 14);
         return database;
     }
 
@@ -501,7 +501,7 @@ final class LocalCompositionFixture implements AutoCloseable {
             Files.writeString(
                     config,
                     "<configuration><appender name=\"OUT\" class=\"ch.qos.logback.core.ConsoleAppender\">"
-                            + "<encoder><pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern></encoder>"
+                            + "<encoder><pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg %mdc%n</pattern></encoder>"
                             + "</appender><root level=\"INFO\"><appender-ref ref=\"OUT\"/></root></configuration>");
         return config;
     }
