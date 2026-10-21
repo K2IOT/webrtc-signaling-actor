@@ -311,10 +311,8 @@ class LocalGatewayInstallerTest {
         assertThat(LocalGatewayInstaller.concrete(InetSocketAddress.createUnresolved("192.0.2.10", 9090)))
                 .isFalse();
 
-        var wildcard = contract(p -> p.put("podIp", "0.0.0.0"));
-        var ctx = context();
-        assertFailure(() -> LocalGatewayInstaller.install(ctx, wildcard), Role.PROFILE, Category.INVALID);
-        assertThat(ctx.getBeanDefinitionCount()).as("refused before any definition").isZero();
+        // The profile itself refuses a wildcard pod address, so no installer ever sees one.
+        assertFailure(() -> contract(p -> p.put("podIp", "0.0.0.0")), Role.PROFILE, Category.INVALID);
 
         // The relay listener may not share the WSS port.
         assertFailure(() -> install(contract(p -> p.put("relayPort", 8443))), Role.PROFILE, Category.INVALID);

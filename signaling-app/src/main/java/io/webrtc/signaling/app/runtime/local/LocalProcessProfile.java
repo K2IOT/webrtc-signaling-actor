@@ -101,11 +101,20 @@ public record LocalProcessProfile(
         if (port < 1 || port > 65535) throw new IllegalArgumentException();
     }
 
-    /** Literal dotted quad only, so validation never reaches name resolution. */
+    /**
+     * Literal dotted quad only, so validation never reaches name resolution. The wildcard address
+     * is refused: Artery, management and the health server bind this address, and a wildcard
+     * would expose them on every interface. Loopback and every other concrete address stay valid.
+     */
     private static boolean ipv4(String value) {
         if (!value.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}")) return false;
-        for (var octet : value.split("\\.")) if (Integer.parseInt(octet) > 255) return false;
-        return true;
+        var wildcard = true;
+        for (var octet : value.split("\\.")) {
+            var number = Integer.parseInt(octet);
+            if (number > 255) return false;
+            if (number != 0) wildcard = false;
+        }
+        return !wildcard;
     }
 
     @Override

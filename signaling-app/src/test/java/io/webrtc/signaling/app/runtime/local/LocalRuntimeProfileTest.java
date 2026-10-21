@@ -199,6 +199,31 @@ class LocalRuntimeProfileTest {
     }
 
     @Test
+    void aWildcardPodIpIsRefusedOnEveryPlane() throws Exception {
+        for (var plane : List.of("ACTOR", "GATEWAY", "CONTROL")) {
+            for (var wildcard : List.of("0.0.0.0", "00.0.0.0", "000.000.000.000")) {
+                var document = LocalRuntimeFixtures.profile(mount, plane);
+                document.put("podIp", wildcard);
+                assertInvalid(document);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"127.0.0.1", "127.0.0.11", "127.0.0.16", "0.0.0.1", "0.1.0.0"})
+    void loopbackAndOtherNonWildcardAddressesStayValid(String ip) throws Exception {
+        for (var plane : List.of("ACTOR", "GATEWAY", "CONTROL")) {
+            var document = LocalRuntimeFixtures.profile(mount, plane);
+            if (plane.equals("GATEWAY")) {
+                document.put("gatewayId", "local-c001");
+                document.put("gatewayBootId", "00000000-0000-4000-8000-0000000000aa");
+            }
+            document.put("podIp", ip);
+            assertThat(parse(document).podIp()).isEqualTo(ip);
+        }
+    }
+
+    @Test
     void walRulesAreEnforced() throws Exception {
         for (var bad :
                 List.<Consumer<Map<String, Object>>>of(

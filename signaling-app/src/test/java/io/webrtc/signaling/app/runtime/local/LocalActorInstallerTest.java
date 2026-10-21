@@ -289,6 +289,10 @@ class LocalActorInstallerTest {
                     .containsExactly(LocalZoneReport.JOB);
             assertThat(scheduling.healthAddress()).isEqualTo(new InetSocketAddress("192.0.2.10", 9090));
             assertThat(scheduling.healthAddress().isUnresolved()).isFalse();
+            // Same concrete-address helper as the gateway and control installers.
+            assertThat(scheduling.healthAddress())
+                    .isEqualTo(LocalGatewayInstaller.healthAddress(c.profile()));
+            assertThat(LocalGatewayInstaller.concrete(scheduling.healthAddress())).isTrue();
             assertThat(scheduling.metrics().get()).isEqualTo("TEST_ONLY_METRICS");
             assertThat(scheduling.live().getAsBoolean()).isTrue();
             r.terminated().complete(Done.getInstance());

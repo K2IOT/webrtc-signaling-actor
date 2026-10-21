@@ -295,13 +295,8 @@ class LocalControlInstallerTest {
         } finally {
             r.ctx().close();
         }
-        var wildcard = contract(p -> p.put("podIp", "0.0.0.0"));
-        var ctx = context(environment());
-        assertFailure(
-                () -> LocalControlInstaller.install(ctx, wildcard, Clock.systemUTC(), System::nanoTime, NO_OPEN),
-                Role.PROFILE,
-                Category.INVALID);
-        assertThat(ctx.getBeanDefinitionCount()).isZero();
+        // The profile itself refuses a wildcard pod address, so no installer ever sees one.
+        assertFailure(() -> contract(p -> p.put("podIp", "0.0.0.0")), Role.PROFILE, Category.INVALID);
     }
 
     @Test

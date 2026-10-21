@@ -40,7 +40,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.support.GenericApplicationContext;
 
-import java.net.InetSocketAddress;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
@@ -138,7 +137,7 @@ public final class LocalActorInstaller {
         var cells = cells(c);
         var ingressTls = LocalTls.actorRpcServer(c);
         var relayTls = LocalTls.relayClients(c);
-        var health = new InetSocketAddress(profile.podIp(), profile.healthPort());
+        var health = LocalGatewayInstaller.healthAddress(profile);
         var workloads = workloads(contract);
         var relayDestinations = relayDestinations(snapshot);
 
