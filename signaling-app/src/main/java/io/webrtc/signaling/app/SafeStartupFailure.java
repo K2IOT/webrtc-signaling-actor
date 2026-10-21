@@ -10,6 +10,15 @@ final class SafeStartupFailure {
     static String render(Throwable failure) {
         String code = "STARTUP_FAILED";
         for (int depth = 0; failure != null && depth < 16; depth++, failure = failure.getCause()) {
+            if (failure instanceof io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure local) {
+                // Fixed vocabulary only: two enum names, never the exception text or its causes.
+                return "{\"component\":\"PLATFORM\",\"level\":\"ERROR\","
+                        + "\"errorCode\":\"LOCAL_RUNTIME_REJECTED\",\"role\":\""
+                        + local.role().name().toLowerCase(java.util.Locale.ROOT)
+                        + "\",\"category\":\""
+                        + local.category().name()
+                        + "\"}";
+            }
             if (failure instanceof NativeRuntimeStartup.MissingRuntime) {
                 code = "NATIVE_RUNTIME_NOT_INSTALLED";
                 break;

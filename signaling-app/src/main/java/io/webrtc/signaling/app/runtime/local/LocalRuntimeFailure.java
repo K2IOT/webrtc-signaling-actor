@@ -32,7 +32,7 @@ public final class LocalRuntimeFailure extends IllegalStateException {
     private final Role role;
     private final Category category;
 
-    LocalRuntimeFailure(Role role, Category category) {
+    public LocalRuntimeFailure(Role role, Category category) {
         super("Local runtime " + role.name().toLowerCase(Locale.ROOT) + ": " + category.name());
         this.role = role;
         this.category = category;
