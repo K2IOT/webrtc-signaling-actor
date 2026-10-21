@@ -472,6 +472,11 @@ Actor plane (`LocalActorInstaller`) uses these profile fields:
 - `wal`: the observed writer facts for `NativeWalEnrollment`, always with
   `localSingleWriter=false`. An empty `replicas` set or `synchronousReplicas < 1`
   is refused; there is no standby-less local mode.
+- `cellAzRoles`: the cell's enrolled AZ roles (1 to 3 distinct `az-*` names,
+  including this actor's own `azRole`). Cluster membership counts and
+  classifies peers by this set: a peer in a zone outside it is invalid. Every
+  actor of a cell carries the same list. Other planes leave it empty (`[]` or
+  `null`).
 - `azRole`, `podIp`, `healthPort`, `businessPort`, `compatibility`, `kube`: Pekko
   roles, private health address (`podIp:healthPort`), cell RPC listener port, the
   build identity and approved window, and discovery inputs.

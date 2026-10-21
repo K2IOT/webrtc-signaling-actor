@@ -281,7 +281,8 @@ class LocalActorInstallerTest {
 
             var scheduling = ctx.getBean(NativeActorSchedulingEnrollment.class);
             assertThat(scheduling.system()).isSameAs(r.system());
-            assertThat(scheduling.azRoles()).containsExactly("az-a");
+            // The cell's enrolled zones, not only this actor's own: other-zone peers must count.
+            assertThat(scheduling.azRoles()).containsExactlyInAnyOrder("az-a", "az-b");
             assertThat(scheduling.fingerprint()).isEqualTo(LocalPekkoConfigTest.FINGERPRINT);
             assertThat(scheduling.maintenance()).isEmpty();
             assertThat(scheduling.healthAddress()).isEqualTo(new InetSocketAddress("192.0.2.10", 9090));
@@ -546,6 +547,16 @@ class LocalActorInstallerTest {
                 Role.CONTRACT,
                 Category.INVALID);
         assertThat(ctx.getBeanDefinitionCount()).isZero();
+    }
+
+    @Test
+    void refusesAnActorWhoseCellZonesAreMissingOrOmitItsOwnZone() throws Exception {
+        for (var zones : List.<List<String>>of(List.of(), List.of("az-b"), List.of("az-b", "az-c")))
+            assertFailure(
+                    () -> install(contract(p -> p.put("cellAzRoles", zones), s -> {
+                    })),
+                    Role.PROFILE,
+                    Category.INVALID);
     }
 
     @Test

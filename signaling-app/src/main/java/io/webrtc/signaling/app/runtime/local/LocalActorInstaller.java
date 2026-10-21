@@ -116,6 +116,7 @@ public final class LocalActorInstaller {
         c.requireIdentity(ctx.getEnvironment());
         var contract = c.contract();
 
+        var zones = cellZones(profile);
         var config = LocalPekkoConfig.build(c, ctx.getEnvironment(), processEnvironment);
         var management =
                 LocalTls.jdkContext(
@@ -187,7 +188,7 @@ public final class LocalActorInstaller {
                     var system = ctx.getBean(NativeActorProcess.class).system();
                     return new NativeActorSchedulingEnrollment(
                             system,
-                            Set.of(profile.azRole()),
+                            zones,
                             fingerprint,
                             List.of(),
                             LocalActorInstaller::workerEvent,
@@ -213,6 +214,18 @@ public final class LocalActorInstaller {
                                         relayTls,
                                         ADMISSION),
                                 workloads));
+    }
+
+    /**
+     * The cell's enrolled zones, which {@code NativeClusterMembership} counts and classifies peers
+     * by. They must include this actor's own zone; a peer in a zone outside the set is invalid, so
+     * enrolling only the own zone would discard every other-zone member.
+     */
+    static Set<String> cellZones(LocalProcessProfile profile) {
+        var zones = profile.cellAzRoles();
+        if (zones.isEmpty() || profile.azRole() == null || !zones.contains(profile.azRole()))
+            throw profileInvalid();
+        return Set.copyOf(zones);
     }
 
     /** Each enrolled gateway at its pinned boot, addressed as the mounted contract says. */

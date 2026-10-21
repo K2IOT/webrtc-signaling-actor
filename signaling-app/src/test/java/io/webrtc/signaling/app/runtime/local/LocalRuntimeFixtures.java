@@ -48,6 +48,7 @@ final class LocalRuntimeFixtures {
         document.put("healthPort", 9090);
         document.put("relayPort", 9443);
         document.put("azRole", "az-a");
+        document.put("cellAzRoles", List.of("az-a", "az-b"));
         document.put("gatewayId", null);
         document.put("gatewayBootId", null);
         var wal = new LinkedHashMap<String, Object>();

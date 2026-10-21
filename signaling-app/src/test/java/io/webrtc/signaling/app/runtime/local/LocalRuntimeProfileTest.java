@@ -277,6 +277,28 @@ class LocalRuntimeProfileTest {
         }
     }
 
+    @Test
+    void cellZonesAreBoundedDistinctAzRoles() throws Exception {
+        var document = LocalRuntimeFixtures.profile(mount, "ACTOR");
+        assertThat(parse(document).cellAzRoles()).containsExactlyInAnyOrder("az-a", "az-b");
+        document.put("cellAzRoles", null);
+        assertThat(parse(document).cellAzRoles()).isEmpty();
+        for (var bad :
+                List.<List<String>>of(
+                        List.of("az-a", "az-a"),
+                        List.of("az-a", "az-b", "az-c", "az-d"),
+                        List.of("zone-a"),
+                        List.of("az-A"),
+                        List.of("az-"))) {
+            var invalid = LocalRuntimeFixtures.profile(mount, "ACTOR");
+            invalid.put("cellAzRoles", bad);
+            assertInvalid(invalid);
+        }
+        var absent = LocalRuntimeFixtures.profile(mount, "ACTOR");
+        absent.remove("cellAzRoles");
+        assertInvalid(absent);
+    }
+
     // helpers
 
     private static List<String> numbered(int count) {

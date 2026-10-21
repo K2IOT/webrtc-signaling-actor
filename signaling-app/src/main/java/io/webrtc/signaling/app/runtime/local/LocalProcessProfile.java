@@ -27,6 +27,7 @@ public record LocalProcessProfile(
         int healthPort,
         int relayPort,
         String azRole,
+        List<String> cellAzRoles,
         String gatewayId,
         UUID gatewayBootId,
         Wal wal,
@@ -45,6 +46,15 @@ public record LocalProcessProfile(
         validPort(relayPort);
         if (businessPort == healthPort) throw new IllegalArgumentException();
         if (azRole != null && !azRole.matches("[A-Za-z0-9_.-]{1,64}"))
+            throw new IllegalArgumentException();
+        // The cell's enrolled zones (at most three, as NativeClusterMembership allows). A list in
+        // the file, so a repeated zone is refused rather than silently collapsed.
+        if (cellAzRoles != null && cellAzRoles.stream().anyMatch(Objects::isNull))
+            throw new IllegalArgumentException();
+        cellAzRoles = cellAzRoles == null ? List.of() : List.copyOf(cellAzRoles);
+        if (cellAzRoles.size() > 3
+                || cellAzRoles.stream().distinct().count() != cellAzRoles.size()
+                || cellAzRoles.stream().anyMatch(r -> !r.matches("az-[a-z0-9][a-z0-9-]{0,62}")))
             throw new IllegalArgumentException();
         if ((gatewayId == null) != (gatewayBootId == null)) throw new IllegalArgumentException();
         if (gatewayId != null && !gatewayId.matches("[A-Za-z0-9_.-]{1,128}"))
