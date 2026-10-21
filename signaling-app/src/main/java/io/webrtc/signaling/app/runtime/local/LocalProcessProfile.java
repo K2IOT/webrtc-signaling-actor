@@ -1,19 +1,10 @@
 package io.webrtc.signaling.app.runtime.local;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.StreamReadConstraints;
-import com.fasterxml.jackson.core.StreamReadFeature;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.MapperFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
 import io.webrtc.signaling.app.runtime.NativeControlDatabaseEnrollment;
 import io.webrtc.signaling.storage.DbClass;
-import io.webrtc.signaling.storage.DbResourceProfile;
 
 import java.time.Duration;
 import java.util.List;
@@ -44,24 +35,6 @@ public record LocalProcessProfile(
         List<TransferCell> transferCells,
         String privacyPseudonymKey,
         List<String> allowedOrigins) {
-    static final ObjectMapper JSON =
-            new ObjectMapper(
-                    JsonFactory.builder()
-                            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
-                            .streamReadConstraints(
-                                    StreamReadConstraints.builder()
-                                            .maxNestingDepth(8)
-                                            .maxStringLength(8192)
-                                            .maxNumberLength(20)
-                                            .build())
-                            .build())
-                    .findAndRegisterModules()
-                    .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
-                    .enable(
-                            DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES,
-                            DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES,
-                            DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-
     public LocalProcessProfile {
         if (schemaVersion != 1) throw new IllegalArgumentException();
         Objects.requireNonNull(plane);
@@ -77,6 +50,8 @@ public record LocalProcessProfile(
         if (gatewayId != null && !gatewayId.matches("[A-Za-z0-9_.-]{1,128}"))
             throw new IllegalArgumentException();
         transferCells = transferCells == null ? List.of() : List.copyOf(transferCells);
+        // Only the control profile may hold credentials for more than one cell database.
+        if (plane != Plane.CONTROL && !transferCells.isEmpty()) throw new IllegalArgumentException();
         if (transferCells.size() > 8
                 || transferCells.stream().map(TransferCell::cell).distinct().count()
                 != transferCells.size()) throw new IllegalArgumentException();
@@ -90,33 +65,22 @@ public record LocalProcessProfile(
             throw new IllegalArgumentException();
     }
 
-    /** Parses already size-checked UTF-8 text. Failure text never echoes the input. */
+    /**
+     * Parses already size-checked UTF-8 text. Failures carry only a category, never the input.
+     */
     static LocalProcessProfile parse(String text) {
+        var document = LocalJson.tree(text, LocalRuntimeFailure.Role.PROFILE);
         try {
-            var document = JSON.readTree(text);
             // Durations are ISO-8601 text; Jackson would also accept a bare number of seconds.
             for (var name : List.of("freshness", "maximumReplyAge")) {
                 var value = document.path("wal").path(name);
                 if (!value.isMissingNode() && !value.isTextual()) throw new IllegalArgumentException();
             }
-            if (document.path("transferCells") instanceof ArrayNode cells) {
-                for (JsonNode cell : cells) {
-                    // Same local-only fallback the mounted contract applies to its databases.
-                    if (cell.path("database") instanceof ObjectNode node && !node.has("resourceProfiles")) {
-                        var quotas =
-                                JSON.convertValue(
-                                        node.get("quotas"), new TypeReference<Map<DbClass, Integer>>() {
-                                        });
-                        node.set(
-                                "resourceProfiles",
-                                JSON.valueToTree(DbResourceProfile.localTestOnly(quotas)));
-                    }
-                }
-            }
-            return JSON.treeToValue(document, LocalProcessProfile.class);
+            return LocalJson.MAPPER.treeToValue(document, LocalProcessProfile.class);
         } catch (Exception invalid) {
             // Jackson diagnostics may include private input; retain neither fragments nor causes.
-            throw new IllegalArgumentException("Invalid local process profile");
+            throw LocalJson.failure(
+                    LocalRuntimeFailure.Role.PROFILE, LocalRuntimeFailure.Category.INVALID);
         }
     }
 
@@ -178,8 +142,8 @@ public record LocalProcessProfile(
     }
 
     /**
-     * Pekko discovery inputs. These point at the pod's own service-account mount, so they are
-     * absolute but deliberately not confined to the contract directory.
+     * Pekko discovery inputs. Both paths are absolute here and are confined under the contract
+     * directory by {@link LocalRuntimeContract#load}, like every other path.
      */
     public record Kube(
             String apiHost, int apiPort, String caPath, String tokenPath, String namespace) {
@@ -205,8 +169,57 @@ public record LocalProcessProfile(
             if (cell == null || !cell.matches("c[0-9]{3}") || storageEpoch < 1)
                 throw new IllegalArgumentException();
             Objects.requireNonNull(database);
-            if (!database.jdbcUrl().contains("sslmode=verify-full"))
-                throw new IllegalArgumentException();
+            if (!verifyFull(database.jdbcUrl())) throw new IllegalArgumentException();
+        }
+
+        /**
+         * The file carries counts only. The local database enrollment constructor derives the
+         * LOCAL_TEST_ONLY resource profiles, as for the mounted contract's own databases.
+         */
+        @JsonCreator
+        static TransferCell fromFile(
+                @JsonProperty("cell") String cell,
+                @JsonProperty("storageEpoch") long storageEpoch,
+                @JsonProperty("database") DatabaseFile database) {
+            Objects.requireNonNull(database);
+            return new TransferCell(
+                    cell,
+                    storageEpoch,
+                    new NativeControlDatabaseEnrollment.Database(
+                            database.jdbcUrl(),
+                            database.username(),
+                            database.password(),
+                            database.quotas(),
+                            database.safetyMax(),
+                            database.controlMax()));
+        }
+
+        /** Exactly one {@code sslmode} URL parameter, with the value {@code verify-full}. */
+        static boolean verifyFull(String jdbcUrl) {
+            int query = jdbcUrl.indexOf('?');
+            if (query < 0) return false;
+            int found = 0;
+            for (var parameter : jdbcUrl.substring(query + 1).split("&", -1)) {
+                int equals = parameter.indexOf('=');
+                if (equals < 0 || !parameter.substring(0, equals).equals("sslmode")) continue;
+                if (!parameter.substring(equals + 1).equals("verify-full")) return false;
+                found++;
+            }
+            return found == 1;
+        }
+    }
+
+    /** Wire shape of a transfer cell database: counts only, no resource profiles. */
+    record DatabaseFile(
+            String jdbcUrl,
+            String username,
+            String password,
+            Map<DbClass, Integer> quotas,
+            int safetyMax,
+            int controlMax) {
+        @Override
+        public String toString() {
+            return "DatabaseFile[credentials=redacted]";
         }
     }
 

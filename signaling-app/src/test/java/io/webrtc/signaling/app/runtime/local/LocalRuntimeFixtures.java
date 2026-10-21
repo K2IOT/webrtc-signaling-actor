@@ -22,7 +22,9 @@ final class LocalRuntimeFixtures {
     /** Writes provider.json and process.json into {@code mount}; returns the matching environment. */
     static MockEnvironment install(Path mount, String plane) throws Exception {
         Files.writeString(mount.resolve("provider.json"), JSON.writeValueAsString(contract(mount)));
-        Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile(plane)));
+        Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile(mount, plane)));
+        Files.writeString(mount.resolve("kube-ca.crt"), "TEST_ONLY");
+        Files.writeString(mount.resolve("kube-token"), "TEST_ONLY");
         return environment(mount);
     }
 
@@ -36,7 +38,7 @@ final class LocalRuntimeFixtures {
                 .withProperty("SIGNALING_CELL_ID", "c001");
     }
 
-    static Map<String, Object> profile(String plane) {
+    static Map<String, Object> profile(Path mount, String plane) {
         var document = new LinkedHashMap<String, Object>();
         document.put("schemaVersion", 1);
         document.put("plane", plane);
@@ -68,8 +70,8 @@ final class LocalRuntimeFixtures {
         var kube = new LinkedHashMap<String, Object>();
         kube.put("apiHost", "kubernetes.default.svc");
         kube.put("apiPort", 443);
-        kube.put("caPath", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt");
-        kube.put("tokenPath", "/var/run/secrets/kubernetes.io/serviceaccount/token");
+        kube.put("caPath", mount.resolve("kube-ca.crt").toString());
+        kube.put("tokenPath", mount.resolve("kube-token").toString());
         kube.put("namespace", "signaling");
         document.put("kube", kube);
         document.put("transferCells", new ArrayList<>());
@@ -97,18 +99,7 @@ final class LocalRuntimeFixtures {
                         "hardSafetyBound", "PT5S",
                         "preserveJtiOnRefresh", true,
                         "highWaterSource", "LOCAL_TEST_ONLY_LOG"));
-        var database =
-                Map.of(
-                        "jdbcUrl",
-                        "jdbc:postgresql://postgres.c001.svc:5432/signaling?sslmode=verify-full",
-                        "username", "signaling",
-                        "password", "TEST_ONLY_PRIVATE_PASSWORD",
-                        "quotas",
-                        Map.of(
-                                "CRITICAL", 2, "NORMAL", 1, "OUTBOX", 1, "MAINTENANCE", 1,
-                                "RENEWAL", 1, "TERMINATION", 1, "RECOVERY", 2),
-                        "safetyMax", 4,
-                        "controlMax", 5);
+        var database = database("c001");
         document.put("cellDatabase", database);
         document.put("directoryDatabase", database);
         document.put(
@@ -152,6 +143,29 @@ final class LocalRuntimeFixtures {
                                 "tlsAuthority", "gateway.c001.svc")));
         document.put("directorySnapshot", file(mount, "directory.json"));
         document.put("directorySnapshotSha256", "a".repeat(64));
+        return document;
+    }
+
+    static Map<String, Object> database(String cell) {
+        return new LinkedHashMap<>(
+                Map.of(
+                        "jdbcUrl",
+                        "jdbc:postgresql://postgres." + cell + ".svc:5432/signaling?sslmode=verify-full",
+                        "username", "signaling",
+                        "password", "TEST_ONLY_PRIVATE_PASSWORD",
+                        "quotas",
+                        Map.of(
+                                "CRITICAL", 2, "NORMAL", 1, "OUTBOX", 1, "MAINTENANCE", 1,
+                                "RENEWAL", 1, "TERMINATION", 1, "RECOVERY", 2),
+                        "safetyMax", 4,
+                        "controlMax", 5));
+    }
+
+    static Map<String, Object> transferCell(String cell, long storageEpoch) {
+        var document = new LinkedHashMap<String, Object>();
+        document.put("cell", cell);
+        document.put("storageEpoch", storageEpoch);
+        document.put("database", database(cell));
         return document;
     }
 

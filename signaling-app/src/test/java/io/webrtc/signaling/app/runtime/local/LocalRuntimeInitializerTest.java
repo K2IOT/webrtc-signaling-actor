@@ -1,6 +1,8 @@
 package io.webrtc.signaling.app.runtime.local;
 
 import io.webrtc.signaling.app.SignalingApplication;
+import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
+import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -18,6 +20,7 @@ import java.nio.file.Files;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -31,26 +34,93 @@ class LocalRuntimeInitializerTest {
     Path mount;
 
     @Test
-    void registersNothingWithoutAllThreeMarkers() throws Exception {
+    void registersNothingWithoutBothOperatorMarkers() throws Exception {
         var valid = LocalRuntimeFixtures.install(mount, "ACTOR");
         assertThat(LocalRuntimeInitializer.active(valid)).isTrue();
 
         assertInactive(env -> env.setProperty("SIGNALING_DEPLOYMENT_MODE", "production"));
+        assertInactive(env -> env.setProperty("SIGNALING_DEPLOYMENT_MODE", "LOCAL-MINIKUBE"));
+        assertInactive(
+                env ->
+                        ((java.util.Properties) env.getPropertySources().get("mockProperties").getSource())
+                                .remove("SIGNALING_DEPLOYMENT_MODE"));
         assertInactive(
                 env ->
                         ((java.util.Properties) env.getPropertySources().get("mockProperties").getSource())
                                 .remove("SIGNALING_LOCAL_ACKNOWLEDGEMENT"));
         assertInactive(env -> env.setProperty("SIGNALING_LOCAL_ACKNOWLEDGEMENT", "local_test_only"));
+        // Unusable files are irrelevant while a marker is absent: nothing is read at all.
+        Files.delete(mount.resolve("provider.json"));
+        assertInactive(env -> env.setProperty("SIGNALING_DEPLOYMENT_MODE", "production"));
+    }
 
+    @Test
+    void readableContractForAnotherEnvironmentRegistersNothing() throws Exception {
+        LocalRuntimeFixtures.install(mount, "ACTOR");
         var document = LocalRuntimeFixtures.contract(mount);
         document.put("environment", "production");
         Files.writeString(mount.resolve("provider.json"), JSON.writeValueAsString(document));
-        var wrongEnvironment = LocalRuntimeFixtures.environment(mount);
-        assertThat(LocalRuntimeInitializer.active(wrongEnvironment)).isFalse();
-        assertNoEnrollment(wrongEnvironment, "actor");
+        var env = LocalRuntimeFixtures.environment(mount);
+        assertThat(LocalRuntimeInitializer.active(env)).isTrue();
+        assertNoEnrollment(env, "actor");
+    }
 
-        Files.delete(mount.resolve("provider.json"));
-        assertThat(LocalRuntimeInitializer.active(LocalRuntimeFixtures.environment(mount))).isFalse();
+    @Test
+    void bothMarkersSetMakeEveryUnusableInputFailLoudlyAndSpecifically() throws Exception {
+        LocalRuntimeFixtures.install(mount, "ACTOR");
+        String contract = JSON.writeValueAsString(LocalRuntimeFixtures.contract(mount));
+        String profile = JSON.writeValueAsString(LocalRuntimeFixtures.profile(mount, "ACTOR"));
+        String secret = "TEST_ONLY_PRIVATE_PASSWORD";
+        record Case(String file, String content, Role role, Category category) {
+        }
+        for (var c :
+                List.of(
+                        new Case("provider.json", null, Role.CONTRACT, Category.MISSING),
+                        new Case("provider.json", "{\"password\":\"" + secret + "\"", Role.CONTRACT, Category.MALFORMED),
+                        new Case(
+                                "provider.json",
+                                contract.substring(0, contract.length() - 1) + ",\"cell\":\"c002\"}",
+                                Role.CONTRACT,
+                                Category.DUPLICATE_KEY),
+                        new Case("provider.json", " ".repeat(65537), Role.CONTRACT, Category.TOO_LARGE),
+                        new Case("provider.json", "{\"password\":\"" + secret + "\"}", Role.CONTRACT, Category.INVALID),
+                        new Case("process.json", null, Role.PROFILE, Category.MISSING),
+                        new Case("process.json", "{", Role.PROFILE, Category.MALFORMED),
+                        new Case("process.json", "{}", Role.PROFILE, Category.INVALID),
+                        new Case(
+                                "process.json",
+                                profile.substring(0, profile.length() - 1) + ",\"plane\":\"ACTOR\"}",
+                                Role.PROFILE,
+                                Category.DUPLICATE_KEY))) {
+            LocalRuntimeFixtures.install(mount, "ACTOR");
+            if (c.content() == null) Files.delete(mount.resolve(c.file()));
+            else Files.writeString(mount.resolve(c.file()), c.content());
+            var env = LocalRuntimeFixtures.environment(mount);
+            assertThat(LocalRuntimeInitializer.active(env)).isTrue();
+            var context = new AnnotationConfigApplicationContext();
+            context.getEnvironment().merge(env);
+            context.getEnvironment().setActiveProfiles("actor");
+            var failure =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            LocalRuntimeFailure.class, () -> new LocalRuntimeInitializer().initialize(context));
+            assertThat(failure.role()).as(c.file() + c.category()).isEqualTo(c.role());
+            assertThat(failure.category()).as(c.file() + c.category()).isEqualTo(c.category());
+            assertThat(failure).hasMessageNotContaining(secret).hasMessageNotContaining(mount.toString());
+            assertThat(failure).hasNoCause();
+        }
+    }
+
+    @Test
+    void identityMismatchFailsLoudlyThroughTheInitializer() throws Exception {
+        LocalRuntimeFixtures.install(mount, "ACTOR");
+        var context = context("actor");
+        context.getEnvironment().getPropertySources().addFirst(
+                new org.springframework.core.env.MapPropertySource(
+                        "override", java.util.Map.of("SIGNALING_CELL_ID", "c002")));
+        var failure =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        LocalRuntimeFailure.class, () -> new LocalRuntimeInitializer().initialize(context));
+        assertThat(failure.category()).isEqualTo(Category.IDENTITY_MISMATCH);
     }
 
     @Test
@@ -111,7 +181,8 @@ class LocalRuntimeInitializerTest {
         Files.writeString(mount.resolve("process.json"), "{}");
         var context = context("actor");
         assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(LocalRuntimeFailure.class)
+                .hasMessage("Local runtime profile: INVALID");
     }
 
     @Test

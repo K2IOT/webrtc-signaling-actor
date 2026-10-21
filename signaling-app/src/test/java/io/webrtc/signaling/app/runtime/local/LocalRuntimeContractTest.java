@@ -1,13 +1,18 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import io.webrtc.signaling.app.SignalingApplication.Plane;
+import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
+import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.mock.env.MockEnvironment;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -16,6 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LocalRuntimeContractTest {
+    static final String SECRET = "TEST_ONLY_PRIVATE_PASSWORD";
+
     @TempDir
     Path mount;
 
@@ -23,8 +30,8 @@ class LocalRuntimeContractTest {
     void loadsContractAndProfileFromTheMountedDirectory() throws Exception {
         var loaded = LocalRuntimeContract.load(LocalRuntimeFixtures.install(mount, "ACTOR"));
         assertThat(loaded.contract().cell()).isEqualTo("c001");
-        assertThat(loaded.profile().plane()).isEqualTo(io.webrtc.signaling.app.SignalingApplication.Plane.ACTOR);
-        assertThat(loaded.profile().wal().freshness()).isEqualTo(java.time.Duration.ofSeconds(1));
+        assertThat(loaded.profile().plane()).isEqualTo(Plane.ACTOR);
+        assertThat(loaded.profile().wal().freshness()).isEqualTo(Duration.ofSeconds(1));
         assertThat(loaded.profile().transferCells()).isEmpty();
         assertThat(loaded.directory()).isEqualTo(mount.toRealPath());
         assertThat(loaded.toString()).doesNotContain("TEST_ONLY_PRIVATE");
@@ -35,23 +42,48 @@ class LocalRuntimeContractTest {
     void rejectsPodUidDifferentFromEnvironment() throws Exception {
         var env = LocalRuntimeFixtures.install(mount, "ACTOR");
         env.setProperty("SIGNALING_POD_UID", "00000000-0000-4000-8000-000000000002");
-        assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Local runtime identity mismatch");
-        var absent = new MockEnvironment();
-        copyPaths(env, absent);
-        absent.setProperty("SIGNALING_CELL_ID", "c001");
-        assertThatThrownBy(() -> LocalRuntimeContract.load(absent))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+        var absent = LocalRuntimeFixtures.environment(mount);
+        ((java.util.Properties) absent.getPropertySources().get("mockProperties").getSource())
+                .remove("SIGNALING_POD_UID");
+        assertFailure(() -> LocalRuntimeContract.load(absent), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                    // Parses to the profile's own UUID but is not canonical text.
+                    "0-0-4000-8000-1",
+                    "00000000-0000-4000-8000-00000000000001",
+                    " 00000000-0000-4000-8000-000000000001",
+                    "{00000000-0000-4000-8000-000000000001}",
+                    "00000000-0000-4000-8000-000000000001 ",
+                    ""
+            })
+    void rejectsNonCanonicalPodUid(String text) throws Exception {
+        var env = LocalRuntimeFixtures.install(mount, "ACTOR");
+        env.setProperty("SIGNALING_POD_UID", text);
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+    }
+
+    @Test
+    void rejectsUpperCasePodUid() throws Exception {
+        var profile = LocalRuntimeFixtures.profile(mount, "ACTOR");
+        profile.put("podUid", "0000000a-0000-4000-8000-00000000000b");
+        var env = LocalRuntimeFixtures.install(mount, "ACTOR");
+        Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile));
+        env.setProperty("SIGNALING_POD_UID", "0000000a-0000-4000-8000-00000000000b");
+        assertThat(LocalRuntimeContract.load(env).profile().podUid().toString())
+                .isEqualTo("0000000a-0000-4000-8000-00000000000b");
+        env.setProperty("SIGNALING_POD_UID", "0000000A-0000-4000-8000-00000000000B");
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.IDENTITY, Category.IDENTITY_MISMATCH);
     }
 
     @Test
     void rejectsCellDifferentFromEnvironment() throws Exception {
         var env = LocalRuntimeFixtures.install(mount, "ACTOR");
         env.setProperty("SIGNALING_CELL_ID", "c002");
-        assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Local runtime identity mismatch");
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.IDENTITY, Category.IDENTITY_MISMATCH);
     }
 
     @Test
@@ -72,16 +104,50 @@ class LocalRuntimeContractTest {
                             mount.resolve("../" + outside.getFileName() + "/secret").toString(),
                             mount.resolve("escape").toString(),
                             mount.resolve("escapedir/secret").toString(),
-                            mount.resolve("missing").toString(),
                             outside.resolve("secret").toString(),
                             mount + "/" + "a".repeat(600))) {
-                assertThatThrownBy(() -> loaded.resolve(bad))
-                        .as(bad)
-                        .isInstanceOf(IllegalArgumentException.class);
+                var failure = catchFailure(() -> loaded.resolve(bad));
+                assertThat(failure.role()).as(bad).isEqualTo(Role.PATH);
+                assertThat(failure.category()).as(bad).isEqualTo(Category.PATH_ESCAPE);
             }
-            assertThatThrownBy(() -> loaded.resolve(null)).isInstanceOf(IllegalArgumentException.class);
+            assertThat(catchFailure(() -> loaded.resolve(mount.resolve("missing").toString())).category())
+                    .isEqualTo(Category.MISSING);
+            assertThat(catchFailure(() -> loaded.resolve(null)).category()).isEqualTo(Category.PATH_ESCAPE);
         } finally {
             Files.deleteIfExists(outside.resolve("secret"));
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test
+    void kubePathsAreConfinedLikeEveryOtherPath() throws Exception {
+        var env = LocalRuntimeFixtures.install(mount, "ACTOR");
+        var outside = Files.createTempDirectory("local-runtime-kube");
+        try {
+            Files.writeString(outside.resolve("token"), "x");
+            for (var field : List.of("caPath", "tokenPath")) {
+                for (var bad :
+                        List.of(
+                                outside.resolve("token").toString(),
+                                "/var/run/secrets/kubernetes.io/serviceaccount/token")) {
+                    writeProfile(profileWithKube(field, bad));
+                    var failure = catchFailure(() -> LocalRuntimeContract.load(env));
+                    assertThat(failure.role()).as(field + bad).isEqualTo(Role.PROFILE);
+                    assertThat(failure.category())
+                            .as(field + bad)
+                            .isIn(Category.PATH_ESCAPE, Category.MISSING);
+                }
+            }
+            // A symlink inside the directory that leaves it is refused too.
+            Files.createSymbolicLink(mount.resolve("kube-link"), outside.resolve("token"));
+            writeProfile(profileWithKube("tokenPath", mount.resolve("kube-link").toString()));
+            assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.PATH_ESCAPE);
+            writeProfile(profileWithKube("caPath", mount.resolve("kube-missing").toString()));
+            assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.MISSING);
+            writeProfile(LocalRuntimeFixtures.profile(mount, "ACTOR"));
+            assertThat(LocalRuntimeContract.load(env).profile().kube()).isNotNull();
+        } finally {
+            Files.deleteIfExists(outside.resolve("token"));
             Files.deleteIfExists(outside);
         }
     }
@@ -93,17 +159,15 @@ class LocalRuntimeContractTest {
         try {
             Files.writeString(
                     other.resolve("process.json"),
-                    JSON.writeValueAsString(LocalRuntimeFixtures.profile("ACTOR")));
+                    JSON.writeValueAsString(LocalRuntimeFixtures.profile(mount, "ACTOR")));
             env.setProperty(
                     "SIGNALING_LOCAL_PROCESS_PROFILE", other.resolve("process.json").toString());
-            assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                    .isInstanceOf(IllegalArgumentException.class);
+            assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.PATH_ESCAPE);
             Files.delete(mount.resolve("process.json"));
             Files.createSymbolicLink(mount.resolve("process.json"), other.resolve("process.json"));
             env.setProperty(
                     "SIGNALING_LOCAL_PROCESS_PROFILE", mount.resolve("process.json").toString());
-            assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                    .isInstanceOf(IllegalArgumentException.class);
+            assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.PATH_ESCAPE);
         } finally {
             Files.deleteIfExists(mount.resolve("process.json"));
             Files.deleteIfExists(other.resolve("process.json"));
@@ -122,36 +186,69 @@ class LocalRuntimeContractTest {
     }
 
     @Test
-    void rejectsUnknownAndDuplicateProfileFields() throws Exception {
+    void namesTheCategoryOfAnUnusableProfile() throws Exception {
         var env = LocalRuntimeFixtures.install(mount, "ACTOR");
-        String valid = JSON.writeValueAsString(LocalRuntimeFixtures.profile("ACTOR"));
-        String secret = "TEST_ONLY_PRIVATE_PASSWORD";
-        var accepted = new java.util.ArrayList<String>();
-        for (String invalid :
-                List.of(
-                        valid.substring(0, valid.length() - 1) + ",\"password\":\"" + secret + "\"}",
-                        valid.substring(0, valid.length() - 1) + ",\"plane\":\"GATEWAY\"}",
-                        valid.replace("\"healthPort\":9090", "\"healthPort\":9090,\"healthPort\":9091"),
-                        valid.replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
-                        valid.replace("\"schemaVersion\":1", "\"schemaVersion\":\"1\""),
-                        valid.replace("\"freshness\":\"PT1S\"", "\"freshness\":1"),
-                        valid.replace("\"freshness\":\"PT1S\"", "\"freshness\":\"PT0S\""),
-                        valid.replace("\"podIp\":\"192.0.2.10\",", ""),
-                        valid.replace("\"plane\":\"ACTOR\"", "\"plane\":\"actor\""),
-                        valid.replace("\"wal\":{", "\"wal\":{\"extra\":1,"),
-                        valid + "{}",
-                        "{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":{\"h\":{\"i\":1}}}}}}}}}",
-                        " ".repeat(65537))) {
-            Files.writeString(mount.resolve("process.json"), invalid);
-            try {
-                LocalRuntimeContract.load(env);
-            } catch (IllegalArgumentException expected) {
-                assertThat(expected).hasMessageNotContaining(secret).hasNoCause();
-                continue;
-            }
-            accepted.add(invalid.contains("\"freshness\":1,") ? "numeric-freshness" : invalid.contains("\"plane\":\"actor\"") ? "lowercase-plane" : invalid.length() > 100 ? invalid.substring(0, 100) : invalid);
+        String valid = JSON.writeValueAsString(LocalRuntimeFixtures.profile(mount, "ACTOR"));
+        var cases = new LinkedHashMap<String, Category>();
+        cases.put(valid.substring(0, valid.length() - 1) + ",\"password\":\"" + SECRET + "\"}", Category.INVALID);
+        cases.put(valid.substring(0, valid.length() - 1) + ",\"plane\":\"GATEWAY\"}", Category.DUPLICATE_KEY);
+        cases.put(
+                valid.replace("\"healthPort\":9090", "\"healthPort\":9090,\"healthPort\":9091"),
+                Category.DUPLICATE_KEY);
+        cases.put(valid.replace("\"schemaVersion\":1", "\"schemaVersion\":2"), Category.INVALID);
+        cases.put(valid.replace("\"schemaVersion\":1", "\"schemaVersion\":\"1\""), Category.INVALID);
+        cases.put(valid.replace("\"freshness\":\"PT1S\"", "\"freshness\":1"), Category.INVALID);
+        cases.put(valid.replace("\"freshness\":\"PT1S\"", "\"freshness\":\"PT0S\""), Category.INVALID);
+        cases.put(valid.replace("\"podIp\":\"192.0.2.10\",", ""), Category.INVALID);
+        cases.put(valid.replace("\"plane\":\"ACTOR\"", "\"plane\":\"actor\""), Category.INVALID);
+        cases.put(valid.replace("\"wal\":{", "\"wal\":{\"extra\":1,"), Category.INVALID);
+        cases.put(valid + "{}", Category.MALFORMED);
+        cases.put(valid.substring(0, valid.length() - 1), Category.MALFORMED);
+        cases.put("not json", Category.MALFORMED);
+        cases.put("   ", Category.MALFORMED);
+        cases.put("{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":{\"h\":{\"i\":1}}}}}}}}}", Category.MALFORMED);
+        cases.put(" ".repeat(65537), Category.TOO_LARGE);
+        for (var entry : cases.entrySet()) {
+            Files.writeString(mount.resolve("process.json"), entry.getKey());
+            var failure = catchFailure(() -> LocalRuntimeContract.load(env));
+            assertThat(failure.role()).isEqualTo(Role.PROFILE);
+            assertThat(failure.category())
+                    .as(entry.getKey().length() > 120 ? entry.getKey().substring(0, 120) : entry.getKey())
+                    .isEqualTo(entry.getValue());
+            assertThat(failure).hasMessageNotContaining(SECRET).hasNoCause();
         }
-        assertThat(accepted).isEmpty();
+        Files.write(mount.resolve("process.json"), new byte[] {(byte) 0xff, (byte) 0xfe, '{', '}'});
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.MALFORMED);
+        Files.delete(mount.resolve("process.json"));
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.MISSING);
+    }
+
+    @Test
+    void namesTheCategoryOfAnUnusableContractWithoutEchoingIt() throws Exception {
+        var env = LocalRuntimeFixtures.install(mount, "ACTOR");
+        String valid = JSON.writeValueAsString(LocalRuntimeFixtures.contract(mount));
+        var cases = new LinkedHashMap<String, Category>();
+        cases.put(valid.substring(0, valid.length() - 1) + ",\"cell\":\"c002\"}", Category.DUPLICATE_KEY);
+        cases.put(valid.substring(0, valid.length() - 1), Category.MALFORMED);
+        cases.put("{", Category.MALFORMED);
+        cases.put(valid + "{}", Category.MALFORMED);
+        cases.put(valid.replace("\"storageEpoch\":1,\"routingEpoch\":1", "\"storageEpoch\":0,\"routingEpoch\":1"), Category.INVALID);
+        cases.put(valid.substring(0, valid.length() - 1) + ",\"password\":\"" + SECRET + "\"}", Category.INVALID);
+        cases.put(valid.replace("\"local-test-only\"", "\"production\""), Category.ENVIRONMENT_MISMATCH);
+        cases.put(" ".repeat(65537), Category.TOO_LARGE);
+        for (var entry : cases.entrySet()) {
+            Files.writeString(mount.resolve("provider.json"), entry.getKey());
+            var failure = catchFailure(() -> LocalRuntimeContract.load(env));
+            assertThat(failure.role()).isEqualTo(Role.CONTRACT);
+            assertThat(failure.category())
+                    .as(entry.getKey().length() > 120 ? entry.getKey().substring(0, 120) : entry.getKey())
+                    .isEqualTo(entry.getValue());
+            assertThat(failure).hasMessageNotContaining(SECRET).hasNoCause();
+        }
+        Files.write(mount.resolve("provider.json"), new byte[] {(byte) 0xff, (byte) 0xfe, '{', '}'});
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.CONTRACT, Category.MALFORMED);
+        Files.delete(mount.resolve("provider.json"));
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.CONTRACT, Category.MISSING);
     }
 
     @ParameterizedTest
@@ -159,11 +256,10 @@ class LocalRuntimeContractTest {
     void rejectsOutOfRangePorts(String port) throws Exception {
         var env = LocalRuntimeFixtures.install(mount, "ACTOR");
         for (int bad : new int[] {0, 65536, -1}) {
-            Map<String, Object> profile = LocalRuntimeFixtures.profile("ACTOR");
+            var profile = LocalRuntimeFixtures.profile(mount, "ACTOR");
             profile.put(port, bad);
-            Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile));
-            assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                    .isInstanceOf(IllegalArgumentException.class);
+            writeProfile(profile);
+            assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.INVALID);
         }
     }
 
@@ -173,17 +269,39 @@ class LocalRuntimeContractTest {
         var first = LocalRuntimeContract.load(env);
         var second = LocalRuntimeContract.load(env);
         assertThat(first.processBoot()).isNotNull().isNotEqualTo(second.processBoot());
-        Map<String, Object> profile = LocalRuntimeFixtures.profile("ACTOR");
+        var profile = LocalRuntimeFixtures.profile(mount, "ACTOR");
         profile.put("processBoot", first.processBoot().toString());
-        Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile));
-        assertThatThrownBy(() -> LocalRuntimeContract.load(env))
-                .isInstanceOf(IllegalArgumentException.class);
+        writeProfile(profile);
+        assertFailure(() -> LocalRuntimeContract.load(env), Role.PROFILE, Category.INVALID);
     }
 
-    private static void copyPaths(MockEnvironment from, MockEnvironment to) {
-        for (var name :
-                List.of("SIGNALING_NATIVE_PROVIDER_CONTRACT", "SIGNALING_LOCAL_PROCESS_PROFILE")) {
-            to.setProperty(name, from.getProperty(name));
+    private Map<String, Object> profileWithKube(String field, String path) {
+        var profile = LocalRuntimeFixtures.profile(mount, "ACTOR");
+        @SuppressWarnings("unchecked")
+        var kube = (Map<String, Object>) profile.get("kube");
+        kube.put(field, path);
+        return profile;
+    }
+
+    private void writeProfile(Map<String, Object> profile) throws Exception {
+        Files.writeString(mount.resolve("process.json"), JSON.writeValueAsString(profile));
+    }
+
+    static LocalRuntimeFailure catchFailure(Runnable action) {
+        var thrown = new ArrayList<LocalRuntimeFailure>();
+        try {
+            action.run();
+        } catch (LocalRuntimeFailure failure) {
+            thrown.add(failure);
         }
+        assertThat(thrown).as("expected LocalRuntimeFailure").hasSize(1);
+        return thrown.getFirst();
+    }
+
+    static void assertFailure(Runnable action, Role role, Category category) {
+        var failure = catchFailure(action);
+        assertThat(failure.role()).isEqualTo(role);
+        assertThat(failure.category()).isEqualTo(category);
+        assertThat(failure).hasNoCause();
     }
 }
