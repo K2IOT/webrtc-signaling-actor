@@ -49,8 +49,9 @@ log=open(sys.argv[1]).read()
 assert '"errorCode":"CONFIGURATION_REJECTED"' in log,'Failure did not originate from native configuration validation'
 PY
 done
+# Actor and gateway metrics need a cell identity before the plane guard is reached.
 for plane in actor gateway control; do
-  if timeout 45s docker run --rm --cidfile "$image_workspace/$plane-native.cid" --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --cpus 1 --memory 512m --env "SPRING_PROFILES_ACTIVE=$plane" --env SIGNALING_IDENTITY_ISSUER=TEST_ONLY_ISSUER --env SIGNALING_IDENTITY_AUDIENCE=TEST_ONLY_AUDIENCE "$image" > "$image_workspace/$plane-native.log" 2>&1; then
+  if timeout 45s docker run --rm --cidfile "$image_workspace/$plane-native.cid" --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --cpus 1 --memory 512m --env "SPRING_PROFILES_ACTIVE=$plane" --env SIGNALING_CELL_ID=c001 --env SIGNALING_IDENTITY_ISSUER=TEST_ONLY_ISSUER --env SIGNALING_IDENTITY_AUDIENCE=TEST_ONLY_AUDIENCE "$image" > "$image_workspace/$plane-native.log" 2>&1; then
     echo "Unsafe configuration-only launcher succeeded without its native plane: $plane" >&2
     exit 1
   else
@@ -67,4 +68,30 @@ assert '"errorCode":"NATIVE_RUNTIME_NOT_INSTALLED"' in log,'Native plane did not
 assert 'TEST_ONLY_ISSUER' not in log and 'TEST_ONLY_AUDIENCE' not in log,'Startup diagnostic exposed identity values'
 PYCODE
 done
-echo 'Native image contract PASS; missing enrollment and absent native plane are rejected. This does not prove complete native Main or qualification.'
+# The local gate must work from the packaged jar: initializer, spring.factories and the fixed
+# failure rendering. The contract path is deliberately absent inside the container, so the specific
+# MISSING rejection is expected and the path must not be echoed. A full valid-contract start from
+# the packaged jar needs the provisioner and PKI, which are outside this script.
+for plane in actor gateway control; do
+  if timeout 45s docker run --rm --cidfile "$image_workspace/$plane-local.cid" --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --cpus 1 --memory 512m --env "SPRING_PROFILES_ACTIVE=$plane" --env SIGNALING_IDENTITY_ISSUER=TEST_ONLY_ISSUER --env SIGNALING_IDENTITY_AUDIENCE=TEST_ONLY_AUDIENCE --env SIGNALING_DEPLOYMENT_MODE=local-minikube --env SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY --env SIGNALING_NATIVE_PROVIDER_CONTRACT=/run/signaling/provider.json "$image" > "$image_workspace/$plane-local.log" 2>&1; then
+    echo "Unsafe local launcher succeeded without a mounted contract: $plane" >&2
+    exit 1
+  else
+    image_exit=$?
+    if [[ "$image_exit" != 1 ]]; then
+      echo "Local gate rejection unproven: $plane (exit $image_exit)" >&2
+      exit 1
+    fi
+  fi
+  python3 - "$image_workspace/$plane-local.log" <<'PYCODE'
+import sys
+log=open(sys.argv[1]).read()
+expected='{"component":"PLATFORM","level":"ERROR","errorCode":"LOCAL_RUNTIME_REJECTED","role":"contract","category":"MISSING"}'
+assert expected in log.splitlines(),'Packaged image did not reject the missing local contract through the local gate'
+for forbidden in ('STARTUP_FAILED','NATIVE_RUNTIME_NOT_INSTALLED','CONFIGURATION_REJECTED'):
+    assert forbidden not in log,'Local gate rejection was masked by a generic diagnostic: '+forbidden
+assert '/run/signaling' not in log and 'provider.json' not in log,'Startup diagnostic exposed the contract path'
+assert 'TEST_ONLY_ISSUER' not in log and 'TEST_ONLY_AUDIENCE' not in log,'Startup diagnostic exposed identity values'
+PYCODE
+done
+echo 'Native image contract PASS; missing enrollment, absent native plane and a missing local contract are rejected. This does not prove complete native Main or qualification.'
