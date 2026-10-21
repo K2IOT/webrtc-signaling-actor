@@ -8,7 +8,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.Signature;
-import java.security.interfaces.EdECPublicKey;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,29 +25,50 @@ class SourceSignerTest {
   }
 
   @Test
-  void loadsEd25519KeyAndSignsVerifiablyAndDerivesTheMatchingPublicKey() throws Exception {
+  void loadsEd25519KeyFromPemAndSignsVerifiably() throws Exception {
     KeyPair pair = TestKeys.generate("Ed25519");
     Path file = TestKeys.writePkcs8Pem(dir, "key.pem", pair);
 
     SourceSigner signer = SourceSigner.load(file, "local-source");
 
     assertThat(signer.keyId()).isEqualTo("local-source");
-    assertThat(signer.publicKey()).isInstanceOf(EdECPublicKey.class);
-    assertThat(signer.publicKey().getEncoded()).isEqualTo(pair.getPublic().getEncoded());
+    assertThat(signer.publicKey()).isEmpty();
     byte[] message = "message".getBytes(StandardCharsets.UTF_8);
     byte[] signature = signer.sign(message);
     assertThat(signature).hasSize(64);
     assertThat(verifies(pair.getPublic(), message, signature)).isTrue();
-    assertThat(verifies(signer.publicKey(), message, signature)).isTrue();
+    assertThat(verifies(pair.getPublic(), "other".getBytes(StandardCharsets.UTF_8), signature))
+        .isFalse();
   }
 
   @Test
-  void derivedPublicKeyMatchesForManyKeys() throws Exception {
-    for (int i = 0; i < 25; i++) {
-      KeyPair pair = TestKeys.generate("Ed25519");
-      SourceSigner signer = SourceSigner.load(TestKeys.writePkcs8Pem(dir, "k" + i, pair), "k-" + i);
-      assertThat(signer.publicKey().getEncoded()).isEqualTo(pair.getPublic().getEncoded());
+  void ofPairSignsVerifiablyAndExposesThePublicKey() throws Exception {
+    KeyPair pair = TestKeys.generate("Ed25519");
+
+    SourceSigner signer = SourceSigner.of(pair, "local-source");
+
+    assertThat(signer.publicKey()).contains(pair.getPublic());
+    byte[] message = "message".getBytes(StandardCharsets.UTF_8);
+    assertThat(verifies(pair.getPublic(), message, signer.sign(message))).isTrue();
+  }
+
+  @Test
+  void ofPairRejectsNonEd25519AndBadKeyIds() {
+    for (String algorithm : new String[] {"RSA", "EC", "Ed448", "X25519"}) {
+      KeyPair other = TestKeys.generate(algorithm);
+      assertThatThrownBy(() -> SourceSigner.of(other, "local-source"))
+          .isInstanceOfSatisfying(
+              LocalPlatformFailure.class,
+              failure ->
+                  assertThat(failure.category()).isEqualTo(LocalPlatformFailure.Category.KEY));
     }
+    KeyPair pair = TestKeys.generate("Ed25519");
+    for (String bad : new String[] {"", "a.b", "a:b", "x".repeat(65)}) {
+      assertThatThrownBy(() -> SourceSigner.of(pair, bad)).isInstanceOf(LocalPlatformFailure.class);
+    }
+    assertThatThrownBy(() -> SourceSigner.of(null, "local-source"))
+        .isInstanceOf(LocalPlatformFailure.class);
+    assertThatThrownBy(() -> SourceSigner.of(pair, null)).isInstanceOf(LocalPlatformFailure.class);
   }
 
   @Test

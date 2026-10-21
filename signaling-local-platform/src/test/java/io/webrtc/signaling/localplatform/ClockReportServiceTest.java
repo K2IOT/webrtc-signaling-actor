@@ -82,7 +82,7 @@ class ClockReportServiceTest {
 
   @BeforeEach
   void setUp() throws Exception {
-    signer = SourceSigner.load(TestKeys.writePkcs8Pem(dir, "key.pem", pair), "local-source");
+    signer = SourceSigner.of(pair, "local-source");
     wallClock =
         new Clock() {
           @Override
@@ -153,7 +153,7 @@ class ClockReportServiceTest {
 
     assertThat(body.signature()).hasSize(86).matches("[A-Za-z0-9_-]{86}");
     assertThat(verifies(pair.getPublic(), body.report(), body.signature())).isTrue();
-    assertThat(verifies(signer.publicKey(), body.report(), body.signature())).isTrue();
+    assertThat(signer.publicKey()).contains(pair.getPublic());
     assertThat(body.report().keyId()).isEqualTo("local-source");
     assertThat(body.report().podUid()).isEqualTo(pod);
     assertThat(body.report().processBoot()).isEqualTo(boot);
@@ -377,7 +377,7 @@ class ClockReportServiceTest {
             7L,
             pod,
             boot,
-            Map.of(signer.keyId(), signer.publicKey()),
+            Map.of(signer.keyId(), pair.getPublic()),
             wallClock,
             mono::get);
 
@@ -396,7 +396,7 @@ class ClockReportServiceTest {
             7L,
             pod,
             boot,
-            Map.of(signer.keyId(), signer.publicKey()),
+            Map.of(signer.keyId(), pair.getPublic()),
             wallClock,
             mono::get);
 
@@ -415,7 +415,7 @@ class ClockReportServiceTest {
               7L,
               ids[0],
               ids[1],
-              Map.of(signer.keyId(), signer.publicKey()),
+              Map.of(signer.keyId(), pair.getPublic()),
               wallClock,
               mono::get);
       assertThat(monitor.observe(body.report(), body.signature(), mono.get())).isFalse();
@@ -431,7 +431,7 @@ class ClockReportServiceTest {
             7L,
             pod,
             boot,
-            Map.of(signer.keyId(), signer.publicKey()),
+            Map.of(signer.keyId(), pair.getPublic()),
             wallClock,
             mono::get);
     Body first = parse(service().clockBody(registration()));
