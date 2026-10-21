@@ -12,9 +12,9 @@ public final class NativeControlDatabaseResources {
     private final SqlTransactions regional, local;
 
     NativeControlDatabaseResources(NativeControlDatabaseEnrollment inputs) {
-        regional = create(inputs.regional());
+        regional = open(inputs.regional());
         try {
-            local = create(inputs.local());
+            local = open(inputs.local());
         } catch (RuntimeException failed) {
             // No SQL owner has escaped construction, so this original boundary has no admitted work.
             try {
@@ -27,7 +27,11 @@ public final class NativeControlDatabaseResources {
         }
     }
 
-    private static SqlTransactions create(NativeControlDatabaseEnrollment.Database inputs) {
+    /**
+     * One owned boundary and pool set for a database enrollment. The caller owns draining the
+     * boundary and closing the pools.
+     */
+    public static SqlTransactions open(NativeControlDatabaseEnrollment.Database inputs) {
         var admission = new DbAdmission(inputs.quotas(), inputs.resourceProfiles());
         var boundary = new DbBoundary(admission);
         try {
