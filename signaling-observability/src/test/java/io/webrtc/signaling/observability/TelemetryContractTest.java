@@ -109,6 +109,13 @@ class TelemetryContractTest {
     @Test
     void missingZoneCarriesOnlyAnAzRoleName() {
         assertThat(TraceContext.attributes(Map.of("missingZone", "az-b"))).containsEntry("missingZone", "az-b");
+        // The longest admitted role is 66 characters; a trailing hyphen is a role name too.
+        var longest = "az-b" + "c".repeat(62);
+        assertThat(longest).hasSize(66);
+        assertThat(TraceContext.attributes(Map.of("missingZone", longest))).containsEntry("missingZone", longest);
+        assertThat(TraceContext.attributes(Map.of("missingZone", "az-b-"))).containsEntry("missingZone", "az-b-");
+        assertThat(TraceContext.attributes(Map.of("missingZone", longest + "c"))).doesNotContainKey("missingZone");
+        assertThat(TraceContext.attributes(Map.of("missingZone", "az--"))).doesNotContainKey("missingZone");
         for (var bad : java.util.List.of("az-", "AZ-B", "zone-b", "az-b 10.0.0.1", "az-" + "b".repeat(64), "az-b\n"))
             assertThat(TraceContext.attributes(Map.of("missingZone", bad))).doesNotContainKey("missingZone");
     }
