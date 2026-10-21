@@ -315,11 +315,31 @@ class LocalPlatformConfigTest {
   void applicationHidesUnexpectedFailureDetail() throws IOException {
     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
-    // Valid config reaches the not-yet-implemented start(); no detail may leak.
-    int code = LocalPlatformApplication.run(env(VALID), new PrintStream(bytes, true));
+    int code =
+        LocalPlatformApplication.run(
+            env(VALID),
+            new PrintStream(bytes, true),
+            config -> {
+              throw new IllegalStateException("/run/test-only/platform/db.pass secret detail");
+            },
+            running -> {
+              throw new AssertionError("must not wait for a platform that never started");
+            });
 
     assertThat(code).isEqualTo(1);
     assertThat(bytes.toString(StandardCharsets.UTF_8))
         .isEqualTo("LOCAL_PLATFORM_REJECTED CONFIG" + System.lineSeparator());
+  }
+
+  @Test
+  void applicationReportsTheStartFailureCategory() throws IOException {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+    // The configured signing key does not exist, so the real start() refuses with KEY.
+    int code = LocalPlatformApplication.run(env(VALID), new PrintStream(bytes, true));
+
+    assertThat(code).isEqualTo(1);
+    assertThat(bytes.toString(StandardCharsets.UTF_8))
+        .isEqualTo("LOCAL_PLATFORM_REJECTED KEY" + System.lineSeparator());
   }
 }
