@@ -44,13 +44,32 @@ public final class LocalTrust {
      * {@code close}, so it is closed with the application context. Every call builds a new one.
      */
     public static BoundedTokenVerifier tokens(LocalRuntimeContract c) {
+        return bounded(jwtVerifier(c));
+    }
+
+    /**
+     * The RS256 verifier over the contract's JWT keys. It owns no thread, so an installer can build
+     * it, and fail on a bad key, before any bean exists. Keys the verifier refuses (for example an
+     * RSA modulus below 2048 bits) fail as {@code CONTRACT/INVALID}.
+     */
+    public static Rs256TokenVerifier jwtVerifier(LocalRuntimeContract c) {
         var keys = new LinkedHashMap<String, RSAPublicKey>();
         c.contract().jwtPublicKeys().forEach((kid, path) -> keys.put(kid, rsaPublic(c, path)));
-        var verifier =
-                new Rs256TokenVerifier(
-                        c.contract().identity(),
-                        new TrustedRsaKeys(Map.copyOf(keys), null, Duration.ofMinutes(1)),
-                        8192);
+        try {
+            return new Rs256TokenVerifier(
+                    c.contract().identity(),
+                    new TrustedRsaKeys(Map.copyOf(keys), null, Duration.ofMinutes(1)),
+                    8192);
+        } catch (IllegalArgumentException rejected) {
+            throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
+        }
+    }
+
+    /**
+     * Bounds {@code verifier} to one worker and eight queued. The result owns a thread pool; the
+     * caller owns it and must close it, as for {@link #tokens}.
+     */
+    public static BoundedTokenVerifier bounded(Rs256TokenVerifier verifier) {
         return new BoundedTokenVerifier(verifier, 1, 8, Duration.ofSeconds(1));
     }
 

@@ -1,5 +1,7 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectReader;
 import io.webrtc.signaling.app.runtime.MountedNativeContract;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role;
@@ -32,7 +34,17 @@ import java.util.UUID;
  */
 final class LocalDirectorySnapshot {
     static final int BUCKETS = 16384;
-    private static final int MAX_RANGES = 1024;
+    /** Reachable within the 64 KiB read bound (about 70 bytes per range). */
+    static final int MAX_RANGES = 512;
+    /**
+     * The shared strict mapper, minus Jackson's default float-to-int truncation: {@code 1.9} is not
+     * a bucket.
+     */
+    private static final ObjectReader READER =
+            LocalJson.MAPPER
+                    .readerFor(Document.class)
+                    .without(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+                    .with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
     private final ProofBindings.TrustedHome[] homes;
     private final Map<GatewayRelayRpcClient.Target, MountedNativeContract.GatewayTarget> gateways;
@@ -44,7 +56,11 @@ final class LocalDirectorySnapshot {
         this.gateways = Map.copyOf(gateways);
     }
 
-    /** Fails with {@code CONTRACT/INVALID} for a hash mismatch or any content defect. */
+    /**
+     * Fails with {@code CONTRACT/INVALID} for a hash mismatch or a schema or content defect; text
+     * that is not UTF-8 JSON is {@code CONTRACT/MALFORMED} and a repeated key {@code
+     * CONTRACT/DUPLICATE_KEY}, as for the other mounted documents.
+     */
     static LocalDirectorySnapshot load(LocalRuntimeContract c) {
         var contract = c.contract();
         var bytes = LocalFiles.read(c.resolve(contract.directorySnapshot()), LocalJson.MAX_BYTES);
@@ -54,7 +70,7 @@ final class LocalDirectorySnapshot {
         Document document;
         try {
             document =
-                    LocalJson.MAPPER.treeToValue(LocalJson.tree(utf8(bytes), Role.CONTRACT), Document.class);
+                    READER.readValue(LocalJson.tree(utf8(bytes), Role.CONTRACT));
         } catch (LocalRuntimeFailure malformed) {
             throw malformed;
         } catch (Exception malformed) {
@@ -134,7 +150,7 @@ final class LocalDirectorySnapshot {
                     .decode(ByteBuffer.wrap(bytes))
                     .toString();
         } catch (CharacterCodingException notUtf8) {
-            throw invalid();
+            throw LocalJson.failure(Role.CONTRACT, Category.MALFORMED);
         }
     }
 

@@ -127,6 +127,8 @@ public final class LocalActorInstaller {
         var wal = wal(c);
         var source = source(c);
         var proofs = LocalTrust.homeProof(c);
+        // Keys are parsed and checked now; only the thread-owning wrapper is built lazily.
+        var jwt = LocalTrust.jwtVerifier(c);
         var maintenance = new NativeActorMaintenanceEnrollment(privacyKey(c), UNENROLLED_DETACHMENT);
         var observation = observation(c, fingerprint, snapshot);
         var cells = cells(c);
@@ -159,7 +161,7 @@ public final class LocalActorInstaller {
         // The verifier owns a worker pool; the caller owns it and the context closes it.
         ctx.registerBean(
                 BoundedTokenVerifier.class,
-                () -> LocalTrust.tokens(c),
+                () -> LocalTrust.bounded(jwt),
                 definition -> definition.setDestroyMethodName("close"));
 
         // NativeActorProcess creates its ActorSystem in its constructor and depends only on the
@@ -212,7 +214,7 @@ public final class LocalActorInstaller {
     }
 
     /** Each enrolled gateway at its pinned boot, addressed as the mounted contract says. */
-    private static Map<GatewayRelayRpcClient.Target, CellRpcClient.Endpoint> relayDestinations(
+    static Map<GatewayRelayRpcClient.Target, CellRpcClient.Endpoint> relayDestinations(
             LocalDirectorySnapshot snapshot) {
         var destinations = new HashMap<GatewayRelayRpcClient.Target, CellRpcClient.Endpoint>();
         snapshot.gateways()
@@ -266,11 +268,23 @@ public final class LocalActorInstaller {
         }
     }
 
-    /** Raw key bytes, 32 to 64 of them, from the confined file the profile names. */
-    private static byte[] privacyKey(LocalRuntimeContract c) {
+    /**
+     * Raw key bytes, 32 to 64 of them, from the confined file the profile names. The file itself
+     * fails like every mounted file ({@code PATH/MISSING} when absent or unreadable, {@code
+     * PATH/PATH_ESCAPE} outside the mount); any defect of the key, whether the field is absent or
+     * the content is empty, too short or too long, is {@code PROFILE/INVALID}.
+     */
+    static byte[] privacyKey(LocalRuntimeContract c) {
         var path = c.profile().privacyPseudonymKey();
         if (path == null) throw profileInvalid();
-        var key = LocalFiles.read(c.resolve(path), PRIVACY_KEY_MAX);
+        byte[] key;
+        try {
+            key = LocalFiles.read(c.resolve(path), PRIVACY_KEY_MAX);
+        } catch (LocalRuntimeFailure failure) {
+            // LocalFiles reports content size as a CONTRACT failure; for this key it is the profile's.
+            if (failure.role() == Role.CONTRACT) throw profileInvalid();
+            throw failure;
+        }
         if (key.length < PRIVACY_KEY_MIN) throw profileInvalid();
         return key;
     }
@@ -314,25 +328,27 @@ public final class LocalActorInstaller {
 
     /**
      * A gateway peer is admitted only for itself, in its own cell, and only when the mounted
-     * contract enrolls that gateway.
+     * contract enrolls that gateway. A missing peer or identity is refused.
      */
-    private static BiPredicate<CellRpcServer.Peer, NativeSessionHandler.GatewayIdentity> workloads(
+    static BiPredicate<CellRpcServer.Peer, NativeSessionHandler.GatewayIdentity> workloads(
             MountedNativeContract contract) {
         var enrolled =
                 contract.gateways().stream()
                         .map(g -> g.cell() + "/" + g.gatewayId())
                         .collect(Collectors.toUnmodifiableSet());
         return (peer, gateway) ->
-                "gateway".equals(peer.role())
+                peer != null
+                        && gateway != null
+                        && "gateway".equals(peer.role())
                         && peer.cell().equals(gateway.cell())
                         && peer.workloadId().equals(gateway.gatewayId())
                         && enrolled.contains(gateway.cell() + "/" + gateway.gatewayId());
     }
 
     /** Worker outcomes other than completion are reported by name and status only. */
-    private static void workerEvent(NativeWorkerScheduler.Event event) {
-        if (event.status() != NativeWorkerScheduler.Status.COMPLETED && LOG.isDebugEnabled())
-            LOG.debug("Native worker {} ended {}", event.name(), event.status());
+    static void workerEvent(NativeWorkerScheduler.Event event) {
+        if (event.status() != NativeWorkerScheduler.Status.COMPLETED)
+            LOG.warn("Native worker {} ended {}", event.name(), event.status());
     }
 
     private static LocalRuntimeFailure profileInvalid() {

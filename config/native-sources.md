@@ -464,7 +464,11 @@ this is a production enrollment and none of it qualifies a deployment.
 Actor plane (`LocalActorInstaller`) uses these profile fields:
 
 - `privacyPseudonymKey`: absolute path of a file holding the raw privacy
-  pseudonym key, 32 to 64 bytes, no encoding. Absent or shorter is refused.
+  pseudonym key, 32 to 64 bytes, no encoding. The file fails like every mounted
+  file: absent or unreadable is `Local runtime path: MISSING`, outside the mount
+  `Local runtime path: PATH_ESCAPE`. Every defect of the key itself (field
+  absent, file empty, shorter than 32 or longer than 64 bytes) is
+  `Local runtime profile: INVALID`.
 - `wal`: the observed writer facts for `NativeWalEnrollment`, always with
   `localSingleWriter=false`. An empty `replicas` set or `synchronousReplicas < 1`
   is refused; there is no standby-less local mode.
@@ -481,8 +485,8 @@ are never reported as complete. Epoch adoption is likewise refused.
 
 `directorySnapshot` names a UTF-8 JSON file of at most 64 KiB. Its exact bytes
 must hash (SHA-256, lower-case hex) to `directorySnapshotSha256`. The parser is
-as strict as the contract parser: unknown, duplicate and missing fields, and
-trailing content are rejected.
+as strict as the contract parser: unknown, duplicate and missing fields,
+trailing content and fractional numbers (`"first": 1.9`) are rejected.
 
 ```json
 {
@@ -498,7 +502,7 @@ trailing content are rejected.
 }
 ```
 
-- `buckets`: 1 to 1024 inclusive ranges over buckets 0..16383 (the bucket of a
+- `buckets`: 1 to 512 inclusive ranges over buckets 0..16383 (the bucket of a
   user is `SessionRegistryService.bucket`). Ranges must not overlap. Each cell
   must be one of the contract's `cells`, with that cell's `storageEpoch`. A
   range maps every bucket in it to the trusted home
@@ -510,4 +514,12 @@ trailing content are rejected.
   observation address for that gateway; it must equal the `gatewayBootId` of
   that gateway's process profile.
 
-Any defect fails startup with `Local runtime contract: INVALID`.
+Text that is not UTF-8 JSON, or has trailing content, fails startup with
+`Local runtime contract: MALFORMED`; a repeated key with
+`Local runtime contract: DUPLICATE_KEY`; a digest mismatch or any other defect
+with `Local runtime contract: INVALID`.
+
+The JWT public keys are parsed and checked (RSA, modulus of at least 2048 bits)
+before any actor bean is registered, so a bad key fails startup with
+`Local runtime contract: INVALID`. Worker outcomes other than completion are
+logged at WARN with the job name and status only.
