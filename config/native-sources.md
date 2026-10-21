@@ -480,6 +480,15 @@ one of the Spring profiles `gateway`, `actor` or `control` must be active, and t
 profile's `plane` must be that plane; a mismatch stops startup with the generic
 `STARTUP_FAILED` diagnostic.
 
+Scope in SP1: the adapter is compose-only. Nothing renders `process.json` for it yet; the
+compose renderer (SP3) owns producing the profile and the mounted contract. The Helm chart
+always sets `SIGNALING_NATIVE_PROVIDER_CONTRACT`, so a Helm `local-minikube` release now
+opens the gate and fails closed with `LOCAL_RUNTIME_REJECTED` `profile/MISSING` (before this
+adapter it failed with `NATIVE_RUNTIME_NOT_INSTALLED`). It could never start anyway: the
+chart's `SIGNALING_POD_UID` comes from the pod's `metadata.uid` and cannot equal the
+profile's `podUid`. Helm is not a supported consumer of this adapter; the chart and its
+render checks are unchanged.
+
 Other variables the adapter reads (through the Spring `Environment` unless noted):
 
 | Variable | Planes | Rule |

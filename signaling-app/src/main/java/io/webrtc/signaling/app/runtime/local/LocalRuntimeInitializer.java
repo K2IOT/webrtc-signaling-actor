@@ -16,9 +16,10 @@ import java.util.Locale;
  * <p>The gate is the two operator markers, {@code SIGNALING_DEPLOYMENT_MODE=local-minikube} and
  * {@code SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY}, plus an explicit contract location: a
  * non-blank {@code SIGNALING_NATIVE_PROVIDER_CONTRACT} or {@code SIGNALING_LOCAL_PROCESS_PROFILE}
- * (Helm and compose always set the former). Markers alone, as in legacy tests and tooling, register
- * nothing and startup keeps failing with "Native runtime not installed". Once the gate is open the
- * contract and the profile are always loaded and any defect throws a specific
+ * (the compose renderer sets the former; the adapter is compose-only in SP1, and a Helm release,
+ * whose chart always sets it, fails closed with profile/MISSING). Markers alone, as in legacy tests
+ * and tooling, register nothing and startup keeps failing with "Native runtime not installed". Once
+ * the gate is open the contract and the profile are always loaded and any defect throws a specific
  * {@link LocalRuntimeFailure}; the only quiet exit is a readable contract that declares an
  * environment other than {@code local-test-only}.
  * Enrollments must be registered with
