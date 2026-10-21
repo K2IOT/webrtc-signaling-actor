@@ -16,7 +16,18 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LocalZoneReportTest {
-    private final ListAppender<ILoggingEvent> events = new ListAppender<>();
+    /**
+     * Logback copies the MDC lazily; capture it at append time, as the production async appender
+     * does, so the assertion never depends on which other appenders ran first.
+     */
+    private final ListAppender<ILoggingEvent> events =
+            new ListAppender<>() {
+                @Override
+                protected void append(ILoggingEvent event) {
+                    event.prepareForDeferredProcessing();
+                    super.append(event);
+                }
+            };
     private final Logger logger = (Logger) LoggerFactory.getLogger(LocalZoneReport.class);
 
     @BeforeEach
