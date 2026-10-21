@@ -149,7 +149,8 @@ public final class LocalPekkoConfig {
         values.put(COMPATIBILITY + "window.upper-minor", build.upperMinor());
     }
 
-    private static String fingerprint(Environment env) {
+    /** The cluster fingerprint every plane of a cell shares; the gateway reads it here too. */
+    static String fingerprint(Environment env) {
         var value = env.getProperty(FINGERPRINT_VARIABLE);
         if (value == null) throw LocalJson.failure(Role.IDENTITY, Category.MISSING);
         if (!value.matches("[a-f0-9]{64}")) throw LocalJson.failure(Role.IDENTITY, Category.INVALID);

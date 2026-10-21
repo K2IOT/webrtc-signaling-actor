@@ -289,7 +289,8 @@ public final class LocalActorInstaller {
         return key;
     }
 
-    private static NativeCompatibilityObservationEnrollment observation(
+    /** Shared with the gateway installer: the same topology and build pin on every plane. */
+    static NativeCompatibilityObservationEnrollment observation(
             LocalRuntimeContract c, String fingerprint, LocalDirectorySnapshot snapshot) {
         var build = c.profile().compatibility();
         if (build == null) throw profileInvalid();
@@ -313,7 +314,8 @@ public final class LocalActorInstaller {
         }
     }
 
-    private static NativeCellRpcEnrollment cells(LocalRuntimeContract c) {
+    /** Shared with the gateway installer: every contract cell, pinned to its actor identity. */
+    static NativeCellRpcEnrollment cells(LocalRuntimeContract c) {
         var destinations = new HashMap<String, CellRpcClient.Endpoint>();
         for (var cell : c.contract().cells())
             destinations.put(

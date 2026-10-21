@@ -242,13 +242,31 @@ class LocalRuntimeInitializerTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = SignalingApplication.Plane.class, names = {"GATEWAY", "CONTROL"})
+    @EnumSource(value = SignalingApplication.Plane.class, names = {"CONTROL"})
     void openGateDispatchesToThePlaneInstaller(SignalingApplication.Plane plane) throws Exception {
         LocalRuntimeFixtures.install(mount, plane.name());
         var context = context(plane.name().toLowerCase(Locale.ROOT));
         assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("not installed until Task 4/5/6");
+    }
+
+    @Test
+    void openGateDispatchesTheGatewayPlaneToTheGatewayInstaller() throws Exception {
+        // The fixture gateway profile has no gateway identity: the gateway installer, not a stub,
+        // refuses it with a specific local runtime failure and registers nothing.
+        LocalRuntimeFixtures.install(mount, "GATEWAY");
+        var context = context("gateway");
+        assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(context))
+                .isInstanceOfSatisfying(
+                        LocalRuntimeFailure.class,
+                        failure -> {
+                            assertThat(failure.role()).isEqualTo(LocalRuntimeFailure.Role.PROFILE);
+                            assertThat(failure.category()).isEqualTo(LocalRuntimeFailure.Category.INVALID);
+                        });
+        assertThat(context.getBeanDefinitionCount())
+                .as("a refused gateway mount registers no enrollment")
+                .isEqualTo(context(new String[0]).getBeanDefinitionCount());
     }
 
     @Test
