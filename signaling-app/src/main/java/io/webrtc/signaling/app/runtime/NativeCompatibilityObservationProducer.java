@@ -70,11 +70,7 @@ public final class NativeCompatibilityObservationProducer {
 
     private void refreshMembership() {
         var enrolled = Objects.requireNonNull(actors.get());
-        if (!enrolled
-                .system()
-                .settings()
-                .config()
-                .getBoolean("pekko.remote.artery.ssl.config.require-mutual-authentication"))
+        if (!NativeCompatibility.mutualAuthenticationRequired(enrolled.system().settings().config()))
             throw new IllegalStateException("Unauthenticated membership");
         var peers =
                 new NativeClusterMembership(enrolled.system(), new ClusterReadiness(), enrolled.azRoles())

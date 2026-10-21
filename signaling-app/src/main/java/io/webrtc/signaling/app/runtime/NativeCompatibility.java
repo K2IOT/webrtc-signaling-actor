@@ -111,6 +111,20 @@ public final class NativeCompatibility implements RuntimeCapabilities {
                 features);
     }
 
+    /**
+     * The effective key is {@code ssl.config-ssl-engine}, which {@code application-actor.conf} and
+     * {@code ShardingBootstrap.validateProduction} use. The older {@code ssl.config} path is read
+     * only when the effective one is absent. Absence of both, or any non-boolean value, fails
+     * closed.
+     */
+    static boolean mutualAuthenticationRequired(Config config) {
+        String key = ".require-mutual-authentication";
+        String effective = "pekko.remote.artery.ssl.config-ssl-engine" + key;
+        return config.hasPath(effective)
+                ? config.getBoolean(effective)
+                : config.getBoolean("pekko.remote.artery.ssl.config" + key);
+    }
+
     private static boolean fresh(Instant until) {
         var now = Instant.now();
         return until.isAfter(now) && !until.isAfter(now.plusSeconds(5));
@@ -158,8 +172,7 @@ public final class NativeCompatibility implements RuntimeCapabilities {
             var inputs = local.get();
             if (inputs != null) {
                 var config = inputs.system().settings().config();
-                if (!config.getBoolean("pekko.remote.artery.ssl.config.require-mutual-authentication"))
-                    return null;
+                if (!mutualAuthenticationRequired(config)) return null;
                 var schedule = scheduling.get();
                 if (schedule == null || schedule.system() != inputs.system()) return null;
                 var membership =
