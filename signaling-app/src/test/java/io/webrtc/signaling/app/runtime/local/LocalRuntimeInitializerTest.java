@@ -55,6 +55,94 @@ class LocalRuntimeInitializerTest {
     }
 
     @Test
+    void markersWithoutAnExplicitContractLocationRegisterNothing() {
+        for (var location : new String[] {null, "", "   "}) {
+            var env =
+                    new MockEnvironment()
+                            .withProperty("SIGNALING_DEPLOYMENT_MODE", "local-minikube")
+                            .withProperty("SIGNALING_LOCAL_ACKNOWLEDGEMENT", "LOCAL_TEST_ONLY");
+            if (location != null) {
+                env.setProperty("SIGNALING_NATIVE_PROVIDER_CONTRACT", location);
+                env.setProperty("SIGNALING_LOCAL_PROCESS_PROFILE", location);
+            }
+            assertThat(LocalRuntimeInitializer.active(env)).as("[" + location + "]").isFalse();
+            assertNoEnrollment(env, "actor");
+        }
+    }
+
+    @Test
+    void markersWithoutALocationStillFailWithTheGenericNativeRuntimeNotInstalled() throws Exception {
+        var yaml =
+                new YamlPropertySourceLoader()
+                        .load(
+                                "TEST_ONLY_defaults", new FileSystemResource("../config/production-defaults.yaml"));
+        new ApplicationContextRunner()
+                .withUserConfiguration(SignalingApplication.class)
+                .withInitializer(new LocalRuntimeInitializer())
+                .withInitializer(
+                        ctx -> {
+                            yaml.forEach(source -> ctx.getEnvironment().getPropertySources().addLast(source));
+                            ctx.getEnvironment().setActiveProfiles("gateway");
+                        })
+                .withPropertyValues(
+                        "SIGNALING_DEPLOYMENT_MODE=local-minikube",
+                        "SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY",
+                        "CELL_ID=c001",
+                        "signaling.identity.issuer=TEST_ONLY_ISSUER",
+                        "signaling.identity.audience=TEST_ONLY_AUDIENCE")
+                .run(
+                        ctx -> {
+                            assertThat(ctx).hasNotFailed();
+                            assertThatThrownBy(
+                                    () ->
+                                            ctx.getBean(ApplicationRunner.class)
+                                                    .run(new DefaultApplicationArguments()))
+                                    .isInstanceOf(IllegalStateException.class)
+                                    .hasMessageContaining("Native runtime not installed");
+                        });
+    }
+
+    @Test
+    void anExplicitContractLocationActivatesTheGateAndAMissingFileFailsLoudly() {
+        var absent = mount.resolve("absent");
+        var contractOnly =
+                markers().withProperty("SIGNALING_NATIVE_PROVIDER_CONTRACT", absent + "/provider.json");
+        assertThat(LocalRuntimeInitializer.active(contractOnly)).isTrue();
+        assertLoud(contractOnly, Role.CONTRACT, Category.MISSING);
+
+        var profileOnly =
+                markers().withProperty("SIGNALING_LOCAL_PROCESS_PROFILE", absent + "/process.json");
+        assertThat(LocalRuntimeInitializer.active(profileOnly)).isTrue();
+        // The contract falls back to its default location, which holds nothing in a test JVM.
+        assertLoud(profileOnly, Role.CONTRACT, Category.MISSING);
+    }
+
+    @Test
+    void anExplicitProfileLocationWithAMissingProfileFailsLoudly() throws Exception {
+        LocalRuntimeFixtures.install(mount, "ACTOR");
+        Files.delete(mount.resolve("process.json"));
+        var env = LocalRuntimeFixtures.environment(mount);
+        assertLoud(env, Role.PROFILE, Category.MISSING);
+    }
+
+    private static MockEnvironment markers() {
+        return new MockEnvironment()
+                .withProperty("SIGNALING_DEPLOYMENT_MODE", "local-minikube")
+                .withProperty("SIGNALING_LOCAL_ACKNOWLEDGEMENT", "LOCAL_TEST_ONLY");
+    }
+
+    private static void assertLoud(MockEnvironment env, Role role, Category category) {
+        var context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().merge(env);
+        context.getEnvironment().setActiveProfiles("actor");
+        var failure =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        LocalRuntimeFailure.class, () -> new LocalRuntimeInitializer().initialize(context));
+        assertThat(failure.role()).isEqualTo(role);
+        assertThat(failure.category()).isEqualTo(category);
+    }
+
+    @Test
     void readableContractForAnotherEnvironmentRegistersNothing() throws Exception {
         LocalRuntimeFixtures.install(mount, "ACTOR");
         var document = LocalRuntimeFixtures.contract(mount);
