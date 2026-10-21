@@ -4,7 +4,9 @@ import javax.net.ssl.SSLSession;
 import java.security.cert.X509Certificate;
 
 /**
- * One exact workload URI per certificate; CA trust alone does not identify a cell.
+ * One exact workload URI per certificate; CA trust alone does not identify a cell. The role catalog
+ * is actor, gateway and control; what each role may call is decided by the receiving server ({@link
+ * CellRpcAuthorization}, {@link GatewayRelayRpcServer#admits}).
  */
 final class RpcTlsIdentity {
     private RpcTlsIdentity() {
@@ -28,7 +30,7 @@ final class RpcTlsIdentity {
                     java.util.regex.Pattern.compile(
                             "spiffe://signaling/"
                                     + java.util.regex.Pattern.quote(environment)
-                                    + "/cell/([a-z][a-z0-9-]{0,23})/(actor|gateway)(?:/([A-Za-z0-9_.-]{1,128}))?");
+                                    + "/cell/([a-z][a-z0-9-]{0,23})/(actor|gateway|control)(?:/([A-Za-z0-9_.-]{1,128}))?");
             for (var name : names) {
                 if (((Integer) name.get(0)) != 6) continue;
                 String uri = (String) name.get(1);

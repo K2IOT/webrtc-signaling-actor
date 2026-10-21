@@ -10,6 +10,7 @@ import io.webrtc.signaling.protocol.internal.CompatibilityObservationRequest;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -20,6 +21,7 @@ final class CompatibilityObservationService
     private final String cell, gateway, boot;
     private final RpcAdmission admission;
     private final Supplier<CellRpcServer.Peer> peer;
+    private final Predicate<CellRpcServer.Peer> admitted;
     private final Supplier<CompatibilityObservationReply> source;
 
     CompatibilityObservationService(
@@ -28,12 +30,14 @@ final class CompatibilityObservationService
             String boot,
             RpcAdmission admission,
             Supplier<CellRpcServer.Peer> peer,
+            Predicate<CellRpcServer.Peer> admitted,
             Supplier<CompatibilityObservationReply> source) {
         this.cell = cell;
         this.gateway = gateway;
         this.boot = boot;
         this.admission = admission;
         this.peer = peer;
+        this.admitted = Objects.requireNonNull(admitted);
         this.source = source;
     }
 
@@ -45,8 +49,9 @@ final class CompatibilityObservationService
         try {
             var caller = peer.get();
             var deadline = Context.current().getDeadline();
-            // Identity extraction already checks environment and the trusted actor/gateway role catalog.
-            if (caller == null || !(caller.role().equals("actor") || caller.role().equals("gateway")))
+            // Identity extraction checks environment and the role catalog; the hosting server decides
+            // which of those roles may observe it.
+            if (caller == null || !admitted.test(caller))
                 throw Status.PERMISSION_DENIED.asRuntimeException();
             if (deadline == null
                     || deadline.isExpired()

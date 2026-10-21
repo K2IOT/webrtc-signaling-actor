@@ -73,6 +73,21 @@ public final class RpcTlsContexts {
     }
 
     /**
+     * Client contexts for the control plane's compatibility observation of actor cells. The local
+     * leaf must carry exactly this cell's control identity, so an actor or gateway certificate is
+     * never presented as control; each destination is pinned to its actor identity, as in {@link
+     * #clients}. Actor servers admit this identity for compatibility observation only.
+     */
+    public static ClientTls controlClients(
+            String environment, String cell, File ca, File certificate, File key) throws Exception {
+        identityInputs(environment, cell);
+        var own = leaf(certificate, environment);
+        if (own == null || !own.role().equals(CellRpcAuthorization.CONTROL) || !own.cell().equals(cell))
+            throw new IllegalArgumentException("Control RPC client must be this cell's control workload");
+        return clients(environment, ca, certificate, key);
+    }
+
+    /**
      * Channels own their contexts; no unbounded cache of gateway processes or boot generations.
      */
     public static GatewayClientTls gatewayClients(

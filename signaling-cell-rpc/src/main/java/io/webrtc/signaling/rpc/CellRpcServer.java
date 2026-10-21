@@ -33,11 +33,7 @@ public final class CellRpcServer implements AutoCloseable {
             new NativeRpcDispatch(
                     "cell-rpc-dispatch",
                     Set.of(CellIngressGrpc.getRelayNegotiationMethod().getFullMethodName()),
-                    List.of(
-                            CellIngressGrpc.getServiceDescriptor(),
-                            SessionIngressGrpc.getServiceDescriptor(),
-                            ControlRouteIngressGrpc.getServiceDescriptor(),
-                            CompatibilityObservationIngressGrpc.getServiceDescriptor()));
+                    CellRpcAuthorization.SERVICES);
     private final ExecutorService executor =
             new ThreadPoolExecutor(
                     4,
@@ -90,9 +86,7 @@ public final class CellRpcServer implements AutoCloseable {
     }
 
     private static boolean allowed(Peer peer, Operation operation) {
-        return peer != null
-                && (peer.role().equals("actor")
-                || Set.of(Operation.EXECUTE, Operation.RELAY, Operation.SYNC).contains(operation));
+        return CellRpcAuthorization.admits(peer, CellRpcAuthorization.surface(operation));
     }
 
     private static long maximum(Operation op) {
@@ -194,7 +188,15 @@ public final class CellRpcServer implements AutoCloseable {
                                 })
                         .addService(
                                 new CompatibilityObservationService(
-                                        cell, "", "", admission, PEER::get, () -> compatibilityFacts.get()))
+                                        cell,
+                                        "",
+                                        "",
+                                        admission,
+                                        PEER::get,
+                                        peer ->
+                                                CellRpcAuthorization.admits(
+                                                        peer, CellRpcAuthorization.Surface.COMPATIBILITY_OBSERVATION),
+                                        () -> compatibilityFacts.get()))
                         .intercept(NativeRpcTelemetry.server())
                         .intercept(
                                 new ServerInterceptor() {
@@ -202,7 +204,8 @@ public final class CellRpcServer implements AutoCloseable {
                                     public <Q, A> ServerCall.Listener<Q> interceptCall(
                                             ServerCall<Q, A> call, Metadata headers, ServerCallHandler<Q, A> next) {
                                         Peer peer = extract(call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION));
-                                        if (peer == null) {
+                                        if (!CellRpcAuthorization.admitsCall(
+                                                peer, call.getMethodDescriptor().getFullMethodName())) {
                                             call.close(
                                                     Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"), new Metadata());
                                             return new ServerCall.Listener<>() {
@@ -497,6 +500,10 @@ public final class CellRpcServer implements AutoCloseable {
     private final class SessionService extends SessionIngressGrpc.SessionIngressImplBase {
         @Override
         public void mutateSession(SessionCommand command, StreamObserver<SessionReply> reply) {
+            if (!CellRpcAuthorization.admits(PEER.get(), CellRpcAuthorization.Surface.SESSION)) {
+                sessionReply(reply, sessionError(command, "UNAUTHORIZED"));
+                return;
+            }
             var deadline = Context.current().getDeadline();
             if (sessions == null
                     || deadline == null
@@ -569,6 +576,11 @@ public final class CellRpcServer implements AutoCloseable {
                             .setStatus("REJECTED")
                             .setErrorCode("OUTCOME_UNKNOWN")
                             .build();
+            if (!CellRpcAuthorization.admits(PEER.get(), CellRpcAuthorization.Surface.CONTROL_ROUTE)) {
+                reply.onNext(error.toBuilder().setErrorCode("UNAUTHORIZED").build());
+                reply.onCompleted();
+                return;
+            }
             RpcAdmission.Ticket ticket;
             if (!capabilities.permits(cell, RuntimeCapabilities.NATIVE_CONTROL_RECEIPT_V1)
                     || controlRoutes == null

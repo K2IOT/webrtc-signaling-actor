@@ -187,6 +187,7 @@ public final class GatewayRelayRpcServer implements AutoCloseable {
                                         boot.toString(),
                                         admission,
                                         PEER::get,
+                                        GatewayRelayRpcServer::admits,
                                         () -> compatibilityFacts.get()))
                         .intercept(NativeRpcTelemetry.server())
                         .intercept(
@@ -197,9 +198,7 @@ public final class GatewayRelayRpcServer implements AutoCloseable {
                                         var peer =
                                                 RpcTlsIdentity.extract(
                                                         call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION), environment);
-                                        if (peer == null
-                                                || !peer.role().equals("actor")
-                                                || peer.workloadId().isBlank()) {
+                                        if (!admits(peer)) {
                                             call.close(
                                                     Status.PERMISSION_DENIED.withDescription("UNAUTHORIZED"), new Metadata());
                                             return new ServerCall.Listener<>() {
@@ -228,6 +227,16 @@ public final class GatewayRelayRpcServer implements AutoCloseable {
                         .build()
                         .start();
         return this;
+    }
+
+    /**
+     * Only a named actor workload may call a gateway; gateway and control identities are refused at
+     * the transport for every method, including compatibility observation.
+     */
+    static boolean admits(CellRpcServer.Peer peer) {
+        return peer != null
+                && CellRpcAuthorization.ACTOR.equals(peer.role())
+                && !peer.workloadId().isBlank();
     }
 
     public synchronized int port() {
