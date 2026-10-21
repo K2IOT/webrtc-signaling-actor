@@ -476,7 +476,12 @@ Actor plane (`LocalActorInstaller`) uses these profile fields:
   including this actor's own `azRole`). Cluster membership counts and
   classifies peers by this set: a peer in a zone outside it is invalid. Every
   actor of a cell carries the same list. Other planes leave it empty (`[]` or
-  `null`).
+  `null`). While an enrolled zone has no Up member, the actor logs a WARN with
+  the attribute `missingZone` (the zone name only) each time the set changes;
+  such a cell forms but stays not ready, because compatibility admission needs
+  two zones.
+- Artery (`25520`) and Pekko management (`8558`) bind only `podIp`, never every
+  interface, so they stay on the cell network (spec §3.2).
 - `azRole`, `podIp`, `healthPort`, `businessPort`, `compatibility`, `kube`: Pekko
   roles, private health address (`podIp:healthPort`), cell RPC listener port, the
   build identity and approved window, and discovery inputs.
