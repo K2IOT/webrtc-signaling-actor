@@ -246,6 +246,70 @@
               "minimum": 1
             }
           }
+        },
+        "calls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ringing": {
+              "type": "string"
+            },
+            "activation": {
+              "type": "string"
+            },
+            "negotiation": {
+              "type": "string"
+            },
+            "reconnect-grace": {
+              "type": "string"
+            },
+            "media-recovery-window": {
+              "type": "string"
+            },
+            "media-disconnect-debounce": {
+              "type": "string"
+            },
+            "media-restart-attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            }
+          }
+        },
+        "rate-limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "socket-rate": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "socket-burst": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "socket-total-rate": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "socket-total-burst": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "user-rate": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "user-burst": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "tracked-users": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            }
+          }
         }
       }
     }

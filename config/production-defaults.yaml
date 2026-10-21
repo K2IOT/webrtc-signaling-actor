@@ -42,3 +42,19 @@ signaling:
     ingress-bytes: 33554432
     outbound-channel-bytes: 262144
     outbound-aggregate-bytes: 268435456
+  calls:
+    ringing: 30s
+    activation: 5s
+    negotiation: 20s
+    reconnect-grace: 75s
+    media-recovery-window: 30s
+    media-disconnect-debounce: 5s
+    media-restart-attempts: 1
+  rate-limits:
+    socket-rate: 20
+    socket-burst: 40
+    socket-total-rate: 30
+    socket-total-burst: 60
+    user-rate: 40
+    user-burst: 80
+    tracked-users: 200000

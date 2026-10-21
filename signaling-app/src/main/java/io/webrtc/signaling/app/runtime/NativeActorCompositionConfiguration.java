@@ -46,7 +46,8 @@ public class NativeActorCompositionConfiguration {
             ObjectProvider<NativeActorProcess> processes,
             ObjectProvider<CallAuthorizationPolicy> callingPolicies,
             NativeCompatibility compatibility,
-            NativeTelemetry telemetry) {
+            NativeTelemetry telemetry,
+            io.webrtc.signaling.app.config.SignalingProperties properties) {
         var process = processes.getIfAvailable();
         if (process != null) {
             if (process.system() != enrollment.system())
@@ -88,7 +89,8 @@ public class NativeActorCompositionConfiguration {
                         callingPolicy,
                         Clock.systemUTC(),
                         clock::valid,
-                        security);
+                        security,
+                        properties.calls());
         var composition = new NativeActorComposition(enrollment.system(), inputs, readiness);
         composition.installRuntimeCapabilities(compatibility);
         composition.installObservation(telemetry);

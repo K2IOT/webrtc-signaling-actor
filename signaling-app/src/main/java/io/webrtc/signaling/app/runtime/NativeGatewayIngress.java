@@ -53,6 +53,23 @@ public final class NativeGatewayIngress implements AutoCloseable {
             ClockSafetyMonitor clock,
             NativeControlReceiptTracker receipts)
             throws Exception {
+        this(
+                business,
+                inputs,
+                services,
+                clock,
+                receipts,
+                io.webrtc.signaling.gateway.GatewayRateLimits.V1);
+    }
+
+    NativeGatewayIngress(
+            NativeGatewayBusinessEnrollment business,
+            NativeGatewayIngressEnrollment inputs,
+            NativeGatewayServices services,
+            ClockSafetyMonitor clock,
+            NativeControlReceiptTracker receipts,
+            io.webrtc.signaling.gateway.GatewayRateLimits rateLimits)
+            throws Exception {
         var identity = business.identity();
         connections =
                 new ConnectionRegistry(
@@ -69,7 +86,8 @@ public final class NativeGatewayIngress implements AutoCloseable {
                         Clock.systemUTC(),
                         inputs.eventLoops(),
                         inputs.edgeLimits(),
-                        inputs.securitySweep());
+                        inputs.securitySweep(),
+                        rateLimits);
         writes =
                 new GatewayRelayStream(
                         connections, services, Clock.systemUTC(), cpu, inputs.writeAdmission(), clock::valid);

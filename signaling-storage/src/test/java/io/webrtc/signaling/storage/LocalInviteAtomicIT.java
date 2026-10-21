@@ -21,6 +21,42 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LocalInviteAtomicIT {
     @Test
+    void configuredRingingTimerBoundsTheDurableRingDeadlineAndReservationLease() throws Exception {
+        var shorter =
+                new CallTimers(
+                        java.time.Duration.ofSeconds(12),
+                        java.time.Duration.ofSeconds(5),
+                        java.time.Duration.ofSeconds(20),
+                        java.time.Duration.ofSeconds(75),
+                        java.time.Duration.ofSeconds(30),
+                        java.time.Duration.ofSeconds(5),
+                        1);
+        try (var f = new Fixture()) {
+            var caller = f.sender("timer-caller");
+            var callee = f.sender("timer-callee");
+            var outcome =
+                    f.service(shorter)
+                            .executeCallCommand(f.invite(caller, callee.userId()))
+                            .toCompletableFuture()
+                            .join();
+            assertThat(outcome.state()).isEqualTo("RINGING");
+            try (var c = f.connection();
+                 var q =
+                         c.prepareStatement(
+                                 "SELECT (deadlines->>'ringUntil')::timestamptz<=clock_timestamp()+interval '12 seconds',"
+                                         + " (deadlines->>'ringUntil')::timestamptz>clock_timestamp()+interval '5 seconds'"
+                                         + " FROM call_state WHERE call_id=?")) {
+                q.setString(1, outcome.callId().value());
+                try (var r = q.executeQuery()) {
+                    r.next();
+                    assertThat(r.getBoolean(1)).as("ring deadline within configured 12s").isTrue();
+                    assertThat(r.getBoolean(2)).as("ring deadline is not the 0s default").isTrue();
+                }
+            }
+        }
+    }
+
+    @Test
     void localInviteCommitsBothReservationsRingingOriginalResultAndOutboxAtomically()
             throws Exception {
         try (var f = new Fixture()) {
@@ -246,9 +282,14 @@ class LocalInviteAtomicIT {
         }
 
         CallCommandService service() {
+            return service(CallTimers.V1);
+        }
+
+        CallCommandService service(CallTimers timers) {
             return new CallCommandService(
                     runtime.sql,
                     "c001",
+                    1,
                     1,
                     command -> {
                         var candidate = CallId.create("c001", 1);
@@ -261,7 +302,9 @@ class LocalInviteAtomicIT {
                                         0,
                                         new CallCommandService.TargetHome("c001", 1)));
                     },
-                    (c, s, p) -> p.equals("TEST_ONLY_VERIFIED"))
+                    (c, s, p) -> p.equals("TEST_ONLY_VERIFIED"),
+                    null,
+                    timers)
                     .businessAdmission(() -> true);
         }
 

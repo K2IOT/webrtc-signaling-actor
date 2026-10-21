@@ -32,6 +32,8 @@ public final class GatewayServer implements AutoCloseable {
     private final ExecutorService cpu = new GatewayCpuExecutor();
     private final EdgeAdmission edge;
     private final GatewaySecuritySweep.Settings securitySettings;
+    private final GatewayRateLimits rateLimits;
+    private final UserRateLimiter userLimiter;
     private final io.webrtc.signaling.rpc.DeliveryCreditController outbound =
             new io.webrtc.signaling.rpc.DeliveryCreditController(16384, 268435456, 1024, 8388608);
     private final GatewayIngressBudget ingress =
@@ -80,6 +82,28 @@ public final class GatewayServer implements AutoCloseable {
             int eventLoops,
             EdgeAdmission.Limits edgeLimits,
             GatewaySecuritySweep.Settings securitySettings) {
+        this(
+                tls,
+                policy,
+                registry,
+                services,
+                clock,
+                eventLoops,
+                edgeLimits,
+                securitySettings,
+                GatewayRateLimits.V1);
+    }
+
+    public GatewayServer(
+            SslContext tls,
+            UpgradePolicy policy,
+            ConnectionRegistry registry,
+            GatewayServices services,
+            Clock clock,
+            int eventLoops,
+            EdgeAdmission.Limits edgeLimits,
+            GatewaySecuritySweep.Settings securitySettings,
+            GatewayRateLimits rateLimits) {
         if (tls == null || eventLoops < 1 || eventLoops > 64)
             throw new IllegalArgumentException("WSS TLS and bounded event loops required");
         this.tls = tls;
@@ -88,6 +112,8 @@ public final class GatewayServer implements AutoCloseable {
         this.services = Objects.requireNonNull(services);
         this.clock = Objects.requireNonNull(clock);
         this.securitySettings = Objects.requireNonNull(securitySettings);
+        this.rateLimits = Objects.requireNonNull(rateLimits);
+        userLimiter = new UserRateLimiter(rateLimits, System::nanoTime);
         loops = eventLoops;
         edge = new EdgeAdmission(edgeLimits, System::nanoTime);
     }
@@ -222,7 +248,9 @@ public final class GatewayServer implements AutoCloseable {
         p.addLast("aggregate", new WebSocketFrameAggregator(81920));
         p.addLast(
                 "frames",
-                new FrameAdmissionHandler(new ProtocolValidator(ProtocolLimits.v1()), cpu, ingress));
+                new FrameAdmissionHandler(
+                        new ProtocolValidator(ProtocolLimits.v1()), cpu, ingress, rateLimits));
+        p.addLast("user-rate", new UserRateLimitHandler(registry, userLimiter, clock));
         p.addLast("auth", new AuthHandler(registry, services, clock, cpu));
         p.addLast("heartbeat", new HeartbeatHandler(registry, services, clock));
         p.addLast(

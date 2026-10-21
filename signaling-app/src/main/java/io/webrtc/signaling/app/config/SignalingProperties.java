@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -19,8 +20,26 @@ public record SignalingProperties(
         Cluster cluster,
         Protocol protocol,
         Transport transport,
-        Queues queues) {
+        Queues queues,
+        io.webrtc.signaling.storage.CallTimers calls,
+        io.webrtc.signaling.gateway.GatewayRateLimits rateLimits) {
+    public SignalingProperties(
+            Identity identity,
+            Lease lease,
+            Cluster cluster,
+            Protocol protocol,
+            Transport transport,
+            Queues queues) {
+        this(identity, lease, cluster, protocol, transport, queues, null, null);
+    }
+
+    @ConstructorBinding
     public SignalingProperties {
+        calls = calls == null ? io.webrtc.signaling.storage.CallTimers.V1 : calls;
+        rateLimits =
+                rateLimits == null
+                        ? io.webrtc.signaling.gateway.GatewayRateLimits.V1
+                        : rateLimits;
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(lease, "lease");
         Objects.requireNonNull(cluster, "cluster");
@@ -68,7 +87,9 @@ public record SignalingProperties(
                         cluster,
                         protocol,
                         transport,
-                        queues
+                        queues,
+                        calls,
+                        rateLimits
                 }) {
             String value = section.toString();
             canonical.append(value.length()).append(':').append(value);

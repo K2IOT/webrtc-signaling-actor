@@ -35,6 +35,7 @@ public final class CallCommandService {
     private final OutboxRepository outbox;
     private final HomeParticipationService localHome;
     private final UserReservationService reservations;
+    private final CallTimers timers;
     private volatile java.util.function.BooleanSupplier businessAdmission = () -> false;
     private boolean businessConfigured;
     private volatile RecoveryOutcomeSink recoveryOutcomes = RecoveryOutcomeSink.NONE;
@@ -66,8 +67,20 @@ public final class CallCommandService {
             Function<CallCommand, CompletionStage<Authority>> authority,
             ProofVerifier proofs,
             NegotiationVerifier negotiationVerifier) {
+        this(sql, cell, epoch, routingEpoch, authority, proofs, negotiationVerifier, CallTimers.V1);
+    }
+    public CallCommandService(
+            SqlTransactions sql,
+            String cell,
+            long epoch,
+            long routingEpoch,
+            Function<CallCommand, CompletionStage<Authority>> authority,
+            ProofVerifier proofs,
+            NegotiationVerifier negotiationVerifier,
+            CallTimers timers) {
         if (epoch < 1 || routingEpoch < 1)
             throw new IllegalArgumentException("Invalid authority epochs");
+        this.timers = Objects.requireNonNull(timers);
         this.routingEpoch = routingEpoch;
         this.negotiationVerifier = negotiationVerifier;
         this.sql = sql;
@@ -424,7 +437,7 @@ public final class CallCommandService {
             s.setString(11, state);
             s.setString(12, local ? "WAIT_ACCEPT" : "RESERVE_REMOTE");
             s.setString(13, local ? "ringUntil" : "prepareUntil");
-            s.setInt(14, local ? 30 : 15);
+            s.setInt(14, local ? Math.toIntExact(timers.ringingSeconds()) : 15);
             s.setString(15, JSON.writeValueAsString(offered));
             s.setLong(16, context.group().epoch());
             s.setObject(17, command.requestId().value());
@@ -527,7 +540,7 @@ public final class CallCommandService {
                 && !previousUntil.isAfter(now)) throw new AuthoritySql.FencedException();
         if (metadata.has("mediaRecoveryUntil")) {
             if (!Instant.parse(metadata.get("mediaRecoveryUntil").asText()).isAfter(now)
-                    || metadata.path("mediaRestartAttempts").asInt() >= 1)
+                    || metadata.path("mediaRestartAttempts").asInt() >= timers.mediaRestartAttempts())
                 return terminal(c, command, context, previous, "MEDIA_RECOVERY_EXHAUSTED");
             if (Instant.parse(metadata.get("mediaRestartAfter").asText()).isAfter(now))
                 return finish(
@@ -545,7 +558,7 @@ public final class CallCommandService {
         long round = Math.addExact(previous.negotiationId(), 1),
                 ice = Math.addExact(Long.parseLong(metadata.path("iceGeneration").asText("0")), 1),
                 version = Math.addExact(previous.version(), 1);
-        Instant until = now.plusSeconds(20);
+        Instant until = now.plusSeconds(timers.negotiationSeconds());
         if (previous.state().equals("CONNECTING")
                 && previousUntil != null
                 && previousUntil.isBefore(until)) until = previousUntil;
@@ -819,15 +832,18 @@ public final class CallCommandService {
         } else {
             metadata.put(connected, false);
             if (!metadata.has("mediaRecoveryUntil")) {
-                metadata.put("mediaRecoveryUntil", now.plusSeconds(30).toString());
+                metadata.put("mediaRecoveryUntil", now.plusSeconds(timers.mediaRecoverySeconds()).toString());
                 metadata.put(
                         "mediaRestartAfter",
-                        now.plusSeconds(command.type() == SignalEnvelope.Type.MEDIA_DISCONNECTED ? 5 : 0)
+                        now.plusSeconds(
+                                        command.type() == SignalEnvelope.Type.MEDIA_DISCONNECTED
+                                                ? timers.mediaDebounceSeconds()
+                                                : 0)
                                 .toString());
                 metadata.put("mediaRestartAttempts", 0);
             }
             if (command.type() == SignalEnvelope.Type.MEDIA_FAILED
-                    && metadata.path("mediaRestartAttempts").asInt() >= 1)
+                    && metadata.path("mediaRestartAttempts").asInt() >= timers.mediaRestartAttempts())
                 return terminal(c, command, context, previous, "MEDIA_RECOVERY_EXHAUSTED");
         }
         long version = Math.addExact(previous.version(), 1);

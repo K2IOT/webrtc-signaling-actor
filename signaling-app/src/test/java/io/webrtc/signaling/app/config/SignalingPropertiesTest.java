@@ -86,6 +86,70 @@ class SignalingPropertiesTest {
     }
 
     @Test
+    void callTimersAndRateLimitsLoadFromTheDefaultsFile() throws IOException {
+        context()
+                .run(
+                        ctx -> {
+                            assertThat(ctx).hasNotFailed();
+                            var p = ctx.getBean(SignalingProperties.class);
+                            assertThat(p.calls()).isEqualTo(io.webrtc.signaling.storage.CallTimers.V1);
+                            assertThat(p.rateLimits())
+                                    .isEqualTo(io.webrtc.signaling.gateway.GatewayRateLimits.V1);
+                        });
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "signaling.calls.ringing,31s",
+            "signaling.calls.activation,6s",
+            "signaling.calls.negotiation,21s",
+            "signaling.calls.reconnect-grace,76s",
+            "signaling.calls.media-recovery-window,76s",
+            "signaling.calls.media-disconnect-debounce,30s",
+            "signaling.calls.media-restart-attempts,0",
+            "signaling.calls.media-restart-attempts,4",
+            "signaling.calls.ringing,0s",
+            "signaling.rate-limits.socket-rate,0",
+            "signaling.rate-limits.socket-rate,31",
+            "signaling.rate-limits.user-burst,0",
+            "signaling.rate-limits.tracked-users,0"
+    })
+    void rejectsCallTimersAndRateLimitsBeyondTheContract(String key, String value)
+            throws IOException {
+        context(key + "=" + value).run(ctx -> assertThat(ctx).hasFailed());
+    }
+
+    @Test
+    void shorterCallTimersAreAcceptedAndChangeTheFingerprint() throws IOException {
+        context()
+                .run(
+                        a ->
+                                contextUnchecked("signaling.calls.ringing=20s")
+                                        .run(
+                                                b -> {
+                                                    assertThat(b).hasNotFailed();
+                                                    assertThat(b.getBean(SignalingProperties.class).calls().ringing())
+                                                            .isEqualTo(Duration.ofSeconds(20));
+                                                    assertThat(a.getBean(SignalingProperties.class).fingerprint())
+                                                            .isNotEqualTo(
+                                                                    b.getBean(SignalingProperties.class).fingerprint());
+                                                }));
+    }
+
+    @Test
+    void rateLimitChangesAlterTheFingerprint() throws IOException {
+        context()
+                .run(
+                        a ->
+                                contextUnchecked("signaling.rate-limits.user-rate=10")
+                                        .run(
+                                                b ->
+                                                        assertThat(a.getBean(SignalingProperties.class).fingerprint())
+                                                                .isNotEqualTo(
+                                                                        b.getBean(SignalingProperties.class).fingerprint())));
+    }
+
+    @Test
     void rejectsUnresolvedIdentityPlaceholders() throws IOException {
         context("signaling.identity.issuer=${MISSING_ISSUER}").run(ctx -> assertThat(ctx).hasFailed());
     }

@@ -32,7 +32,8 @@ public final class FrameAdmissionHandler extends ChannelInboundHandlerAdapter {
     private int retainedBytes, inFlight, normalBytes, criticalBytes, normalInFlight, criticalInFlight;
     private boolean running;
     private boolean stopped;
-    private double rateTokens = 40, totalTokens = 60;
+    private final GatewayRateLimits limits;
+    private double rateTokens, totalTokens;
     private long rateAt = System.nanoTime();
 
     public FrameAdmissionHandler(ProtocolValidator protocol, Executor cpu) {
@@ -41,6 +42,17 @@ public final class FrameAdmissionHandler extends ChannelInboundHandlerAdapter {
 
     public FrameAdmissionHandler(
             ProtocolValidator protocol, Executor cpu, GatewayIngressBudget budget) {
+        this(protocol, cpu, budget, GatewayRateLimits.V1);
+    }
+
+    public FrameAdmissionHandler(
+            ProtocolValidator protocol,
+            Executor cpu,
+            GatewayIngressBudget budget,
+            GatewayRateLimits limits) {
+        this.limits = Objects.requireNonNull(limits);
+        rateTokens = limits.socketBurst();
+        totalTokens = limits.socketTotalBurst();
         this.budget = Objects.requireNonNull(budget);
         this.protocol = Objects.requireNonNull(protocol);
         this.cpu = Objects.requireNonNull(cpu);
@@ -61,8 +73,18 @@ public final class FrameAdmissionHandler extends ChannelInboundHandlerAdapter {
         }
         try {
             long now = System.nanoTime();
-            rateTokens = Math.min(40, rateTokens + (now - rateAt) * 20.0 / TimeUnit.SECONDS.toNanos(1));
-            totalTokens = Math.min(60, totalTokens + (now - rateAt) * 30.0 / TimeUnit.SECONDS.toNanos(1));
+            rateTokens =
+                    Math.min(
+                            limits.socketBurst(),
+                            rateTokens
+                                    + (now - rateAt) * limits.socketRate() / TimeUnit.SECONDS.toNanos(1));
+            totalTokens =
+                    Math.min(
+                            limits.socketTotalBurst(),
+                            totalTokens
+                                    + (now - rateAt)
+                                    * limits.socketTotalRate()
+                                    / TimeUnit.SECONDS.toNanos(1));
             rateAt = now;
             int bytes = text.content().readableBytes();
             boolean critical =

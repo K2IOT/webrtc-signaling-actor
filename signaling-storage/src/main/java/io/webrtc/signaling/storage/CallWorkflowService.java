@@ -28,6 +28,7 @@ public final class CallWorkflowService {
     private final long epoch;
     private final ProofVerifier verifier;
     private final RouteLossVerifier routeLossVerifier;
+    private final CallTimers timers;
     private final CallSnapshotRepository calls = new CallSnapshotRepository();
     private final CommandResultRepository results = new CommandResultRepository();
     private final OutboxRepository outbox;
@@ -44,6 +45,17 @@ public final class CallWorkflowService {
             String localOwnerNode,
             ProofVerifier verifier,
             RouteLossVerifier routeLossVerifier) {
+        this(sql, cell, epoch, localOwnerNode, verifier, routeLossVerifier, CallTimers.V1);
+    }
+    public CallWorkflowService(
+            SqlTransactions sql,
+            String cell,
+            long epoch,
+            String localOwnerNode,
+            ProofVerifier verifier,
+            RouteLossVerifier routeLossVerifier,
+            CallTimers timers) {
+        this.timers = Objects.requireNonNull(timers);
         this.routeLossVerifier = Objects.requireNonNull(routeLossVerifier);
         this.sql = Objects.requireNonNull(sql);
         this.cell = Objects.requireNonNull(cell);
@@ -152,7 +164,7 @@ public final class CallWorkflowService {
                     if (observed == null || observed.isAfter(now(c)))
                         throw new AuthoritySql.FencedException();
                     if (metadata.has(grace)) return current;
-                    metadata.put(grace, observed.plusSeconds(75).toString());
+                    metadata.put(grace, observed.plusSeconds(timers.reconnectGraceSeconds()).toString());
                     try (var q =
                                  c.prepareStatement(
                                          "UPDATE call_state SET version=version+1,deadlines=?::jsonb,last_mutation_group_epoch=?,updated_at=clock_timestamp() WHERE call_id=? AND version=? AND terminal_at IS NULL")) {
@@ -192,8 +204,8 @@ public final class CallWorkflowService {
                     var deadlines =
                             (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(previous.deadlines());
                     switch (transition.step()) {
-                        case RING -> deadlines.put("ringUntil", now.plusSeconds(30).toString());
-                        case ACCEPT -> deadlines.put("activationUntil", now.plusSeconds(5).toString());
+                        case RING -> deadlines.put("ringUntil", now.plusSeconds(timers.ringingSeconds()).toString());
+                        case ACCEPT -> deadlines.put("activationUntil", now.plusSeconds(timers.activationSeconds()).toString());
                         default -> {
                         }
                     }

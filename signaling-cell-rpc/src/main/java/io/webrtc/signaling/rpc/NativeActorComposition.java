@@ -97,7 +97,8 @@ public final class NativeActorComposition {
                             throw new IllegalStateException("Commands require hosting EntityRef authority");
                         },
                         bindings.commandVerifier(inputs.cell(), inputs.homes()),
-                        bindings.negotiationVerifier(inputs.cell(), inputs.homes()))
+                        bindings.negotiationVerifier(inputs.cell(), inputs.homes()),
+                        inputs.timers())
                         .businessAdmission(readiness::businessReady);
         String owner = PostgresShardLeaseProvider.ownerNode(classic);
         workflow =
@@ -106,7 +107,9 @@ public final class NativeActorComposition {
                         inputs.cell(),
                         inputs.storageEpoch(),
                         owner,
-                        bindings.workflowVerifier(inputs.cell(), inputs.homes()));
+                        bindings.workflowVerifier(inputs.cell(), inputs.homes()),
+                        loss -> null,
+                        inputs.timers());
         grants = new CoordinatorGrantService(inputs.sql(), inputs.cell(), inputs.storageEpoch(), owner);
         participantRenewal =
                 new NativeParticipantRenewal(
@@ -547,8 +550,45 @@ public final class NativeActorComposition {
             CallAuthorizationPolicy callPolicy,
             Clock clock,
             BooleanSupplier trustedClock,
-            AcceptWinnerService.RouteSecurityPolicy routeSecurity) {
+            AcceptWinnerService.RouteSecurityPolicy routeSecurity,
+            io.webrtc.signaling.storage.CallTimers timers) {
+        public Inputs(
+                SqlTransactions sql,
+                String cell,
+                long storageEpoch,
+                long routingEpoch,
+                UUID podUid,
+                HomeAuthorizationProof proofs,
+                Function<UserId, ProofBindings.TrustedHome> homes,
+                SessionRegistryService.NativeSecurityPolicy sessionSecurity,
+                HomeProofReadService.SecurityPolicy homeSecurity,
+                HomeParticipationService.EpochAdoptionVerifier epochAdoption,
+                BoundedTokenVerifier tokenVerifier,
+                CallAuthorizationPolicy callPolicy,
+                Clock clock,
+                BooleanSupplier trustedClock,
+                AcceptWinnerService.RouteSecurityPolicy routeSecurity) {
+            this(
+                    sql,
+                    cell,
+                    storageEpoch,
+                    routingEpoch,
+                    podUid,
+                    proofs,
+                    homes,
+                    sessionSecurity,
+                    homeSecurity,
+                    epochAdoption,
+                    tokenVerifier,
+                    callPolicy,
+                    clock,
+                    trustedClock,
+                    routeSecurity,
+                    io.webrtc.signaling.storage.CallTimers.V1);
+        }
+
         public Inputs {
+            Objects.requireNonNull(timers);
             if (cell == null
                     || !cell.matches("[a-z][a-z0-9-]{0,23}")
                     || storageEpoch < 1

@@ -29,9 +29,11 @@ public class NativeGatewayIngressConfiguration {
             NativeGatewayIngressEnrollment inputs,
             NativeGatewayServices services,
             ClockSafetyMonitor clock,
-            NativeControlReceiptTracker receipts)
+            NativeControlReceiptTracker receipts,
+            io.webrtc.signaling.app.config.SignalingProperties properties)
             throws Exception {
-        return new NativeGatewayIngress(business, inputs, services, clock, receipts);
+        return new NativeGatewayIngress(
+                business, inputs, services, clock, receipts, properties.rateLimits());
     }
 
     @Bean(destroyMethod = "")
