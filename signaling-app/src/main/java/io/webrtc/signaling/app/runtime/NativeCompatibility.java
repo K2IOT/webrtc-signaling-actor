@@ -114,8 +114,9 @@ public final class NativeCompatibility implements RuntimeCapabilities {
     /**
      * The effective key is {@code ssl.config-ssl-engine}, which {@code application-actor.conf} and
      * {@code ShardingBootstrap.validateProduction} use. The older {@code ssl.config} path is read
-     * only when the effective one is absent. Absence of both, or any non-boolean value, fails
-     * closed.
+     * only when the effective one is absent. Pekko's reference.conf always defines the effective
+     * key, so on a real ActorSystem the fallback never applies; it only matters for synthetic
+     * configs. Absence of both, or any non-boolean value, fails closed.
      */
     static boolean mutualAuthenticationRequired(Config config) {
         String key = ".require-mutual-authentication";

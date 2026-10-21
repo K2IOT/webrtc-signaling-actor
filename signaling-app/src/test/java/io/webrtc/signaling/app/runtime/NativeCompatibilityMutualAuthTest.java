@@ -119,8 +119,12 @@ class NativeCompatibilityMutualAuthTest {
         assertThat(permits(0)).isTrue();
     }
 
+    /**
+     * Not a proof of the fallback: Pekko's reference.conf defines the effective key (on), so this
+     * member passes on the default. The bare-Config test below proves the fallback itself.
+     */
     @Test
-    void stillPermitsWhenMutualAuthIsSetUnderTheLegacyConfigKey() {
+    void permitsWhenOnlyTheLegacyKeyIsSetAndTheEffectiveKeyIsLeftAtPekkoDefault() {
         assertThat(permits(1)).isTrue();
     }
 
@@ -130,7 +134,7 @@ class NativeCompatibilityMutualAuthTest {
     }
 
     @Test
-    void failsClosedWhenNeitherPathIsDeclared() {
+    void fallsBackToTheLegacyPathOnlyWhenTheEffectiveOneIsAbsentAndFailsClosedOtherwise() {
         var bare = ConfigFactory.parseString("a=1");
         assertThatThrownBy(() -> NativeCompatibility.mutualAuthenticationRequired(bare))
                 .isInstanceOf(com.typesafe.config.ConfigException.class);

@@ -4,10 +4,10 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import com.typesafe.config.ConfigValueFactory;
 import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
-import io.webrtc.signaling.app.CompatibilityWindow.Feature;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
 import io.webrtc.signaling.app.runtime.NativeActorProcessEnrollment;
 import io.webrtc.signaling.app.runtime.NativeCompatibility;
+import io.webrtc.signaling.app.runtime.NativeCompatibilityEnrollment;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role;
 import org.springframework.core.env.Environment;
@@ -16,8 +16,8 @@ import javax.net.ssl.SSLContext;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Pekko {@link Config} and process enrollment for one LOCAL_TEST_ONLY actor container. The packaged
@@ -37,7 +37,7 @@ public final class LocalPekkoConfig {
     static final String KEY_PASSWORD_VARIABLE = "SIGNALING_REMOTING_KEY_PASSWORD";
     static final String TRUSTSTORE_PASSWORD_VARIABLE = "SIGNALING_REMOTING_TRUSTSTORE_PASSWORD";
     /**
-     * Pekko takes the Kubernetes API address from environment variables whose <em>names</em> are
+     * Pekko takes the Kubernetes API address from OS environment variables whose <em>names</em> are
      * configuration. The process must export these two with exactly the profile's values.
      */
     static final String KUBE_HOST_VARIABLE = "SIGNALING_KUBE_API_HOST";
@@ -49,8 +49,21 @@ public final class LocalPekkoConfig {
     private LocalPekkoConfig() {
     }
 
-    /** The resolved, production-validated-shape actor config for this container. */
+    /**
+     * The resolved actor config for this container. The Kubernetes API address is checked against
+     * the real OS process environment, which is what Pekko's discovery reads.
+     */
     public static Config build(LocalRuntimeContract c, Environment env) {
+        return build(c, env, System::getenv);
+    }
+
+    /**
+     * As {@link #build(LocalRuntimeContract, Environment)}, with the OS environment injected so a
+     * test can supply it. Only {@code processEnvironment} is consulted for the Kubernetes API
+     * address; Spring properties and system properties never satisfy that check.
+     */
+    static Config build(
+            LocalRuntimeContract c, Environment env, Function<String, String> processEnvironment) {
         var profile = c.profile();
         if (profile.plane() != Plane.ACTOR) throw profileInvalid();
         var cell = c.contract().cell();
@@ -80,7 +93,7 @@ public final class LocalPekkoConfig {
         values.put(DISCOVERY + "api-token-path", c.resolve(kube.tokenPath()).toString());
         values.put(DISCOVERY + "api-service-host-env-name", KUBE_HOST_VARIABLE);
         values.put(DISCOVERY + "api-service-port-env-name", KUBE_PORT_VARIABLE);
-        kubeAddress(env, kube.apiHost(), kube.apiPort());
+        kubeAddress(processEnvironment, kube.apiHost(), kube.apiPort());
 
         compatibility(values, compatibility);
         if (INITIAL_FORMATION.equals(env.getProperty(FORMATION_VARIABLE))) {
@@ -92,9 +105,17 @@ public final class LocalPekkoConfig {
         for (var entry : values.entrySet())
             overrides = overrides.withValue(entry.getKey(), ConfigValueFactory.fromAnyRef(entry.getValue()));
         try {
-            return overrides.withFallback(ShardingBootstrap.baseConfig()).resolve();
-        } catch (RuntimeException unresolved) {
-            // Config diagnostics can quote values; keep none of them.
+            var config = overrides.withFallback(ShardingBootstrap.baseConfig()).resolve();
+            // The real code validates features, the 64-hex executable id and the fingerprint, and
+            // refuses a config that already carries compat-* roles.
+            NativeCompatibility.enrolledBuildRoles(config);
+            if (!new NativeCompatibilityEnrollment.ApprovedWindow(
+                            compatibility.major(), compatibility.lowerMinor(), compatibility.upperMinor())
+                    .contains(compatibility.major(), compatibility.minor()))
+                throw new IllegalArgumentException();
+            return config;
+        } catch (RuntimeException invalid) {
+            // Config and validation diagnostics can quote values; keep none of them.
             throw profileInvalid();
         }
     }
@@ -117,23 +138,7 @@ public final class LocalPekkoConfig {
     }
 
     private static void compatibility(Map<String, Object> values, LocalProcessProfile.Compatibility build) {
-        // The native process needs the exact 64-hex executable id to admit peers, and the adjacent
-        // window [lower, lower + 1] must contain this build; fail here, not as a closed gate later.
-        if (build.major() < 1
-                || !build.executableId().matches("[a-f0-9]{64}")
-                || build.upperMinor() != (long) build.lowerMinor() + 1
-                || (build.minor() != build.lowerMinor() && build.minor() != build.upperMinor()))
-            throw profileInvalid();
-        var features = new ArrayList<String>();
-        for (var name : build.features()) {
-            try {
-                var feature = Feature.valueOf(name.replace('-', '_').toUpperCase(Locale.ROOT));
-                if (!NativeCompatibility.IMPLEMENTED.contains(feature)) throw new IllegalArgumentException();
-            } catch (IllegalArgumentException unsupported) {
-                throw profileInvalid();
-            }
-            features.add(name);
-        }
+        var features = new ArrayList<>(build.features());
         features.sort(String::compareTo);
         values.put(COMPATIBILITY + "major", build.major());
         values.put(COMPATIBILITY + "minor", build.minor());
@@ -158,10 +163,13 @@ public final class LocalPekkoConfig {
         return value;
     }
 
-    /** Pekko reads the address from the process environment; it has to be the profile's. */
-    private static void kubeAddress(Environment env, String host, int port) {
-        if (!host.equals(env.getProperty(KUBE_HOST_VARIABLE))
-                || !Integer.toString(port).equals(env.getProperty(KUBE_PORT_VARIABLE)))
+    /**
+     * Pekko's discovery reads the address from the OS process environment (the configured names
+     * are keys into it), so only that environment can satisfy the profile's address.
+     */
+    private static void kubeAddress(Function<String, String> processEnvironment, String host, int port) {
+        if (!host.equals(processEnvironment.apply(KUBE_HOST_VARIABLE))
+                || !Integer.toString(port).equals(processEnvironment.apply(KUBE_PORT_VARIABLE)))
             throw LocalJson.failure(Role.PROFILE, Category.IDENTITY_MISMATCH);
     }
 
