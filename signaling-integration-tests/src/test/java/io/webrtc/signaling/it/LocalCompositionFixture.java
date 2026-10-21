@@ -77,6 +77,9 @@ final class LocalCompositionFixture implements AutoCloseable {
     static final ObjectMapper JSON = new ObjectMapper();
     /** {@code -Dlocal.composition.diagnostics=true} gives children readable logs; never in CI. */
     static final String DIAGNOSTICS = "local.composition.diagnostics";
+    private static final java.util.Set<Process> CHILDREN = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.concurrent.atomic.AtomicBoolean HOOK_INSTALLED =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     final Path root;
     final Path logs;
@@ -487,11 +490,42 @@ final class LocalCompositionFixture implements AutoCloseable {
         builder.environment().putAll(environment);
         builder.redirectErrorStream(true).redirectOutput(log.toFile());
         var process = builder.start();
+        guard(process);
         var result = new Started(name, process, log, healthHost, healthPort);
         synchronized (started) {
             started.add(result);
         }
         return result;
+    }
+
+    /**
+     * Children bind fixed ports (25520/8558 on 127.0.0.11-16 and .51-56), so none may outlive the
+     * test JVM. A JVM shutdown hook kills every child and its descendants; for a test JVM killed
+     * with SIGKILL (no hooks run), a separate watchdog kills the child once the parent pid is gone.
+     * The watchdog lives outside the application under test.
+     */
+    private static void guard(Process child) throws Exception {
+        CHILDREN.add(child);
+        if (HOOK_INSTALLED.compareAndSet(false, true))
+            Runtime.getRuntime()
+                    .addShutdownHook(
+                            new Thread(
+                                    () ->
+                                            CHILDREN.forEach(
+                                                    process -> {
+                                                        process.descendants().forEach(ProcessHandle::destroyForcibly);
+                                                        process.destroyForcibly();
+                                                    }),
+                                    "TEST_ONLY_local_composition_reaper"));
+        long parent = ProcessHandle.current().pid();
+        new ProcessBuilder(
+                "sh",
+                "-c",
+                "while kill -0 " + parent + " 2>/dev/null && kill -0 " + child.pid()
+                        + " 2>/dev/null; do sleep 1; done; kill -9 " + child.pid() + " 2>/dev/null; exit 0")
+                .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .start();
     }
 
     /** Plain-text logging with messages and stack traces, for a developer re-run only. */
@@ -563,7 +597,10 @@ final class LocalCompositionFixture implements AutoCloseable {
     }
 
     void stop(List<Started> processes) throws Exception {
-        for (var process : processes) process.process().destroyForcibly();
+        for (var process : processes) {
+            process.process().descendants().forEach(ProcessHandle::destroyForcibly);
+            process.process().destroyForcibly();
+        }
         for (var process : processes) process.process().waitFor(20, TimeUnit.SECONDS);
         synchronized (started) {
             started.removeAll(processes);
