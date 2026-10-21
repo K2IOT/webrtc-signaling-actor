@@ -424,6 +424,17 @@ class LocalActorInstallerTest {
         assertThat(instance(ctx, NativeActorProcessEnrollment.class).systemName()).isEqualTo("signaling-c001");
     }
 
+    @Test
+    void processEnrollmentRendersNoConfigInToString() throws Exception {
+        var process = instance(install(contract()), NativeActorProcessEnrollment.class);
+        var tls = process.config().getConfig("pekko.remote.artery.ssl.config-ssl-engine");
+        // The sentinel really is in the held Config, so the assertion below is not vacuous.
+        assertThat(tls.getString("key-store-password")).isEqualTo(LocalTestPki.PASSWORD);
+        assertThat(process.toString())
+                .isEqualTo("NativeActorProcessEnrollment[systemName=signaling-c001]")
+                .doesNotContain(LocalTestPki.PASSWORD);
+    }
+
     static CellRpcServer.Peer peer(String cell, String role, String workload) {
         return new CellRpcServer.Peer(cell, role, workload);
     }

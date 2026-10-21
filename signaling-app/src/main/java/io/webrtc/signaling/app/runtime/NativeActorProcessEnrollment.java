@@ -23,4 +23,10 @@ public record NativeActorProcessEnrollment(
         config = config.resolve();
         ShardingBootstrap.validateProduction(config);
     }
+
+    /** The config holds PKCS12 passwords and the TLS contexts hold key material: never rendered. */
+    @Override
+    public String toString() {
+        return "NativeActorProcessEnrollment[systemName=" + systemName + "]";
+    }
 }
