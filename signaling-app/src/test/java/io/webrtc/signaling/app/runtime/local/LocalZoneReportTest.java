@@ -67,6 +67,17 @@ class LocalZoneReportTest {
     }
 
     @Test
+    void completeIsStatedOnlyWhenTwoDistinctEnrolledZonesAreUp() {
+        var report = new LocalZoneReport(Set.of("az-a", "az-b"));
+        report.observe(List.of("az-a", "az-b", "INVALID"));
+        assertThat(events.list).hasSize(1);
+        assertThat(events.list.getFirst().getLevel().toString()).isEqualTo("INFO");
+        // A single enrolled zone can never satisfy the two-zone compatibility window.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new LocalZoneReport(Set.of("az-a")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void theReportIsAMaintenanceJobThatNeverFailsTheScheduler() throws Exception {
         var report = new LocalZoneReport(Set.of("az-a", "az-b"));
         NativeWorkerScheduler.Job job =

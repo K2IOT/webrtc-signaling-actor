@@ -48,7 +48,8 @@ final class LocalRuntimeFixtures {
         document.put("healthPort", 9090);
         document.put("relayPort", 9443);
         document.put("azRole", "az-a");
-        document.put("cellAzRoles", List.of("az-a", "az-b"));
+        // The cell's zones belong to actor profiles only (Ruling 27).
+        document.put("cellAzRoles", "ACTOR".equals(plane) ? List.of("az-a", "az-b") : List.of());
         document.put("gatewayId", null);
         document.put("gatewayBootId", null);
         var wal = new LinkedHashMap<String, Object>();

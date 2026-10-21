@@ -233,7 +233,7 @@ public final class LocalActorInstaller {
      */
     static Set<String> cellZones(LocalProcessProfile profile) {
         var zones = profile.cellAzRoles();
-        if (zones.isEmpty() || profile.azRole() == null || !zones.contains(profile.azRole()))
+        if (zones.size() < 2 || profile.azRole() == null || !zones.contains(profile.azRole()))
             throw profileInvalid();
         return Set.copyOf(zones);
     }

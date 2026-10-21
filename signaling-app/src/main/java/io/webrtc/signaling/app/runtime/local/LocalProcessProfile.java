@@ -47,12 +47,15 @@ public record LocalProcessProfile(
         if (businessPort == healthPort) throw new IllegalArgumentException();
         if (azRole != null && !azRole.matches("[A-Za-z0-9_.-]{1,64}"))
             throw new IllegalArgumentException();
-        // The cell's enrolled zones (at most three, as NativeClusterMembership allows). A list in
-        // the file, so a repeated zone is refused rather than silently collapsed.
+        // The cell's enrolled zones (Ruling 27): actor profiles only, two or three distinct az-*
+        // roles (the compatibility window needs two zones; NativeClusterMembership allows three).
+        // A list in the file, so a repeated zone is refused rather than silently collapsed.
         if (cellAzRoles != null && cellAzRoles.stream().anyMatch(Objects::isNull))
             throw new IllegalArgumentException();
         cellAzRoles = cellAzRoles == null ? List.of() : List.copyOf(cellAzRoles);
-        if (cellAzRoles.size() > 3
+        if (plane != Plane.ACTOR && !cellAzRoles.isEmpty()) throw new IllegalArgumentException();
+        if (!cellAzRoles.isEmpty() && cellAzRoles.size() < 2
+                || cellAzRoles.size() > 3
                 || cellAzRoles.stream().distinct().count() != cellAzRoles.size()
                 || cellAzRoles.stream().anyMatch(r -> !r.matches("az-[a-z0-9][a-z0-9-]{0,62}")))
             throw new IllegalArgumentException();

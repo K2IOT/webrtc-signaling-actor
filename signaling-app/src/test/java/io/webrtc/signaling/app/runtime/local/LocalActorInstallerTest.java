@@ -553,7 +553,10 @@ class LocalActorInstallerTest {
 
     @Test
     void refusesAnActorWhoseCellZonesAreMissingOrOmitItsOwnZone() throws Exception {
-        for (var zones : List.<List<String>>of(List.of(), List.of("az-b"), List.of("az-b", "az-c")))
+        for (var zones :
+                List.<List<String>>of(
+                        List.of(), List.of("az-a"), List.of("az-a", "az-a"), List.of("az-b", "az-c"),
+                        List.of("az-a", "az-b", "az-c", "az-d"), List.of("az-a", "AZ-B")))
             assertFailure(
                     () -> install(contract(p -> p.put("cellAzRoles", zones), s -> {
                     })),

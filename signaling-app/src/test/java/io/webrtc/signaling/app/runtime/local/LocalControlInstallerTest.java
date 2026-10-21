@@ -110,6 +110,7 @@ class LocalControlInstallerTest {
                 mount,
                 p -> {
                     p.put("plane", "CONTROL");
+                    p.put("cellAzRoles", List.of());
                     p.put("wal", null);
                     p.put("kube", null);
                     p.put("privacyPseudonymKey", null);

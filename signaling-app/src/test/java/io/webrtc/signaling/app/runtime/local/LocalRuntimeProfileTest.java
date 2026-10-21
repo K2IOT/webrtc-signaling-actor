@@ -278,18 +278,22 @@ class LocalRuntimeProfileTest {
     }
 
     @Test
-    void cellZonesAreBoundedDistinctAzRoles() throws Exception {
+    void cellZonesAreTwoToThreeDistinctAzRolesOnActorProfilesOnly() throws Exception {
         var document = LocalRuntimeFixtures.profile(mount, "ACTOR");
         assertThat(parse(document).cellAzRoles()).containsExactlyInAnyOrder("az-a", "az-b");
+        document.put("cellAzRoles", List.of("az-a", "az-b", "az-c"));
+        assertThat(parse(document).cellAzRoles()).hasSize(3);
         document.put("cellAzRoles", null);
         assertThat(parse(document).cellAzRoles()).isEmpty();
         for (var bad :
                 List.<List<String>>of(
+                        List.of("az-a"),
                         List.of("az-a", "az-a"),
                         List.of("az-a", "az-b", "az-c", "az-d"),
-                        List.of("zone-a"),
-                        List.of("az-A"),
-                        List.of("az-"))) {
+                        List.of("az-a", "zone-b"),
+                        List.of("az-a", "az-B"),
+                        List.of("az-a", "az-"),
+                        List.of("az-a", "az-" + "b".repeat(64)))) {
             var invalid = LocalRuntimeFixtures.profile(mount, "ACTOR");
             invalid.put("cellAzRoles", bad);
             assertInvalid(invalid);
@@ -297,6 +301,16 @@ class LocalRuntimeProfileTest {
         var absent = LocalRuntimeFixtures.profile(mount, "ACTOR");
         absent.remove("cellAzRoles");
         assertInvalid(absent);
+        for (var plane : List.of("GATEWAY", "CONTROL")) {
+            var other = LocalRuntimeFixtures.profile(mount, plane);
+            if (plane.equals("GATEWAY")) {
+                other.put("gatewayId", "local-c001");
+                other.put("gatewayBootId", "00000000-0000-4000-8000-0000000000aa");
+            }
+            assertThat(parse(other).cellAzRoles()).isEmpty();
+            other.put("cellAzRoles", List.of("az-a", "az-b"));
+            assertInvalid(other);
+        }
     }
 
     // helpers

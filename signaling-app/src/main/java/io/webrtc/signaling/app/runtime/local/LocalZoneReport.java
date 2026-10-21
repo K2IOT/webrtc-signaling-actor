@@ -29,6 +29,8 @@ final class LocalZoneReport {
     private SortedSet<String> reported;
 
     LocalZoneReport(Set<String> enrolled) {
+        // One zone can never open the two-zone compatibility window (Ruling 27).
+        if (enrolled.size() < 2) throw new IllegalArgumentException("At least two enrolled zones");
         this.enrolled = Set.copyOf(enrolled);
     }
 
@@ -44,7 +46,9 @@ final class LocalZoneReport {
         if (missing.equals(reported)) return;
         reported = missing;
         if (missing.isEmpty()) {
-            LOG.info("Local actor zones complete");
+            // Only a positive fact: at least two distinct enrolled zones have Up members.
+            if (enrolled.stream().filter(upZones::contains).count() >= 2)
+                LOG.info("Local actor zones complete");
             return;
         }
         for (var zone : missing)
@@ -64,6 +68,8 @@ final class LocalZoneReport {
                         observe(upZones.get());
                     } catch (RuntimeException unavailable) {
                         // Membership not readable yet (e.g. before local Up): nothing to state.
+                        // The class name only; an exception message may carry addresses.
+                        LOG.debug("Local zone report skipped: {}", unavailable.getClass().getSimpleName());
                     }
                     return new RpcOperation<>(
                             CompletableFuture.completedFuture(null), CompletableFuture.completedFuture(null));

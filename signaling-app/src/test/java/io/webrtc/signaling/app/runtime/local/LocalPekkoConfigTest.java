@@ -219,7 +219,11 @@ class LocalPekkoConfigTest {
                         p -> compatibility(p).put("minor", 0),
                         p -> p.put("compatibility", null),
                         p -> p.put("kube", null),
-                        p -> p.put("plane", "GATEWAY"));
+                        p -> {
+                            // A gateway profile carries no cell zones (Ruling 27).
+                            p.put("plane", "GATEWAY");
+                            p.put("cellAzRoles", List.of());
+                        });
         for (var edit : edits) {
             var c = contract(edit);
             assertFailure(() -> build(c, environment()), Role.PROFILE, Category.INVALID);

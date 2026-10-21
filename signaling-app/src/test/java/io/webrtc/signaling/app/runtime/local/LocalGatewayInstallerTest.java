@@ -112,6 +112,7 @@ class LocalGatewayInstallerTest {
                 mount,
                 p -> {
                     p.put("plane", "GATEWAY");
+                    p.put("cellAzRoles", List.of());
                     p.put("gatewayId", "local-c001");
                     p.put("gatewayBootId", BOOT_C001.toString());
                     p.put("wal", null);

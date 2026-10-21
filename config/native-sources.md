@@ -472,14 +472,17 @@ Actor plane (`LocalActorInstaller`) uses these profile fields:
 - `wal`: the observed writer facts for `NativeWalEnrollment`, always with
   `localSingleWriter=false`. An empty `replicas` set or `synchronousReplicas < 1`
   is refused; there is no standby-less local mode.
-- `cellAzRoles`: the cell's enrolled AZ roles (1 to 3 distinct `az-*` names,
-  including this actor's own `azRole`). Cluster membership counts and
-  classifies peers by this set: a peer in a zone outside it is invalid. Every
-  actor of a cell carries the same list. Other planes leave it empty (`[]` or
-  `null`). While an enrolled zone has no Up member, the actor logs a WARN with
-  the attribute `missingZone` (the zone name only) each time the set changes;
-  such a cell forms but stays not ready, because compatibility admission needs
-  two zones.
+- `cellAzRoles`: the cell's enrolled AZ roles: 2 to 3 distinct names matching
+  `az-[a-z0-9][a-z0-9-]{0,62}`, including this actor's own `azRole` (one zone
+  can never open the two-zone compatibility window). Cluster membership counts
+  and classifies peers by this set: a peer in a zone outside it is invalid.
+  Every actor of a cell carries the same list. Gateway and control profiles
+  must leave it empty (`[]` or `null`); anything else is
+  `Local runtime profile: INVALID`. While an enrolled zone has no Up member,
+  the actor logs a WARN with the attribute `missingZone` (the zone name only)
+  each time the set changes; such a cell forms but stays not ready, because
+  compatibility admission needs two zones. "Local actor zones complete" (INFO)
+  is logged only once at least two distinct enrolled zones have Up members.
 - Artery (`25520`) and Pekko management (`8558`) bind only `podIp`, never every
   interface, so they stay on the cell network (spec §3.2).
 - `azRole`, `podIp`, `healthPort`, `businessPort`, `compatibility`, `kube`: Pekko
