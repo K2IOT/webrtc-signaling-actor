@@ -1,7 +1,7 @@
 # Docker Compose hai cell — môi trường signaling chạy được trên một máy
 
 Date: 2026-10-21
-Status: DRAFT — SP1 (Local runtime adapter) đã triển khai trên `dev-docker-fix` (đến `7c75c25`, cùng image contract và tài liệu `config/native-sources.md`); thiết kế đã được người dùng duyệt ở mức hội thoại (2026-10-21). SP2, SP3 và deployment NOT_RUN. Các mục §4.1–§4.3, §4.5–§4.6, §8, §9 phản ánh những gì SP1 thực sự xây; mục còn lại vẫn là thiết kế chưa triển khai.
+Status: DRAFT — SP1 (Local runtime adapter) đã triển khai trên `dev-docker-fix`, cùng image contract và tài liệu `config/native-sources.md`; spec bằng văn bản chờ rà soát (thiết kế đã được người dùng duyệt ở mức hội thoại, 2026-10-21). SP2, SP3 và deployment NOT_RUN. Các mục §4.1–§4.3, §4.5–§4.6, §8, §9 phản ánh những gì SP1 thực sự xây; mục còn lại vẫn là thiết kế chưa triển khai.
 Environment: **LOCAL_TEST_ONLY** / `local-minikube` / `local-test-only`.
 Qualification: **NOT_QUALIFIED**. Compose chỉ có thể đạt `LOCAL_QUALIFIED`. Không có tuyên bố production, HA thật, physical fencing hay 10M.
 Source baseline: branch `dev-docker-fix`, `9c14b4f`.
@@ -163,7 +163,7 @@ Generator thuần `openssl` + `keytool`, deterministic theo `topology.env`, ghi 
 | Mục đích | CA | Certificate | Yêu cầu |
 |---|---|---|---|
 | HTTPS công khai | CA-public | identity (nếu bật HTTPS) | DNS SAN theo hostname §3.2 |
-| RPC workload | CA-workload | actor, gateway | **đúng một** URI SAN `spiffe://signaling/local-test-only/cell/<cell>/(actor\|gateway)[/<id>]`, DNS SAN khớp `tlsAuthority`, TLS 1.3, EKU server+client |
+| RPC workload | CA-workload | actor, gateway | **đúng một** URI SAN `spiffe://signaling/local-test-only/cell/<cell>/(actor\|gateway)[/<id>]`, DNS SAN khớp `tlsAuthority`, TLS 1.3, EKU server+client; gateway thêm DNS SAN công khai cho WSS (§3.2) |
 | Control (HTTPS công khai + RPC quan sát) | CA-workload (CA mà actor tin) | control | **đúng một** URI SAN `spiffe://signaling/local-test-only/cell/<cell>/control`, cộng DNS SAN công khai cho HTTPS (§3.2), TLS 1.3, EKU server+client |
 | Remoting + management | CA-remoting-`<cell>` (một CA mỗi cell) | mỗi actor, PKCS12 keystore + truststore | IP SAN theo địa chỉ tĩnh, mutual auth |
 | Database | CA-db | PG, client | `verify-full` |

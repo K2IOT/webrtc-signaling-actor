@@ -519,7 +519,8 @@ value, key material or cause. Startup renders exactly one fixed line, for exampl
 ```
 
 This section writes a failure as `role/CATEGORY`. `NATIVE_RUNTIME_NOT_INSTALLED` instead
-means the gate was not open; `STARTUP_FAILED` is the generic diagnostic for a failure that is
+means the adapter registered nothing (gate not open, or the quiet exit for a contract of another
+environment); `STARTUP_FAILED` is the generic diagnostic for a failure that is
 not an adapter rejection. `qualification/scenarios/image-contract.sh` proves the rendering
 above from the packaged image for a contract path that does not exist in the container.
 
@@ -604,8 +605,8 @@ re-provision and restart the cell's containers (compose down, then up).
 
 Actor (`LocalActorInstaller`): opens only `cellDatabase`; it never reads
 `directoryDatabase`. Artery (`25520`) and Pekko management (`8558`) bind only `podIp`, never
-every interface. The cell RPC listener (`businessPort`) and the gateway's WSS and relay
-listeners bind every interface, so the container network design must isolate them. The
+every interface. The cell RPC listener (`businessPort`), the gateway's WSS and relay
+listeners and the control HTTPS listener (`businessPort`) bind every interface, so the container network design must isolate them. The
 private health address is `podIp:healthPort`.
 
 Gateway (`LocalGatewayInstaller`): opens no database. It verifies relay proofs with public
@@ -661,7 +662,9 @@ numbers (`"first": 1.9`) are rejected.
   `SessionRegistryService.bucket`). Ranges must not overlap. Each cell must be one of the
   contract's `cells`, with that cell's `storageEpoch`. A range maps every bucket in it to the
   trusted home `(cell, directoryEpoch, storageEpoch)`. The split must equal the seeded
-  `directory_bucket` rows; the process never reads those rows, so the renderer is responsible.
+  `directory_bucket` rows. No process cross-checks the snapshot against those rows: the control
+  plane resolves bootstrap routes from the rows, while actor and gateway use only the snapshot,
+  so the renderer is responsible for keeping them equal.
   A bucket that no range covers has no trusted home and every home check for its users fails.
 - `gatewayBoots`: at most 128 entries, exactly one for every contract `gateways` entry, and
   no other. It pins the boot id the actor's gateway relay client and compatibility
