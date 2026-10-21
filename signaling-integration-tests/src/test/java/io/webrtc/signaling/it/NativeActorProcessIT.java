@@ -761,6 +761,7 @@ class NativeActorProcessIT {
                                     beans.getBeanProvider(NativeActorProcess.class),
                                     beans.getBeanProvider(io.webrtc.signaling.auth.CallAuthorizationPolicy.class),
                                     null,
+                                    null,
                                     null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("Native actor business process differs from managed enrollment");
