@@ -64,6 +64,7 @@ import static io.webrtc.signaling.app.runtime.local.LocalActorInstallerTest.dest
 import static io.webrtc.signaling.app.runtime.local.LocalActorInstallerTest.instance;
 import static io.webrtc.signaling.app.runtime.local.LocalActorInstallerTest.userInBucket;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -131,13 +132,25 @@ class LocalGatewayInstallerTest {
         });
     }
 
-    /** The gateway needs only the cluster fingerprint: no remoting passwords, no Kubernetes API. */
+    /**
+     * The gateway needs only the cluster fingerprint and the effective identity: no remoting
+     * passwords, no Kubernetes API.
+     */
+    static MockEnvironment environment() {
+        return new MockEnvironment()
+                .withProperty("SIGNALING_CLUSTER_FINGERPRINT", LocalPekkoConfigTest.FINGERPRINT)
+                .withProperty("SIGNALING_CELL_ID", "c001")
+                .withProperty("SIGNALING_IDENTITY_ISSUER", "LOCAL_TEST_ONLY_ISSUER")
+                .withProperty("SIGNALING_IDENTITY_AUDIENCE", "LOCAL_TEST_ONLY_AUDIENCE");
+    }
+
     static GenericApplicationContext context() {
+        return context(environment());
+    }
+
+    static GenericApplicationContext context(MockEnvironment env) {
         var ctx = new GenericApplicationContext();
-        ctx.setEnvironment(
-                new MockEnvironment()
-                        .withProperty("SIGNALING_CLUSTER_FINGERPRINT", LocalPekkoConfigTest.FINGERPRINT)
-                        .withProperty("SIGNALING_CELL_ID", "c001"));
+        ctx.setEnvironment(env);
         return ctx;
     }
 
@@ -196,8 +209,10 @@ class LocalGatewayInstallerTest {
                     .isEqualTo(new NativeSessionHandler.GatewayIdentity("local-c001", BOOT_C001, "c001", 1, "c001"));
             assertThat(business.routingEpoch()).isEqualTo(1);
             assertThat(business.tokens()).isSameAs(tokens);
-            assertThat(business.relayCacheCapacity()).isEqualTo(LocalGatewayInstaller.RELAY_CACHE_CAPACITY);
-            assertThat(business.relayPendingLimit()).isEqualTo(LocalGatewayInstaller.RELAY_PENDING_LIMIT);
+            assertThat(business.relayCacheCapacity()).isEqualTo(1024);
+            assertThat(business.relayPendingLimit()).isEqualTo(32);
+            // Verify-only: the gateway holds the trusted public keys and no signing key.
+            assertThat(signingKey(business.relayProofs())).isNull();
             assertThat(business.homes().apply(userInBucket(8192, 16383)))
                     .isEqualTo(new ProofBindings.TrustedHome("c002", 3, 1));
 
@@ -265,9 +280,9 @@ class LocalGatewayInstallerTest {
         assertThat(ingress.wssAddress()).isEqualTo(new InetSocketAddress("0.0.0.0", 8443));
         assertThat(ingress.rpcPort()).isEqualTo(9443);
         assertThat(ingress.rpcEnvironment()).isEqualTo("local-test-only");
-        assertThat(ingress.eventLoops()).isEqualTo(LocalGatewayInstaller.EVENT_LOOPS);
-        assertThat(ingress.maxUnauthenticated()).isEqualTo(LocalGatewayInstaller.MAX_UNAUTHENTICATED);
-        assertThat(ingress.maxConnections()).isEqualTo(LocalGatewayInstaller.MAX_CONNECTIONS);
+        assertThat(ingress.eventLoops()).isEqualTo(2);
+        assertThat(ingress.maxUnauthenticated()).isEqualTo(64);
+        assertThat(ingress.maxConnections()).isEqualTo(1024);
         assertThat(ingress.rpcAdmission()).isEqualTo(LocalActorInstaller.ADMISSION);
         assertThat(ingress.writeAdmission()).isEqualTo(LocalActorInstaller.ADMISSION);
 
@@ -306,13 +321,18 @@ class LocalGatewayInstallerTest {
     }
 
     @Test
-    void refusesProfileWithTransferCells() throws Exception {
+    void profileLoadRefusesGatewayProfileWithTransferCells() throws Exception {
         // Valid twin: the same gateway mount without transfer cells loads and installs.
         assertThat(install(contract()).getBeanDefinitionCount()).isEqualTo(REGISTERED.size());
+        // The profile itself refuses them at load, so no gateway installer ever sees one.
         assertFailure(
                 () -> contract(p -> p.put("transferCells", List.of(LocalRuntimeFixtures.transferCell("c002", 1)))),
                 Role.PROFILE,
                 Category.INVALID);
+    }
+
+    @Test
+    void refusesAnotherPlaneOrAMissingGatewayIdentity() throws Exception {
         // A profile for another plane is never installed as a gateway.
         var actor = contract(p -> p.put("plane", "ACTOR"));
         var ctx = context();
@@ -326,6 +346,66 @@ class LocalGatewayInstallerTest {
                 })),
                 Role.PROFILE,
                 Category.INVALID);
+    }
+
+    @Test
+    void gatewayNeverReadsTheProofSigningKey() throws Exception {
+        var c = contract();
+        var signingKey = mount.resolve("proof.key");
+        // Garbage where the signing key should be: the actor's proof owner refuses it ...
+        java.nio.file.Files.writeString(signingKey, "TEST_ONLY_NOT_A_KEY");
+        assertThatThrownBy(() -> LocalTrust.relayProof(c)).isInstanceOf(LocalRuntimeFailure.class);
+        // ... and the gateway installs and refreshes, because it never opens the file.
+        var ctx = refreshed(c);
+        try {
+            var proofs = ctx.getBean(NativeGatewayBusinessEnrollment.class).relayProofs();
+            assertThat(signingKey(proofs)).isNull();
+            assertThat(trusted(proofs)).containsOnlyKeys("c001/local");
+            assertThat(trusted(proofs).get("c001/local").getEncoded()).isEqualTo(keys.proof.getPublic().getEncoded());
+            retireSources(ctx);
+        } finally {
+            ctx.close();
+        }
+        // The same holds when the signing key file does not exist at all.
+        java.nio.file.Files.delete(signingKey);
+        assertThat(install(c).getBeanDefinitionCount()).isEqualTo(REGISTERED.size());
+    }
+
+    @Test
+    void refusesAContractIdentityThatDiffersFromTheEffectiveOne() throws Exception {
+        var c = contract();
+        assertThat(install(c).getBeanDefinitionCount()).as("matching twin").isEqualTo(REGISTERED.size());
+        for (var edit :
+                List.<Consumer<MockEnvironment>>of(
+                        env -> env.setProperty("SIGNALING_IDENTITY_ISSUER", "TEST_ONLY_OTHER_ISSUER"),
+                        env -> env.setProperty("SIGNALING_IDENTITY_AUDIENCE", "TEST_ONLY_OTHER_AUDIENCE"))) {
+            var env = environment();
+            edit.accept(env);
+            var ctx = context(env);
+            assertFailure(() -> LocalGatewayInstaller.install(ctx, c), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+            assertThat(ctx.getBeanDefinitionCount()).isZero();
+        }
+        var missing =
+                context(
+                        new MockEnvironment()
+                                .withProperty("SIGNALING_CLUSTER_FINGERPRINT", LocalPekkoConfigTest.FINGERPRINT)
+                                .withProperty("SIGNALING_IDENTITY_ISSUER", "LOCAL_TEST_ONLY_ISSUER"));
+        assertFailure(() -> LocalGatewayInstaller.install(missing, c), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+        assertThat(missing.getBeanDefinitionCount()).isZero();
+    }
+
+    static Object signingKey(io.webrtc.signaling.rpc.RelaySessionAuthorizationProof proofs) throws Exception {
+        var field = proofs.getClass().getDeclaredField("privateKey");
+        field.setAccessible(true);
+        return field.get(proofs);
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, java.security.PublicKey> trusted(io.webrtc.signaling.rpc.RelaySessionAuthorizationProof proofs)
+            throws Exception {
+        var field = proofs.getClass().getDeclaredField("trusted");
+        field.setAccessible(true);
+        return (Map<String, java.security.PublicKey>) field.get(proofs);
     }
 
     @Test

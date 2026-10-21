@@ -112,6 +112,7 @@ public final class LocalActorInstaller {
             Function<NativeControlDatabaseEnrollment.Database, SqlTransactions> opener) {
         var profile = c.profile();
         if (profile.plane() != Plane.ACTOR) throw profileInvalid();
+        c.requireIdentity(ctx.getEnvironment());
         var contract = c.contract();
 
         var config = LocalPekkoConfig.build(c, ctx.getEnvironment(), processEnvironment);
@@ -251,9 +252,7 @@ public final class LocalActorInstaller {
 
     private static NativeActorSourceEnrollment source(LocalRuntimeContract c) {
         var contract = c.contract();
-        var sources = contract.sources();
-        var tls = LocalTls.jdkMutualClient(c);
-        var keys = LocalTrust.ed25519Keys(c, sources.publicKeys());
+        var endpoints = LocalTrust.sourceEndpoints(c);
         try {
             return new NativeActorSourceEnrollment(
                     contract.cell(),
@@ -261,8 +260,8 @@ public final class LocalActorInstaller {
                     c.profile().podUid(),
                     c.processBoot(),
                     contract.identity(),
-                    LocalTrust.endpoint(sources.clockUrl(), tls, keys),
-                    LocalTrust.endpoint(sources.revocationUrl(), tls, keys));
+                    endpoints.clock(),
+                    endpoints.revocations());
         } catch (IllegalArgumentException rejected) {
             throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
         }

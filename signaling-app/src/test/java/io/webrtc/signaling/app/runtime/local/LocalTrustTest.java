@@ -104,6 +104,35 @@ class LocalTrustTest {
     }
 
     @Test
+    void relayVerifierTrustsThePublicKeysAndNeverReadsTheSigningKey() throws Exception {
+        install();
+        var verifier = LocalTrust.relayVerifier(c);
+        assertThat(field(verifier, "privateKey")).isNull();
+        @SuppressWarnings("unchecked")
+        var trusted = (Map<String, java.security.PublicKey>) field(verifier, "trusted");
+        assertThat(trusted).containsOnlyKeys("c001/local");
+        assertThat(trusted.get("c001/local").getEncoded()).isEqualTo(keys.proof.getPublic().getEncoded());
+
+        var signingKey = mount.resolve("proof.key");
+        Files.writeString(signingKey, "TEST_ONLY_SECRET_NOT_A_KEY");
+        assertThatThrownBy(() -> LocalTrust.relayProof(c)).isInstanceOf(LocalRuntimeFailure.class);
+        assertThat(field(LocalTrust.relayVerifier(c), "privateKey")).isNull();
+        Files.delete(signingKey);
+        assertFailure(() -> LocalTrust.relayProof(c), Role.PATH, Category.MISSING);
+        assertThat(field(LocalTrust.relayVerifier(c), "privateKey")).isNull();
+
+        // Its trusted keys are still checked: an RSA key is refused.
+        Files.copy(mount.resolve("rsa.pub"), mount.resolve("proof.pub"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        assertFailure(() -> LocalTrust.relayVerifier(c), Role.CONTRACT, Category.INVALID);
+    }
+
+    static Object field(Object owner, String name) throws Exception {
+        var field = owner.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(owner);
+    }
+
+    @Test
     void ed25519KeysAreReadByIdAndMustBeEd25519() throws Exception {
         install();
         var parsed = LocalTrust.ed25519Keys(c, c.contract().sources().publicKeys());

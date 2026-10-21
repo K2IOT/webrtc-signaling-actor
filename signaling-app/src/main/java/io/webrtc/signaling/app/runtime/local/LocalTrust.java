@@ -99,6 +99,20 @@ public final class LocalTrust {
         }
     }
 
+    /**
+     * Verify-only relay proofs over the contract's trusted proof public keys. The signing key named
+     * by {@code proofs.privateKey} is never opened, so a process that only verifies (the
+     * internet-facing gateway) holds no key that could issue a proof.
+     */
+    public static RelaySessionAuthorizationProof relayVerifier(LocalRuntimeContract c) {
+        var trusted = ed25519Keys(c, c.contract().proofs().publicKeys());
+        try {
+            return new RelaySessionAuthorizationProof(trusted);
+        } catch (IllegalArgumentException rejected) {
+            throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
+        }
+    }
+
     private record ProofKeys(PrivateKey signing, Map<String, PublicKey> trusted) {
     }
 
@@ -149,6 +163,28 @@ public final class LocalTrust {
                     ed25519Keys(c, c.contract().sources().publicKeys()),
                     Clock.systemUTC(),
                     System::nanoTime);
+        } catch (IllegalArgumentException rejected) {
+            throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
+        }
+    }
+
+    /** The contract's two signed safety sources, as every plane that polls them enrolls them. */
+    public record SourceEndpoints(
+            NativeActorSourceEnrollment.Endpoint clock, NativeActorSourceEnrollment.Endpoint revocations) {
+    }
+
+    /**
+     * Clock and revocation endpoints over the pod's mutual-TLS client identity ({@link
+     * LocalTls#jdkMutualClient}), each trusting exactly the contract's source keys. A URL the
+     * endpoint refuses is {@code CONTRACT/INVALID}; construction performs no I/O.
+     */
+    public static SourceEndpoints sourceEndpoints(LocalRuntimeContract c) {
+        var sources = c.contract().sources();
+        var tls = LocalTls.jdkMutualClient(c);
+        var keys = ed25519Keys(c, sources.publicKeys());
+        try {
+            return new SourceEndpoints(
+                    endpoint(sources.clockUrl(), tls, keys), endpoint(sources.revocationUrl(), tls, keys));
         } catch (IllegalArgumentException rejected) {
             throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
         }

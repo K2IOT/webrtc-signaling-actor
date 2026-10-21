@@ -53,13 +53,16 @@ public final class LocalGatewayInstaller {
     static final Predicate<HttpHeaders> NO_NATIVE_CLIENTS = headers -> false;
     /** Listeners bind every interface; the private health probe never does. */
     static final String ALL_INTERFACES = "0.0.0.0";
-    /** Ingress bounds from the IT recipe ({@code NativeGatewayCommandIT.mainGateway}). */
-    static final int EVENT_LOOPS = 1;
-    static final int MAX_UNAUTHENTICATED = 8;
-    static final int MAX_CONNECTIONS = 16;
-    /** Relay proof cache bounds from the same recipe; the enrollment allows 1..4096 and 1..64. */
-    static final int RELAY_CACHE_CAPACITY = 4;
-    static final int RELAY_PENDING_LIMIT = 2;
+    /**
+     * Local ingress bounds (Ruling 20). The enrollment allows 1..64 event loops, 1..1000
+     * unauthenticated and up to 200000 connections.
+     */
+    static final int EVENT_LOOPS = 2;
+    static final int MAX_UNAUTHENTICATED = 64;
+    static final int MAX_CONNECTIONS = 1024;
+    /** Relay proof cache bounds (Ruling 20); the enrollment allows 1..4096 and 1..64. */
+    static final int RELAY_CACHE_CAPACITY = 1024;
+    static final int RELAY_PENDING_LIMIT = 32;
     /** Scoped revocation facts retained before re-enrollment is required (cache allows 1..65536). */
     static final int SECURITY_CAPACITY = 4096;
     /** Both safety sources poll ten times per second, as on the control plane. */
@@ -85,13 +88,13 @@ public final class LocalGatewayInstaller {
     static void install(
             GenericApplicationContext ctx, LocalRuntimeContract c, Clock wall, LongSupplier elapsed) {
         var profile = c.profile();
-        // A gateway profile never carries other cells' credentials and never names no origin.
+        // Transfer cells never reach here: LocalProcessProfile refuses them on every non-control plane.
         if (profile.plane() != Plane.GATEWAY
-                || !profile.transferCells().isEmpty()
                 || profile.gatewayId() == null
                 || profile.allowedOrigins().isEmpty()
                 || profile.relayPort() == profile.businessPort()
                 || profile.relayPort() == profile.healthPort()) throw profileInvalid();
+        c.requireIdentity(ctx.getEnvironment());
         var contract = c.contract();
 
         var fingerprint = LocalPekkoConfig.fingerprint(ctx.getEnvironment());
@@ -101,11 +104,12 @@ public final class LocalGatewayInstaller {
         var ingress = ingress(c);
         var cells = LocalActorInstaller.cells(c);
         var observation = LocalActorInstaller.observation(c, fingerprint, snapshot);
-        var relayProofs = LocalTrust.relayProof(c);
+        // Verify-only (Ruling 19): the internet-facing gateway never opens the proof signing key.
+        var relayProofs = LocalTrust.relayVerifier(c);
         // Keys are parsed and checked now; only the thread-owning wrapper is built lazily.
         var jwt = LocalTrust.jwtVerifier(c);
         var clock = LocalTrust.clockMonitor(c);
-        var sources = sources(c);
+        var sources = LocalTrust.sourceEndpoints(c);
         var security = security(c, sources.revocations(), wall, elapsed);
 
         ctx.registerBean(NativeGatewayIngressEnrollment.class, () -> ingress);
@@ -237,24 +241,6 @@ public final class LocalGatewayInstaller {
                     GatewaySecuritySweep.Settings.candidate());
         } catch (IllegalArgumentException rejected) {
             throw profileInvalid();
-        }
-    }
-
-    private record Sources(
-            NativeActorSourceEnrollment.Endpoint clock, NativeActorSourceEnrollment.Endpoint revocations) {
-    }
-
-    /** Both signed source endpoints over the pod's mutual-TLS client identity. */
-    private static Sources sources(LocalRuntimeContract c) {
-        var sources = c.contract().sources();
-        var tls = LocalTls.jdkMutualClient(c);
-        var keys = LocalTrust.ed25519Keys(c, sources.publicKeys());
-        try {
-            return new Sources(
-                    LocalTrust.endpoint(sources.clockUrl(), tls, keys),
-                    LocalTrust.endpoint(sources.revocationUrl(), tls, keys));
-        } catch (IllegalArgumentException rejected) {
-            throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
         }
     }
 

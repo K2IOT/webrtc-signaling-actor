@@ -26,6 +26,37 @@ class LocalRuntimeContractTest {
     @TempDir
     Path mount;
 
+    static org.springframework.mock.env.MockEnvironment identity(String issuer, String audience) {
+        var env = new org.springframework.mock.env.MockEnvironment();
+        if (issuer != null) env.setProperty("SIGNALING_IDENTITY_ISSUER", issuer);
+        if (audience != null) env.setProperty("SIGNALING_IDENTITY_AUDIENCE", audience);
+        return env;
+    }
+
+    @Test
+    void contractIdentityMustEqualTheEffectiveSpringIdentity() throws Exception {
+        var c = LocalRuntimeContract.load(LocalRuntimeFixtures.install(mount, "ACTOR"));
+        c.requireIdentity(identity("LOCAL_TEST_ONLY_ISSUER", "LOCAL_TEST_ONLY_AUDIENCE"));
+        // The property names SignalingProperties binds are equally authoritative.
+        c.requireIdentity(
+                new org.springframework.mock.env.MockEnvironment()
+                        .withProperty("signaling.identity.issuer", "LOCAL_TEST_ONLY_ISSUER")
+                        .withProperty("signaling.identity.audience", "LOCAL_TEST_ONLY_AUDIENCE"));
+
+        for (var env :
+                List.of(
+                        identity("TEST_ONLY_SECRET_ISSUER", "LOCAL_TEST_ONLY_AUDIENCE"),
+                        identity("LOCAL_TEST_ONLY_ISSUER", "TEST_ONLY_SECRET_AUDIENCE"),
+                        identity(null, "LOCAL_TEST_ONLY_AUDIENCE"),
+                        identity("LOCAL_TEST_ONLY_ISSUER", null),
+                        identity("", "LOCAL_TEST_ONLY_AUDIENCE"),
+                        identity("local_test_only_issuer", "LOCAL_TEST_ONLY_AUDIENCE"),
+                        // The variable and the bound property disagree: neither may be ignored.
+                        identity("LOCAL_TEST_ONLY_ISSUER", "LOCAL_TEST_ONLY_AUDIENCE")
+                                .withProperty("signaling.identity.issuer", "TEST_ONLY_SECRET_ISSUER")))
+            assertFailure(() -> c.requireIdentity(env), Role.IDENTITY, Category.IDENTITY_MISMATCH);
+    }
+
     @Test
     void loadsContractAndProfileFromTheMountedDirectory() throws Exception {
         var loaded = LocalRuntimeContract.load(LocalRuntimeFixtures.install(mount, "ACTOR"));

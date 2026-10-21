@@ -26,6 +26,8 @@ public record LocalRuntimeContract(
     static final String PROFILE_DEFAULT = "/run/signaling/process.json";
     static final String CONTRACT_VARIABLE = "SIGNALING_NATIVE_PROVIDER_CONTRACT";
     static final String CONTRACT_DEFAULT = "/run/signaling/provider.json";
+    static final String ISSUER_VARIABLE = "SIGNALING_IDENTITY_ISSUER";
+    static final String AUDIENCE_VARIABLE = "SIGNALING_IDENTITY_AUDIENCE";
     private static final int MAX_PATH = 512;
 
     public LocalRuntimeContract {
@@ -64,6 +66,32 @@ public record LocalRuntimeContract(
             confine(directory, profile.kube().tokenPath(), Role.PROFILE);
         }
         return new LocalRuntimeContract(contract, profile, directory, UUID.randomUUID());
+    }
+
+    /**
+     * Requires the contract's identity issuer and audience to equal the effective Spring identity,
+     * which {@code SignalingProperties} binds: {@code SIGNALING_IDENTITY_ISSUER} and {@code
+     * SIGNALING_IDENTITY_AUDIENCE}, or their bound names {@code signaling.identity.issuer} and
+     * {@code signaling.identity.audience}. Every value present under either name must match exactly,
+     * and at least one must be present; a blank value is a mismatch. Otherwise the result is {@code
+     * IDENTITY/IDENTITY_MISMATCH}, carrying no value.
+     *
+     * <p>Every plane installer (actor, gateway and control) calls this before it registers anything,
+     * so tokens verified by the contract's keys and the configuration's identity cannot diverge.
+     */
+    public void requireIdentity(Environment env) {
+        var identity = contract.identity();
+        if (!effective(env, "signaling.identity.issuer", ISSUER_VARIABLE, identity.issuer())
+                || !effective(env, "signaling.identity.audience", AUDIENCE_VARIABLE, identity.audience()))
+            throw LocalJson.failure(Role.IDENTITY, Category.IDENTITY_MISMATCH);
+    }
+
+    private static boolean effective(Environment env, String property, String variable, String expected) {
+        var bound = env.getProperty(property);
+        var raw = env.getProperty(variable);
+        return (bound != null || raw != null)
+                && (bound == null || bound.equals(expected))
+                && (raw == null || raw.equals(expected));
     }
 
     /**

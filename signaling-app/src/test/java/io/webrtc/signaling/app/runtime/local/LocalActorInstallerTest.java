@@ -114,8 +114,32 @@ class LocalActorInstallerTest {
         var ctx = new GenericApplicationContext();
         var env = LocalPekkoConfigTest.environment();
         env.setProperty("SIGNALING_CELL_ID", c.contract().cell());
+        env.setProperty("SIGNALING_IDENTITY_ISSUER", "LOCAL_TEST_ONLY_ISSUER");
+        env.setProperty("SIGNALING_IDENTITY_AUDIENCE", "LOCAL_TEST_ONLY_AUDIENCE");
         ctx.setEnvironment(env);
         return ctx;
+    }
+
+    @Test
+    void refusesAContractIdentityThatDiffersFromTheEffectiveOne() throws Exception {
+        var c = contract();
+        assertThat(install(c).getBeanDefinitionCount()).as("matching twin").isEqualTo(REGISTERED.size());
+        for (var name : List.of("SIGNALING_IDENTITY_ISSUER", "SIGNALING_IDENTITY_AUDIENCE")) {
+            var ctx = context(c);
+            ((org.springframework.mock.env.MockEnvironment) ctx.getEnvironment()).setProperty(name, "TEST_ONLY_OTHER");
+            assertFailure(
+                    () -> LocalActorInstaller.install(ctx, c, LocalPekkoConfigTest.osEnvironment()::get, d -> null),
+                    Role.IDENTITY,
+                    Category.IDENTITY_MISMATCH);
+            assertThat(ctx.getBeanDefinitionCount()).as(name).isZero();
+        }
+        var missing = new GenericApplicationContext();
+        missing.setEnvironment(LocalPekkoConfigTest.environment().withProperty("SIGNALING_CELL_ID", "c001"));
+        assertFailure(
+                () -> LocalActorInstaller.install(missing, c, LocalPekkoConfigTest.osEnvironment()::get, d -> null),
+                Role.IDENTITY,
+                Category.IDENTITY_MISMATCH);
+        assertThat(missing.getBeanDefinitionCount()).isZero();
     }
 
     /** Installs into a fresh, unrefreshed context; nothing is instantiated. */
@@ -369,6 +393,9 @@ class LocalActorInstallerTest {
         assertThat(source.podUid()).isEqualTo(LocalRuntimeFixtures.POD_UID);
         assertThat(source.processBoot()).isEqualTo(c.processBoot());
         assertThat(source.clock().uri().toString()).isEqualTo("https://source.platform.svc/v1/c001/clock");
+        assertThat(source.revocations().uri().toString())
+                .isEqualTo("https://source.platform.svc/v1/c001/revocations");
+        assertThat(source.clock().keys()).containsOnlyKeys("source").isEqualTo(source.revocations().keys());
 
         var cells = instance(ctx, NativeCellRpcEnrollment.class);
         assertThat(cells.environment()).isEqualTo("local-test-only");
