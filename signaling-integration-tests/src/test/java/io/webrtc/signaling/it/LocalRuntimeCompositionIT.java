@@ -208,6 +208,43 @@ class LocalRuntimeCompositionIT {
         }
     }
 
+    /**
+     * Review Focus 5: six actors that all carry {@code az-a} in a cell enrolled for {@code az-a}
+     * and {@code az-b}. Every process starts and stays up, the cell forms, yet no actor becomes
+     * ready (compatibility needs two zones), and the packaged log names the missing zone.
+     */
+    @Test
+    @Order(4)
+    void readinessStaysFalseWithOneAzRole() throws Exception {
+        fixture.stop(List.copyOf(cell));
+        cell.clear();
+        var single = fixture.actors(50, List.of("az-a", "az-a", "az-a", "az-a", "az-a", "az-a"));
+        fixture.services.pods(single.stream().map(LocalCompositionFixture.Actor::ip).toList());
+        var started = new ArrayList<LocalCompositionFixture.Started>();
+        for (var actor : single) {
+            var mount = fixture.mountActor(actor, single.getFirst().ip(), List.of("az-a", "az-b"));
+            started.add(fixture.launch(actor.name(), fixture.actorEnvironment(actor, mount), actor.ip(), actor.healthPort()));
+        }
+        cell.addAll(started);
+        for (var actor : started) await(actor, ACTOR_READY, status -> status == 503);
+        // Formed and serving, but held unready for a sustained period: no flapping to 200.
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (System.nanoTime() < end) {
+            for (var actor : started)
+                assertThat(LocalCompositionFixture.ready(actor.healthHost(), actor.healthPort()))
+                        .as(actor.name())
+                        .isEqualTo(503);
+            Thread.sleep(1000);
+        }
+        for (var actor : started) {
+            assertThat(actor.process().isAlive()).as(actor.name() + "\n" + actor.transcript()).isTrue();
+            assertThat(actor.transcript())
+                    .as(actor.name())
+                    .contains("\"missingZone\":\"az-b\"")
+                    .doesNotContain("NATIVE_RUNTIME_NOT_INSTALLED", "STARTUP_FAILED");
+        }
+    }
+
     @Test
     @Order(5)
     void missingMountedContractIsRejectedWithItsRoleAndCategory() throws Exception {
