@@ -19,6 +19,12 @@ import java.util.function.Supplier;
  * measurement window (cold start, stale samples, clock regression) the report is {@code
  * continuous=false} with unsafe figures, and it is never optimistic by default.
  *
+ * <p>{@code continuous} is true only when the window spans at least two seconds, no consecutive
+ * offset jump above 50 ms occurred in it, the pair uncertainty is at most 250000 microseconds and
+ * the relative rate error is at most 1000 ppm, so a consumer that gates only on {@code continuous}
+ * is never told a stalled, stepped or fast-slewing clock is safe. The figures are reported as
+ * computed. A snapshot older than 500 ms is downgraded to unsafe.
+ *
  * <p>Each {@link #sample()} reads {@code n0 = mono; w = wall; n1 = mono}. The pair uncertainty is
  * {@code ceil((n1 - n0) / 2 in microseconds) + 1}; the offset is {@code w - midpoint(n0, n1)}.
  * Samples are kept for the last five seconds of monotonic time.
@@ -41,8 +47,9 @@ public final class HostClockObserver implements AutoCloseable {
   private static final long MIN_SPAN_NANOS = Duration.ofSeconds(2).toNanos();
   private static final long MAX_AGE_NANOS = Duration.ofMillis(500).toNanos();
   private static final long MAX_JUMP_NANOS = Duration.ofMillis(50).toNanos();
+  private static final int MAX_UNCERTAINTY_MICROS = 250_000;
+  private static final int MAX_RATE_ERROR_PPM = 1_000;
   private static final int UNSAFE_FIGURE = 1_000_000;
-  private static final Instant NEVER_OBSERVED = Instant.EPOCH;
 
   private record Sample(long monoMidNanos, long offsetNanos, int uncertaintyMicros) {}
 
@@ -82,11 +89,11 @@ public final class HostClockObserver implements AutoCloseable {
   public Measurement snapshot() {
     Published published = latest;
     if (published == null) {
-      return unsafe(NEVER_OBSERVED);
+      return unsafe(wall.get());
     }
     long age = monotonicNanos.getAsLong() - published.newestMonoNanos();
     if (age < 0 || age > MAX_AGE_NANOS) {
-      return unsafe(published.measurement().observedAt());
+      return unsafe(wall.get());
     }
     return published.measurement();
   }
@@ -127,8 +134,15 @@ public final class HostClockObserver implements AutoCloseable {
     }
   }
 
-  /** A failing clock read must not kill the schedule; it invalidates the window instead. */
-  private void sampleOrDiscard() {
+  /**
+   * A failing clock read must not kill the schedule; it invalidates the window instead.
+   *
+   * <p>The exception is deliberately swallowed without logging: this module has no logging
+   * dependency, and the effect is not hidden because every report stays unsafe (no window, {@code
+   * continuous=false}, figures at 1_000_000) until a fresh qualifying window of at least two
+   * seconds has been rebuilt from successful samples. Package-private for tests.
+   */
+  void sampleOrDiscard() {
     try {
       sample();
     } catch (RuntimeException e) {
@@ -191,7 +205,9 @@ public final class HostClockObserver implements AutoCloseable {
     }
     double drift = (double) absDiff(last.offsetNanos(), first.offsetNanos());
     int ppm = capToInt((long) Math.min(Math.ceil(drift / span * 1e6), (double) Integer.MAX_VALUE));
-    return new Measurement(observedAt, maxUncertainty, ppm, !jumped);
+    boolean continuous =
+        !jumped && maxUncertainty <= MAX_UNCERTAINTY_MICROS && ppm <= MAX_RATE_ERROR_PPM;
+    return new Measurement(observedAt, maxUncertainty, ppm, continuous);
   }
 
   private static Measurement unsafe(Instant observedAt) {

@@ -7,8 +7,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class HostClockObserverTest {
@@ -35,6 +35,7 @@ class HostClockObserverTest {
     assertThat(m.continuous()).isFalse();
     assertThat(m.pairUncertaintyMicros()).isEqualTo(UNSAFE);
     assertThat(m.relativeRateErrorPpm()).isEqualTo(UNSAFE);
+    assertThat(m.observedAt()).isEqualTo(clocks.wallAt(clocks.mono()));
   }
 
   @Test
@@ -94,13 +95,16 @@ class HostClockObserverTest {
   }
 
   @Test
-  void stepBelowJumpThresholdIsStillReportedAsRateError() {
+  void stepBelowJumpThresholdIsStillUnsafeThroughTheRateError() {
     ticks(31);
     clocks.stepWall(40 * MS);
     ticks(1);
 
+    // 40 ms is below the 50 ms jump threshold, but 40 ms over ~3.1 s is ~12900 ppm, so the
+    // amended rule (rate error above 1000 ppm => not continuous) reports it as unsafe.
     HostClockObserver.Measurement m = observer.snapshot();
     assertThat(m.relativeRateErrorPpm()).isGreaterThan(1000);
+    assertThat(m.continuous()).isFalse();
   }
 
   @Test
@@ -110,6 +114,7 @@ class HostClockObserverTest {
 
     HostClockObserver.Measurement m = observer.snapshot();
     assertThat(m.relativeRateErrorPpm()).isGreaterThan(1000).isLessThanOrEqualTo(2001);
+    assertThat(m.continuous()).isFalse();
   }
 
   @Test
@@ -128,15 +133,21 @@ class HostClockObserverTest {
     clocks.stallNextWallRead(600 * MS);
     ticks(1);
 
-    assertThat(observer.snapshot().pairUncertaintyMicros()).isEqualTo(300_001);
+    HostClockObserver.Measurement stalled = observer.snapshot();
+    assertThat(stalled.pairUncertaintyMicros()).isEqualTo(300_001);
+    assertThat(stalled.continuous()).isFalse();
 
     // The stalled sample is centred 0.3 s into the stall; 4.6 s later it is still in the window.
     ticks(40);
-    assertThat(observer.snapshot().pairUncertaintyMicros()).isGreaterThan(250_000);
+    HostClockObserver.Measurement stillInWindow = observer.snapshot();
+    assertThat(stillInWindow.pairUncertaintyMicros()).isEqualTo(300_001);
+    assertThat(stillInWindow.continuous()).isFalse();
 
-    // Once the stalled sample leaves the 5 s window the figure drops back.
+    // Once the stalled sample leaves the 5 s window the figure drops back and the report recovers.
     ticks(20);
-    assertThat(observer.snapshot().pairUncertaintyMicros()).isLessThanOrEqualTo(250_000);
+    HostClockObserver.Measurement recovered = observer.snapshot();
+    assertThat(recovered.pairUncertaintyMicros()).isLessThanOrEqualTo(250_000);
+    assertThat(recovered.continuous()).isTrue();
   }
 
   @Test
@@ -154,17 +165,97 @@ class HostClockObserverTest {
     assertThat(m.continuous()).isFalse();
     assertThat(m.pairUncertaintyMicros()).isEqualTo(UNSAFE);
     assertThat(m.relativeRateErrorPpm()).isEqualTo(UNSAFE);
+    assertThat(m.observedAt()).isEqualTo(clocks.wallAt(clocks.mono()));
   }
 
   @Test
   void monotonicRegressionDiscardsTheWindow() {
     ticks(31);
-    clocks.advance(-5_000 * MS);
+    assertThat(observer.snapshot().continuous()).isTrue();
+
+    // Rewind by 1 s (the wall clock follows). Without the discard the old samples (0.0 to 3.0 s)
+    // plus the new one at 2.1 s would still span 2.1 s and wrongly report continuous.
+    clocks.advance(-1_000 * MS);
     observer.sample();
 
     HostClockObserver.Measurement m = observer.snapshot();
     assertThat(m.continuous()).isFalse();
     assertThat(m.pairUncertaintyMicros()).isEqualTo(UNSAFE);
+    assertThat(m.relativeRateErrorPpm()).isEqualTo(UNSAFE);
+    assertThat(m.observedAt()).isEqualTo(clocks.wallAt(clocks.mono()));
+
+    // Recovery needs two fresh seconds: the sample above is at 2.1 s, so 4.0 s spans only 1.9 s.
+    clocks.advance(100 * MS);
+    ticks(19);
+    assertThat(observer.snapshot().continuous()).isFalse();
+    ticks(1);
+    assertThat(observer.snapshot().continuous()).isTrue();
+  }
+
+  @Test
+  void spanOfExactlyTwoSecondsQualifies() {
+    ticks(20);
+    assertThat(observer.snapshot().continuous()).isFalse(); // 1.9 s
+
+    ticks(1);
+    assertThat(observer.snapshot().continuous()).isTrue(); // exactly 2.0 s
+  }
+
+  @Test
+  void uncertaintyRoundsUpPerTheBriefUnits() {
+    // ceil((n1 - n0) / 2 expressed in microseconds) + 1
+    assertThat(uncertaintyForReadGap(0)).isEqualTo(1);
+    assertThat(uncertaintyForReadGap(1)).isEqualTo(2);
+    assertThat(uncertaintyForReadGap(2_000)).isEqualTo(2);
+    assertThat(uncertaintyForReadGap(2_001)).isEqualTo(3);
+    assertThat(uncertaintyForReadGap(600 * MS)).isEqualTo(300_001);
+  }
+
+  private static int uncertaintyForReadGap(long gapNanos) {
+    FakeClocks local = new FakeClocks();
+    HostClockObserver o = new HostClockObserver(local::mono, local::wall, Duration.ofMillis(100));
+    local.stallNextWallRead(gapNanos);
+    o.sample();
+    // A lone sample has no qualifying window, so read the figure from a 2 s run that follows.
+    for (int i = 0; i < 21; i++) {
+      local.advance(100 * MS);
+      o.sample();
+    }
+    return o.snapshot().pairUncertaintyMicros();
+  }
+
+  @Test
+  void wallInstantOverflowDiscardsTheWindow() {
+    ticks(31);
+    clocks.overflowNextWallRead();
+    observer.sample();
+
+    HostClockObserver.Measurement m = observer.snapshot();
+    assertThat(m.continuous()).isFalse();
+    assertThat(m.pairUncertaintyMicros()).isEqualTo(UNSAFE);
+    assertThat(m.observedAt()).isEqualTo(clocks.wallAt(clocks.mono()));
+
+    ticks(20); // 1.9 s of fresh samples
+    assertThat(observer.snapshot().continuous()).isFalse();
+    ticks(1);
+    assertThat(observer.snapshot().continuous()).isTrue();
+  }
+
+  @Test
+  void throwingSupplierDiscardsTheWindowAndLaterSamplesRecover() {
+    ticks(31);
+    clocks.failNextWallRead();
+    observer.sampleOrDiscard();
+
+    HostClockObserver.Measurement m = observer.snapshot();
+    assertThat(m.continuous()).isFalse();
+    assertThat(m.pairUncertaintyMicros()).isEqualTo(UNSAFE);
+
+    for (int i = 0; i < 21; i++) {
+      observer.sampleOrDiscard();
+      clocks.advance(100 * MS);
+    }
+    assertThat(observer.snapshot().continuous()).isTrue();
   }
 
   @Test
@@ -189,14 +280,12 @@ class HostClockObserverTest {
   @Test
   void startRunsSamplesOnADaemonThreadAndCloseStopsThem() throws InterruptedException {
     CountDownLatch threeSamples = new CountDownLatch(3);
-    AtomicInteger samples = new AtomicInteger();
-    AtomicBoolean daemon = new AtomicBoolean(false);
+    AtomicReference<Thread> samplingThread = new AtomicReference<>();
     HostClockObserver started =
         new HostClockObserver(
             System::nanoTime,
             () -> {
-              daemon.set(Thread.currentThread().isDaemon());
-              samples.incrementAndGet();
+              samplingThread.set(Thread.currentThread());
               threeSamples.countDown();
               return Instant.now();
             },
@@ -209,11 +298,34 @@ class HostClockObserverTest {
       started.close();
     }
 
-    assertThat(daemon).isTrue();
-    int afterClose = samples.get();
-    // Bounded pause of 10 sampling intervals: nothing may run once close() has returned.
-    assertThat(new CountDownLatch(1).await(50, TimeUnit.MILLISECONDS)).isFalse();
-    assertThat(samples.get()).isEqualTo(afterClose);
+    Thread thread = samplingThread.get();
+    assertThat(thread.isDaemon()).isTrue();
+    thread.join(1_000);
+    assertThat(thread.isAlive()).isFalse();
+  }
+
+  @Test
+  void scheduleSurvivesAThrowingSupplier() throws InterruptedException {
+    AtomicInteger calls = new AtomicInteger();
+    CountDownLatch samplesAfterFailure = new CountDownLatch(3);
+    HostClockObserver started =
+        new HostClockObserver(
+            System::nanoTime,
+            () -> {
+              if (calls.incrementAndGet() == 1) {
+                throw new IllegalStateException("simulated wall clock failure");
+              }
+              samplesAfterFailure.countDown();
+              return Instant.now();
+            },
+            Duration.ofMillis(5));
+
+    started.start();
+    try {
+      assertThat(samplesAfterFailure.await(5, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      started.close();
+    }
   }
 
   @Test
@@ -238,6 +350,8 @@ class HostClockObserverTest {
     private double slewPpm;
     private long stallNextWallRead;
     private long rewindOnWallRead;
+    private boolean overflowNextWallRead;
+    private boolean failNextWallRead;
     private long pendingAdvance;
 
     long mono() {
@@ -247,14 +361,23 @@ class HostClockObserverTest {
     }
 
     Instant wall() {
+      if (failNextWallRead) {
+        failNextWallRead = false;
+        throw new IllegalStateException("simulated wall clock failure");
+      }
+      if (overflowNextWallRead) {
+        overflowNextWallRead = false;
+        return Instant.MAX;
+      }
       if (rewindOnWallRead != 0) {
         mono -= rewindOnWallRead;
         rewindOnWallRead = 0;
       }
       if (stallNextWallRead != 0) {
-        // The stall straddles the wall read: half before it, half after it.
-        mono += stallNextWallRead / 2;
-        pendingAdvance = stallNextWallRead / 2;
+        // The stall straddles the wall read: the first half before it, the rest after it.
+        long before = stallNextWallRead / 2;
+        mono += before;
+        pendingAdvance = stallNextWallRead - before;
         stallNextWallRead = 0;
       }
       return wallAt(mono);
@@ -280,6 +403,14 @@ class HostClockObserverTest {
 
     void stallNextWallRead(long nanos) {
       stallNextWallRead = nanos;
+    }
+
+    void overflowNextWallRead() {
+      overflowNextWallRead = true;
+    }
+
+    void failNextWallRead() {
+      failNextWallRead = true;
     }
 
     void rewindOnWallRead(long nanos) {
