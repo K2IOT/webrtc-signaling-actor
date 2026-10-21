@@ -455,51 +455,193 @@ mounted production enrollment, full serving topology or capacity/HA qualificatio
 
 ## Local process profile
 
-LOCAL_TEST_ONLY containers (`SIGNALING_DEPLOYMENT_MODE=local-minikube`,
-`SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY`) read the mounted native
-contract (schema v1, unchanged) plus a per-container process profile. Every file
-either names is opened only through the contract directory confinement. None of
-this is a production enrollment and none of it qualifies a deployment.
+LOCAL_TEST_ONLY containers read the mounted native contract (`MountedNativeContract`
+schema v1, unchanged) plus a per-container process profile. Neither is a production
+enrollment, and none of it qualifies a deployment. The loader, the plane installers and
+the Spring registration are `io.webrtc.signaling.app.runtime.local`
+(`LocalRuntimeInitializer`, registered in `META-INF/spring.factories`).
 
-Actor plane (`LocalActorInstaller`) uses these profile fields:
+### Files and activation
 
-- `privacyPseudonymKey`: absolute path of a file holding the raw privacy
-  pseudonym key, 32 to 64 bytes, no encoding. The file fails like every mounted
-  file: absent or unreadable is `Local runtime path: MISSING`, outside the mount
-  `Local runtime path: PATH_ESCAPE`. Every defect of the key itself (field
-  absent, file empty, shorter than 32 or longer than 64 bytes) is
-  `Local runtime profile: INVALID`.
-- `wal`: the observed writer facts for `NativeWalEnrollment`, always with
-  `localSingleWriter=false`. An empty `replicas` set or `synchronousReplicas < 1`
-  is refused; there is no standby-less local mode.
-- `cellAzRoles`: the cell's enrolled AZ roles: 2 to 3 distinct names matching
-  `az-[a-z0-9][a-z0-9-]{0,62}`, including this actor's own `azRole` (one zone
-  can never open the two-zone compatibility window). Cluster membership counts
-  and classifies peers by this set: a peer in a zone outside it is invalid.
-  Every actor of a cell carries the same list. Gateway and control profiles
-  must leave it empty (`[]` or `null`); anything else is
-  `Local runtime profile: INVALID`. While an enrolled zone has no Up member,
-  the actor logs a WARN with the attribute `missingZone` (the zone name only)
-  each time the set changes; such a cell forms but stays not ready, because
-  compatibility admission needs two zones. "Local actor zones complete" (INFO)
-  is logged only once at least two distinct enrolled zones have Up members.
-- Artery (`25520`) and Pekko management (`8558`) bind only `podIp`, never every
-  interface, so they stay on the cell network (spec §3.2).
-- `azRole`, `podIp`, `healthPort`, `businessPort`, `compatibility`, `kube`: Pekko
-  roles, private health address (`podIp:healthPort`), cell RPC listener port, the
-  build identity and approved window, and discovery inputs.
+| Variable | Default | File |
+|---|---|---|
+| `SIGNALING_NATIVE_PROVIDER_CONTRACT` | `/run/signaling/provider.json` | the mounted native contract |
+| `SIGNALING_LOCAL_PROCESS_PROFILE` | `/run/signaling/process.json` | the process profile described below |
 
-The actor opens only `cellDatabase`. It never reads `directoryDatabase`.
-Privacy detachment has no production implementation yet; the local actor
-enrolls one that refuses every detachment, so deletion requests stay pending and
-are never reported as complete. Epoch adoption is likewise refused.
+The gate opens only when all three hold: `SIGNALING_DEPLOYMENT_MODE=local-minikube`,
+`SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY`, and an explicit, non-blank
+`SIGNALING_NATIVE_PROVIDER_CONTRACT` or `SIGNALING_LOCAL_PROCESS_PROFILE` (the other
+variable then takes its default). Markers alone, as in legacy tests and tooling, register
+nothing and startup keeps failing with `NATIVE_RUNTIME_NOT_INSTALLED`. With the gate open
+the contract and the profile are always loaded, and a missing, unreadable or invalid file
+stops startup with the specific failure below. The one quiet exit is a readable contract
+that declares an environment other than `local-test-only`: nothing is registered. Exactly
+one of the Spring profiles `gateway`, `actor` or `control` must be active, and the
+profile's `plane` must be that plane; a mismatch stops startup with the generic
+`STARTUP_FAILED` diagnostic.
+
+Other variables the adapter reads (through the Spring `Environment` unless noted):
+
+| Variable | Planes | Rule |
+|---|---|---|
+| `SIGNALING_POD_UID` | all | lower-case canonical UUID equal to the profile's `podUid`, else `identity/IDENTITY_MISMATCH` |
+| `SIGNALING_CELL_ID` | all | equal to the contract's `cell`, else `identity/IDENTITY_MISMATCH` |
+| `SIGNALING_IDENTITY_ISSUER`, `SIGNALING_IDENTITY_AUDIENCE` | all | equal to the contract's `identity.issuer` and `identity.audience`, else `identity/IDENTITY_MISMATCH` |
+| `SIGNALING_CLUSTER_FINGERPRINT` | all | 64 lower-case hex; absent is `identity/MISSING`, malformed `identity/INVALID` |
+| `SIGNALING_FORMATION_PROFILE` | actor | `initial-six` enables `new-cluster-enabled` and `signaling.controlled-initial-formation`; any other value or none joins an existing cluster only |
+| `SIGNALING_KUBE_API_HOST`, `SIGNALING_KUBE_API_PORT` | actor | must be real OS process environment variables equal to the profile's `kube.apiHost` and `kube.apiPort`, else `profile/IDENTITY_MISMATCH`; Pekko discovery reads the address from the process environment, so a system property or an application property never satisfies the check |
+| `SIGNALING_REMOTING_KEYSTORE_PASSWORD`, `SIGNALING_REMOTING_KEY_PASSWORD`, `SIGNALING_REMOTING_TRUSTSTORE_PASSWORD` | actor | 1 to 512 characters for the contract's PKCS12 remoting stores; absent is `contract/MISSING` |
+
+The adapter layers its values over the packaged `application-actor.conf`, so the older
+`SIGNALING_POD_IP`, `SIGNALING_NAMESPACE`, `SIGNALING_ACTOR_SERVICE`,
+`SIGNALING_DISCOVERY_SELECTOR`, `SIGNALING_REMOTING_KEYSTORE` and
+`SIGNALING_REMOTING_TRUSTSTORE` are not needed: pod address, namespace, selector, service
+name and store paths come from the profile and the contract.
+
+### Path confinement
+
+Every path in the contract and in the profile is absolute, at most 512 characters, and its
+real location (after following every symbolic link) must lie inside the real directory of
+`provider.json`. The profile file itself must live in that same directory, otherwise
+startup fails with `profile/PATH_ESCAPE`. A path that does not exist is `MISSING`; one that
+leaves the directory is `PATH_ESCAPE`. A later read of a mounted key or store that fails is
+`path/MISSING`, an empty one `contract/INVALID`, an oversized one `contract/TOO_LARGE`.
+
+### Failure rendering
+
+Every adapter failure carries a role (`contract`, `profile`, `identity` or `path`) and a
+category (`MISSING`, `TOO_LARGE`, `MALFORMED`, `DUPLICATE_KEY`, `INVALID`,
+`IDENTITY_MISMATCH`, `PATH_ESCAPE`, `ENVIRONMENT_MISMATCH`, `KEY_MISMATCH`), never a path,
+value, key material or cause. Startup renders exactly one fixed line, for example:
+
+```json
+{"component":"PLATFORM","level":"ERROR","errorCode":"LOCAL_RUNTIME_REJECTED","role":"contract","category":"MISSING"}
+```
+
+This section writes a failure as `role/CATEGORY`. `NATIVE_RUNTIME_NOT_INSTALLED` instead
+means the gate was not open; `STARTUP_FAILED` is the generic diagnostic for a failure that is
+not an adapter rejection. `qualification/scenarios/image-contract.sh` proves the rendering
+above from the packaged image for a contract path that does not exist in the container.
+
+### Process profile
+
+`process.json` is one UTF-8 JSON object of at most 64 KiB, read as strictly as the contract:
+unknown, duplicate and missing keys, trailing content, non-UTF-8 text, scalar coercion and
+nesting beyond depth 8 are rejected. Every key below must be present; optional values are
+explicit `null`. Durations are ISO-8601 text. A syntactic failure is `profile/MALFORMED` or
+`profile/DUPLICATE_KEY`; every validation failure is `profile/INVALID`.
+
+| Field | Rule |
+|---|---|
+| `schemaVersion` | `1` |
+| `plane` | `ACTOR`, `GATEWAY` or `CONTROL` |
+| `podUid` | UUID; equals `SIGNALING_POD_UID` |
+| `podIp` | literal dotted-quad IPv4; never resolved by name |
+| `businessPort` | actor: cell RPC listener; gateway: WSS; control: HTTPS |
+| `healthPort` | private probe on `podIp:healthPort`; differs from `businessPort` |
+| `relayPort` | gateway relay RPC listener; differs from the other two on the gateway; still a valid port on every plane |
+| `azRole` | actor: `az-[a-z0-9][a-z0-9-]{0,62}`; may be `null` elsewhere |
+| `cellAzRoles` | see below |
+| `gatewayId`, `gatewayBootId` | both or neither; the gateway requires both |
+| `wal` | actor only in effect; see below |
+| `compatibility` | actor, gateway and control; see below |
+| `kube` | actor requires it; see below |
+| `transferCells` | `[]` or `null` except on control; see below |
+| `privacyPseudonymKey` | actor requires it; see below |
+| `allowedOrigins` | at most 32 of `https?://host[:port]`; the gateway requires at least one |
+
+`cellAzRoles`: 2 to 3 distinct names matching `az-[a-z0-9][a-z0-9-]{0,62}`, including this
+actor's own `azRole` (one zone can never open the two-zone compatibility window). Cluster
+membership counts and classifies peers by this set: a peer in a zone outside it is invalid.
+Every actor of a cell carries the same list. Gateway and control profiles must leave it
+empty (`[]` or `null`). While an enrolled zone has no Up member, the actor logs a WARN with
+the attribute `missingZone` (the zone name only) each time the set changes; such a cell
+forms but stays not ready. "Local actor zones complete" (INFO) is logged only once at least
+two distinct enrolled zones have Up members.
+
+`wal` (actor): the observed writer facts for `NativeWalEnrollment`, always with
+`localSingleWriter=false`. Fields: `systemIdentifier` (1 to 20 digits), `timeline` (at
+least 1), `replicas` (at most 16 names), `synchronousReplicas`, `maximumLagBytes` (not
+negative), `freshness` and `maximumReplyAge` (positive durations). An empty `replicas` set
+or `synchronousReplicas < 1` is refused; there is no standby-less local mode.
+
+`compatibility`: `major` (at least 1), `minor`, `executableId`, `features`, `lowerMinor`,
+`upperMinor`. `executableId` is 64 lower-case hex. `features` holds only known feature
+names (the `CompatibilityWindow.Feature` values spelled in lower case with hyphens, for
+example `session-s1`); an unknown name is refused. `upperMinor` must equal `lowerMinor + 1`
+and `minor` must be one of the two. The build identity binds `SIGNALING_CLUSTER_FINGERPRINT`.
+On the actor the values become the Pekko `compat-*` roles and
+`signaling.compatibility.*`; every plane builds its compatibility observation from them.
+The contract's `cells` and the directory snapshot's gateway boots decide whom the plane
+observes.
+
+`kube` (actor): `apiHost`, `apiPort`, `caPath`, `tokenPath` (both confined as above) and
+`namespace` (a DNS label). Discovery selects pods by
+`app=webrtc-signaling,plane=actor,cell=<cell>` in that namespace. The API address must also
+be exported as real environment variables (table above).
+
+`transferCells` (control): EXACTLY ONE entry, another cell the contract enrolls, with that
+cell's enrolled storage epoch. Zero, several, this cell itself, a cell the contract does not
+enroll, a `storageEpoch` that differs from the contract's entry for it or a database URL
+shared with this cell or the directory is `profile/INVALID`. Each entry is `cell`, `storageEpoch` and `database` with `jdbcUrl` (exactly
+one `sslmode=verify-full`), `username`, `password`, `quotas` (a count per database class),
+`safetyMax` and `controlMax`; the file carries counts only, never resource profiles. Control
+is the only plane that holds credentials for more than one cell database.
+
+`privacyPseudonymKey` (actor): absolute path of a file holding the raw privacy pseudonym key,
+32 to 64 bytes, no encoding. The file fails like every mounted file: absent or unreadable is
+`path/MISSING`, outside the mount `path/PATH_ESCAPE`. Every defect of the key itself (field
+absent, file empty, shorter than 32 or longer than 64 bytes) is `profile/INVALID`.
+
+`gatewayId` and `gatewayBootId` (gateway): the gateway's own identity and the boot UUID it
+runs as. The profile pins the boot because the actors' compatibility enrollment and relay
+targets need every gateway boot in advance (see "Directory snapshot"). Consequence: the
+boot id is fixed for a provisioned run. Restarting only the gateway container is
+unsupported, since a restarted process must not reuse a boot id. Recovery is to
+re-provision and restart the cell's containers (compose down, then up).
+
+### Plane behaviour
+
+Actor (`LocalActorInstaller`): opens only `cellDatabase`; it never reads
+`directoryDatabase`. Artery (`25520`) and Pekko management (`8558`) bind only `podIp`, never
+every interface. The cell RPC listener (`businessPort`) and the gateway's WSS and relay
+listeners bind every interface, so the container network design must isolate them. The
+private health address is `podIp:healthPort`.
+
+Gateway (`LocalGatewayInstaller`): opens no database. It verifies relay proofs with public
+keys only and never loads the cell's proof signing key. It admits only the profile's browser
+origins; native clients without an `Origin` are refused.
+
+Control (`LocalControlInstaller`): opens the regional directory, its own cell database and
+the transfer cell's database. It presents the control identity to the actors (below), is
+not bound to a cell for observation, and polls the actors through their `CONTROL` admission
+lane. Regional writer admission is a constant `true`: compose runs exactly one control
+container, and a real fence waits for the authority work in the Minikube plan (A3/A4).
+
+The mounted leaf (`tls.certificate`) is used both for the plane's public listener and for
+its cell RPC identity. Its single URI SAN is `spiffe://signaling/local-test-only/cell/<cell>/actor`,
+`.../gateway/<gatewayId>` or `.../control` (an optional `/<id>` suffix is parsed for each
+role). The control identity is admitted by actor servers for compatibility observation only
+and refused for execute, relay and sync.
+
+### Refuse-all stand-ins
+
+Two collaborators have no production implementation yet, so the actor enrolls stand-ins that
+fail closed rather than fake success:
+
+- Privacy detachment refuses every detachment: deletion requests stay pending and are never
+  reported as complete.
+- Epoch adoption is refused: call participation stays on the enrolled epochs.
+
+Consequently a local container offers no privacy deletion and no epoch adoption, promotion or
+migration.
 
 ### Directory snapshot
 
-`directorySnapshot` names a UTF-8 JSON file of at most 64 KiB. Its exact bytes
-must hash (SHA-256, lower-case hex) to `directorySnapshotSha256`. The parser is
-as strict as the contract parser: unknown, duplicate and missing fields,
-trailing content and fractional numbers (`"first": 1.9`) are rejected.
+`directorySnapshot` names a UTF-8 JSON file of at most 64 KiB. Its exact bytes must hash
+(SHA-256, lower-case hex) to `directorySnapshotSha256`. The parser is as strict as the
+contract parser: unknown, duplicate and missing fields, trailing content and fractional
+numbers (`"first": 1.9`) are rejected.
 
 ```json
 {
@@ -515,24 +657,22 @@ trailing content and fractional numbers (`"first": 1.9`) are rejected.
 }
 ```
 
-- `buckets`: 1 to 512 inclusive ranges over buckets 0..16383 (the bucket of a
-  user is `SessionRegistryService.bucket`). Ranges must not overlap. Each cell
-  must be one of the contract's `cells`, with that cell's `storageEpoch`. A
-  range maps every bucket in it to the trusted home
-  `(cell, directoryEpoch, storageEpoch)`. The split must equal the seeded
-  `directory_bucket` rows. A bucket that no range covers has no trusted home and
-  every home check for its users fails.
-- `gatewayBoots`: exactly one entry for every contract `gateways` entry, and no
-  other. It pins the boot id the actor's gateway relay client and compatibility
-  observation address for that gateway; it must equal the `gatewayBootId` of
-  that gateway's process profile.
+- `buckets`: 1 to 512 inclusive ranges over buckets 0..16383 (the bucket of a user is
+  `SessionRegistryService.bucket`). Ranges must not overlap. Each cell must be one of the
+  contract's `cells`, with that cell's `storageEpoch`. A range maps every bucket in it to the
+  trusted home `(cell, directoryEpoch, storageEpoch)`. The split must equal the seeded
+  `directory_bucket` rows; the process never reads those rows, so the renderer is responsible.
+  A bucket that no range covers has no trusted home and every home check for its users fails.
+- `gatewayBoots`: at most 128 entries, exactly one for every contract `gateways` entry, and
+  no other. It pins the boot id the actor's gateway relay client and compatibility
+  observation address for that gateway; it must equal the `gatewayBootId` of that gateway's
+  process profile, and the gateway refuses to start with `identity/IDENTITY_MISMATCH` when
+  it does not.
 
-Text that is not UTF-8 JSON, or has trailing content, fails startup with
-`Local runtime contract: MALFORMED`; a repeated key with
-`Local runtime contract: DUPLICATE_KEY`; a digest mismatch or any other defect
-with `Local runtime contract: INVALID`.
+Text that is not UTF-8 JSON, or has trailing content, fails startup with `contract/MALFORMED`;
+a repeated key with `contract/DUPLICATE_KEY`; a digest mismatch or any other defect with
+`contract/INVALID`.
 
-The JWT public keys are parsed and checked (RSA, modulus of at least 2048 bits)
-before any actor bean is registered, so a bad key fails startup with
-`Local runtime contract: INVALID`. Worker outcomes other than completion are
-logged at WARN with the job name and status only.
+The JWT public keys are parsed and checked (RSA, modulus of at least 2048 bits) before any
+bean is registered, so a bad key fails startup with `contract/INVALID`. Worker outcomes other
+than completion are logged at WARN with the job name and status only.
