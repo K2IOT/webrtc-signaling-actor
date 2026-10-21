@@ -112,13 +112,29 @@ final class LocalTestPki {
         Files.copy(from, to, StandardCopyOption.REPLACE_EXISTING);
     }
 
+    /**
+     * Output goes to a file, never a pipe: a full pipe would block keytool and make the timeout
+     * the only way out, and the deadline must apply to the process itself.
+     */
     private static void keytool(String... arguments) throws Exception {
         var command = new java.util.ArrayList<String>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "keytool").toString());
         command.addAll(java.util.List.of(arguments));
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        if (!process.waitFor(60, TimeUnit.SECONDS) || process.exitValue() != 0)
-            throw new IllegalStateException("keytool failed: " + output);
+        var output = Files.createTempFile("TEST_ONLY_keytool", ".log");
+        try {
+            var process =
+                    new ProcessBuilder(command)
+                            .redirectErrorStream(true)
+                            .redirectOutput(output.toFile())
+                            .start();
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IllegalStateException("keytool timed out: " + Files.readString(output));
+            }
+            if (process.exitValue() != 0)
+                throw new IllegalStateException("keytool failed: " + Files.readString(output));
+        } finally {
+            Files.deleteIfExists(output);
+        }
     }
 }

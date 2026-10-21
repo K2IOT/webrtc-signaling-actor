@@ -149,4 +149,87 @@ class LocalTrustTest {
         assertThatThrownBy(() -> LocalTrust.endpoint("http://source.platform.svc/v1/c001/clock", tls, keys))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    static void assertFailure(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable call, Role role, Category category) {
+        assertThatThrownBy(call)
+                .isInstanceOfSatisfying(
+                        LocalRuntimeFailure.class,
+                        failure -> {
+                            assertThat(failure.role()).isEqualTo(role);
+                            assertThat(failure.category()).isEqualTo(category);
+                            assertThat(failure.getCause()).isNull();
+                            assertThat(failure.getMessage()).doesNotContain("TEST_ONLY_SECRET");
+                        });
+    }
+
+    @Test
+    void proofPrivateKeyMustBeOneUnencryptedPkcs8Block() throws Exception {
+        install();
+        var der = keys.proof.getPrivate().getEncoded();
+        var valid = LocalTestPki.pem("PRIVATE KEY", der);
+        var cases = new java.util.LinkedHashMap<String, String>();
+        cases.put("encrypted PKCS#8", LocalTestPki.pem("ENCRYPTED PRIVATE KEY", der));
+        cases.put("legacy RSA label", LocalTestPki.pem("RSA PRIVATE KEY", der));
+        cases.put("legacy EC label", LocalTestPki.pem("EC PRIVATE KEY", der));
+        cases.put("wrong label", LocalTestPki.pem("PUBLIC KEY", der));
+        cases.put("certificate label", LocalTestPki.pem("CERTIFICATE", der));
+        cases.put("truncated", valid.substring(0, valid.length() / 2));
+        cases.put("no end line", valid.substring(0, valid.indexOf("-----END")));
+        cases.put("two blocks", valid + valid);
+        cases.put("key then certificate", valid + LocalTestPki.pem("CERTIFICATE", der));
+        cases.put("leading text", "TEST_ONLY_SECRET\n" + valid);
+        cases.put("trailing text", valid + "TEST_ONLY_SECRET\n");
+        cases.put("openssl encapsulated header", valid.replace("\n", "\nProc-Type: 4,ENCRYPTED\n"));
+        cases.put("not base64", "-----BEGIN PRIVATE KEY-----\nTEST_ONLY_SECRET!!\n-----END PRIVATE KEY-----\n");
+        cases.put("valid base64, not a key", LocalTestPki.pem("PRIVATE KEY", new byte[]{1, 2, 3, 4}));
+        cases.put("public key in a private slot", LocalTestPki.pem("PRIVATE KEY", keys.proof.getPublic().getEncoded()));
+        cases.put("empty", "");
+        for (var entry : cases.entrySet()) {
+            Files.writeString(mount.resolve("proof.key"), entry.getValue());
+            assertFailure(() -> LocalTrust.homeProof(c), Role.CONTRACT, Category.INVALID);
+            assertFailure(() -> LocalTrust.relayProof(c), Role.CONTRACT, Category.INVALID);
+        }
+        Files.write(mount.resolve("proof.key"), new byte[LocalFiles.KEY_MAX + 1]);
+        assertFailure(() -> LocalTrust.homeProof(c), Role.CONTRACT, Category.TOO_LARGE);
+        assertFailure(() -> LocalTrust.relayProof(c), Role.CONTRACT, Category.TOO_LARGE);
+        Files.delete(mount.resolve("proof.key"));
+        assertFailure(() -> LocalTrust.homeProof(c), Role.PATH, Category.MISSING);
+        Files.writeString(mount.resolve("proof.key"), valid);
+        assertThat(LocalTrust.homeProof(c)).isNotNull();
+        assertThat(LocalTrust.relayProof(c)).isNotNull();
+    }
+
+    @Test
+    void proofPrivateKeyMustBelongToTheTrustedPublicKey() throws Exception {
+        install();
+        // The constructors accept any Ed25519 private key; a wrong pair would fail every proof later.
+        var stranger = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        LocalTestKeys.write(mount.resolve("proof.key"), "PRIVATE KEY", stranger.getPrivate().getEncoded());
+        assertFailure(() -> LocalTrust.homeProof(c), Role.CONTRACT, Category.KEY_MISMATCH);
+        assertFailure(() -> LocalTrust.relayProof(c), Role.CONTRACT, Category.KEY_MISMATCH);
+        // The other direction: the right private key against a replaced public key.
+        LocalTestKeys.write(mount.resolve("proof.key"), "PRIVATE KEY", keys.proof.getPrivate().getEncoded());
+        LocalTestKeys.write(mount.resolve("proof.pub"), "PUBLIC KEY", stranger.getPublic().getEncoded());
+        assertFailure(() -> LocalTrust.homeProof(c), Role.CONTRACT, Category.KEY_MISMATCH);
+        assertFailure(() -> LocalTrust.relayProof(c), Role.CONTRACT, Category.KEY_MISMATCH);
+        LocalTestKeys.write(mount.resolve("proof.pub"), "PUBLIC KEY", keys.proof.getPublic().getEncoded());
+        assertThat(LocalTrust.homeProof(c).sourceCell()).isEqualTo("c001");
+    }
+
+    @Test
+    void publicKeysMustBeOneX509Block() throws Exception {
+        install();
+        var rsaDer = keys.rsa.getPublic().getEncoded();
+        for (var bad : java.util.List.of(
+                LocalTestPki.pem("RSA PUBLIC KEY", rsaDer),
+                LocalTestPki.pem("PUBLIC KEY", rsaDer) + LocalTestPki.pem("PUBLIC KEY", rsaDer),
+                LocalTestPki.pem("PUBLIC KEY", rsaDer).substring(0, 60))) {
+            Files.writeString(mount.resolve("rsa.pub"), bad);
+            assertFailure(() -> LocalTrust.tokens(c), Role.CONTRACT, Category.INVALID);
+        }
+        // An Ed25519 key is not an RSA token key.
+        LocalTestKeys.write(mount.resolve("rsa.pub"), "PUBLIC KEY", keys.source.getPublic().getEncoded());
+        assertFailure(() -> LocalTrust.tokens(c), Role.CONTRACT, Category.INVALID);
+    }
 }

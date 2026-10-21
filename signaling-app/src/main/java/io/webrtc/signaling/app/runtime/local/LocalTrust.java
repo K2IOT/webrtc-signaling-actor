@@ -16,6 +16,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.security.Signature;
 import java.security.interfaces.EdECPublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -35,7 +36,13 @@ public final class LocalTrust {
     private LocalTrust() {
     }
 
-    /** RS256 verification for the contract's JWT keys, bounded to one worker and eight queued. */
+    /**
+     * RS256 verification for the contract's JWT keys, bounded to one worker and eight queued.
+     *
+     * <p>Ownership: the result owns a thread pool and is {@link AutoCloseable}. The caller owns it
+     * and must close it; the plane installer registers it as a bean with {@code destroyMethod}
+     * {@code close}, so it is closed with the application context. Every call builds a new one.
+     */
     public static BoundedTokenVerifier tokens(LocalRuntimeContract c) {
         var keys = new LinkedHashMap<String, RSAPublicKey>();
         c.contract().jwtPublicKeys().forEach((kid, path) -> keys.put(kid, rsaPublic(c, path)));
@@ -47,15 +54,16 @@ public final class LocalTrust {
         return new BoundedTokenVerifier(verifier, 1, 8, Duration.ofSeconds(1));
     }
 
-    /** Signs with this cell's key; trusts exactly the contract's proof keys, named {@code cell/keyId}. */
+    /**
+     * Signs with this cell's key; trusts exactly the contract's proof keys, named {@code cell/keyId}.
+     * Fails with {@code KEY_MISMATCH} when the private key is not the pair of the public key the
+     * contract trusts for this cell and key id.
+     */
     public static HomeAuthorizationProof homeProof(LocalRuntimeContract c) {
-        var proofs = c.contract().proofs();
+        var keys = proofKeys(c);
         try {
             return new HomeAuthorizationProof(
-                    c.contract().cell(),
-                    proofs.keyId(),
-                    ed25519Private(c, proofs.privateKey()),
-                    ed25519Keys(c, proofs.publicKeys()));
+                    c.contract().cell(), c.contract().proofs().keyId(), keys.signing(), keys.trusted());
         } catch (IllegalArgumentException rejected) {
             throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
         }
@@ -63,16 +71,42 @@ public final class LocalTrust {
 
     /** Relay session proofs over the same signing key and trusted keys as {@link #homeProof}. */
     public static RelaySessionAuthorizationProof relayProof(LocalRuntimeContract c) {
-        var proofs = c.contract().proofs();
+        var keys = proofKeys(c);
         try {
             return new RelaySessionAuthorizationProof(
-                    c.contract().cell(),
-                    proofs.keyId(),
-                    ed25519Private(c, proofs.privateKey()),
-                    ed25519Keys(c, proofs.publicKeys()));
+                    c.contract().cell(), c.contract().proofs().keyId(), keys.signing(), keys.trusted());
         } catch (IllegalArgumentException rejected) {
             throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
         }
+    }
+
+    private record ProofKeys(PrivateKey signing, Map<String, PublicKey> trusted) {
+    }
+
+    /**
+     * Neither proof constructor checks that the signing key matches the trusted public key, so a
+     * wrong pair would start up and then fail every proof. A probe signature rejects it here.
+     */
+    private static ProofKeys proofKeys(LocalRuntimeContract c) {
+        var proofs = c.contract().proofs();
+        var signing = ed25519Private(c, proofs.privateKey());
+        var trusted = ed25519Keys(c, proofs.publicKeys());
+        var own = trusted.get(c.contract().cell() + "/" + proofs.keyId());
+        try {
+            var probe = new byte[32];
+            new java.security.SecureRandom().nextBytes(probe);
+            var signer = Signature.getInstance("Ed25519");
+            signer.initSign(signing);
+            signer.update(probe);
+            var signature = signer.sign();
+            var verifier = Signature.getInstance("Ed25519");
+            verifier.initVerify(own);
+            verifier.update(probe);
+            if (own != null && verifier.verify(signature)) return new ProofKeys(signing, trusted);
+        } catch (GeneralSecurityException | RuntimeException mismatch) {
+            // Falls through: any failure of the probe is a mismatch, and no detail is kept.
+        }
+        throw LocalJson.failure(Role.CONTRACT, Category.KEY_MISMATCH);
     }
 
     /** Public Ed25519 keys by the caller's own ids; any other key type is refused. */
@@ -108,30 +142,30 @@ public final class LocalTrust {
     }
 
     private static RSAPublicKey rsaPublic(LocalRuntimeContract c, String path) {
+        var der = LocalPem.der(c.resolve(path), "PUBLIC KEY");
         try {
-            var der = LocalPem.der(c.resolve(path), "PUBLIC KEY");
             if (KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der))
                     instanceof RSAPublicKey key) return key;
-        } catch (GeneralSecurityException | RuntimeException invalid) {
-            if (invalid instanceof LocalRuntimeFailure failure) throw failure;
+        } catch (GeneralSecurityException invalid) {
+            // Not an RSA key: reported below without detail.
         }
         throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
     }
 
     private static PublicKey ed25519Public(LocalRuntimeContract c, String path) {
+        var der = LocalPem.der(c.resolve(path), "PUBLIC KEY");
         try {
-            var der = LocalPem.der(c.resolve(path), "PUBLIC KEY");
             var key = KeyFactory.getInstance("Ed25519").generatePublic(new X509EncodedKeySpec(der));
             if (key instanceof EdECPublicKey) return key;
-        } catch (GeneralSecurityException | RuntimeException invalid) {
-            if (invalid instanceof LocalRuntimeFailure failure) throw failure;
+        } catch (GeneralSecurityException invalid) {
+            // Not an Ed25519 key: reported below without detail.
         }
         throw LocalJson.failure(Role.CONTRACT, Category.INVALID);
     }
 
     private static PrivateKey ed25519Private(LocalRuntimeContract c, String path) {
+        var der = LocalPem.der(c.resolve(path), "PRIVATE KEY");
         try {
-            var der = LocalPem.der(c.resolve(path), "PRIVATE KEY");
             return KeyFactory.getInstance("Ed25519").generatePrivate(new PKCS8EncodedKeySpec(der));
         } catch (GeneralSecurityException invalid) {
             throw LocalJson.failure(Role.CONTRACT, Category.INVALID);

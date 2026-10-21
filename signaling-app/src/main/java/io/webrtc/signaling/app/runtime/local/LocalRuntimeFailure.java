@@ -26,7 +26,9 @@ public final class LocalRuntimeFailure extends IllegalStateException {
         IDENTITY_MISMATCH,
         PATH_ESCAPE,
         /** A readable contract that declares an environment other than local-test-only. */
-        ENVIRONMENT_MISMATCH
+        ENVIRONMENT_MISMATCH,
+        /** A private key that does not belong to the public key the contract trusts for it. */
+        KEY_MISMATCH
     }
 
     private final Role role;

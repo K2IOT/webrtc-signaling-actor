@@ -16,9 +16,17 @@ import java.net.Socket;
 import java.security.SecureRandom;
 
 /**
- * An initialised JDK context whose engines, sockets and parameters start with TLSv1.3 only. The
- * stock {@code TLSv1.3} context still enables TLSv1.2 by default, so the pin is applied here and a
- * consumer cannot forget it. This adds no cryptography: it only narrows the enabled protocols.
+ * An initialised JDK context whose engines, sockets and {@code SSLParameters} <em>start</em> with
+ * TLSv1.3 only. The stock {@code TLSv1.3} context still enables TLSv1.2 by default, so this changes
+ * the default and nothing more.
+ *
+ * <p>This is advisory, not enforcement. The pin is applied when an engine or socket is created; a
+ * consumer that later calls {@code setEnabledProtocols} or {@code setSSLParameters} with another
+ * protocol list re-enables it, and nothing here can stop that. Enforcement belongs to the receiving
+ * side: the Netty servers in {@link LocalTls} and {@code RpcTlsContexts} restrict their own engines,
+ * and Pekko Artery builds its own context from {@code application-actor.conf}
+ * ({@code protocol = TLSv1.3}, checked by {@code ShardingBootstrap.validateProduction}). Contexts
+ * wrapped here therefore back only Pekko management and HTTP clients. This adds no cryptography.
  */
 final class LocalTls13Context extends SSLContext {
     static final String[] PROTOCOLS = {"TLSv1.3"};
