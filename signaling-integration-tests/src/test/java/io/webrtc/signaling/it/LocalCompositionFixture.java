@@ -501,8 +501,8 @@ final class LocalCompositionFixture implements AutoCloseable {
     /**
      * Children bind fixed ports (25520/8558 on 127.0.0.11-16 and .51-56), so none may outlive the
      * test JVM. A JVM shutdown hook kills every child and its descendants; for a test JVM killed
-     * with SIGKILL (no hooks run), a separate watchdog kills the child once the parent pid is gone.
-     * The watchdog lives outside the application under test.
+     * with SIGKILL (no hooks run), a separate watchdog kills the child once the parent pid is gone,
+     * and only then. The watchdog lives outside the application under test.
      */
     private static void guard(Process child) throws Exception {
         CHILDREN.add(child);
@@ -522,7 +522,11 @@ final class LocalCompositionFixture implements AutoCloseable {
                 "sh",
                 "-c",
                 "while kill -0 " + parent + " 2>/dev/null && kill -0 " + child.pid()
-                        + " 2>/dev/null; do sleep 1; done; kill -9 " + child.pid() + " 2>/dev/null; exit 0")
+                        + " 2>/dev/null; do sleep 1; done; "
+                        // The loop also ends when a test stopped the child itself; its pid may then be
+                        // reused, so the child is signalled only when the parent is really gone.
+                        + "kill -0 " + parent + " 2>/dev/null || kill -9 " + child.pid()
+                        + " 2>/dev/null; exit 0")
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                 .start();
