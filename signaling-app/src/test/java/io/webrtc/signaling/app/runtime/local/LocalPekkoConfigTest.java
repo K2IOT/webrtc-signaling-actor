@@ -191,6 +191,21 @@ class LocalPekkoConfigTest {
         assertThat(config.getString("pekko.management.http.hostname")).isEqualTo("192.0.2.10");
     }
 
+    /**
+     * Spec §3.2: Artery and management live only on the cell network, i.e. the pod address. The
+     * packaged config binds every interface ({@code 0.0.0.0}), which also exposes them on the shared
+     * network and lets two actors on one host collide on the fixed ports.
+     */
+    @Test
+    void arteryAndManagementBindOnlyThePodAddress() throws Exception {
+        var config = build(contract(), environment());
+
+        assertThat(config.getString("pekko.remote.artery.bind.hostname")).isEqualTo("192.0.2.10");
+        assertThat(config.getString("pekko.management.http.bind-hostname")).isEqualTo("192.0.2.10");
+        assertThat(config.getString("pekko.remote.artery.bind.port")).isIn("", "25520");
+        assertThat(config.getInt("pekko.management.http.port")).isEqualTo(8558);
+    }
+
     @Test
     void rejectsUnusableBuildIdentity() throws Exception {
         List<Consumer<Map<String, Object>>> edits =

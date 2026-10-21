@@ -78,6 +78,9 @@ public final class LocalPekkoConfig {
         values.put("pekko.cluster.roles", List.of("signaling-actor", profile.azRole()));
         values.put("pekko.remote.artery.canonical.hostname", profile.podIp());
         values.put("pekko.management.http.hostname", profile.podIp());
+        // Spec §3.2: Artery and management only on the cell network, never every interface.
+        values.put("pekko.remote.artery.bind.hostname", profile.podIp());
+        values.put("pekko.management.http.bind-hostname", profile.podIp());
         values.put(
                 "pekko.management.cluster.bootstrap.contact-point-discovery.service-name", "signaling-" + cell);
 
