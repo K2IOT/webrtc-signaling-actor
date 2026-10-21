@@ -102,6 +102,17 @@ class TelemetryContractTest {
                 .doesNotContainKeys("userId", "callId");
     }
 
+    /**
+     * A not-ready actor names an enrolled zone without Up members. Only operator-configured
+     * {@code az-*} role names pass; free text, addresses and anything else are dropped.
+     */
+    @Test
+    void missingZoneCarriesOnlyAnAzRoleName() {
+        assertThat(TraceContext.attributes(Map.of("missingZone", "az-b"))).containsEntry("missingZone", "az-b");
+        for (var bad : java.util.List.of("az-", "AZ-B", "zone-b", "az-b 10.0.0.1", "az-" + "b".repeat(64), "az-b\n"))
+            assertThat(TraceContext.attributes(Map.of("missingZone", bad))).doesNotContainKey("missingZone");
+    }
+
     @Test
     void productionLogLayoutDropsSdkMessagesArgumentsAndThrowableSecrets() {
         var event = new ch.qos.logback.classic.spi.LoggingEvent();

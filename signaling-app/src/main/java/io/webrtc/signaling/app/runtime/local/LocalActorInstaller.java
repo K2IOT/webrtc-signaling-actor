@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime.local;
 
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
+import io.webrtc.signaling.actors.cluster.NativeClusterMembership;
 import io.webrtc.signaling.actors.relay.RelayBufferBudget;
 import io.webrtc.signaling.app.CompatibilityWindow;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
@@ -186,11 +187,20 @@ public final class LocalActorInstaller {
                 NativeActorSchedulingEnrollment.class,
                 () -> {
                     var system = ctx.getBean(NativeActorProcess.class).system();
+                    // Read-only, read when the job runs: a throwaway readiness never feeds admission.
+                    var zoneReport =
+                            new LocalZoneReport(zones)
+                                    .job(
+                                            () ->
+                                                    new NativeClusterMembership(system, new ClusterReadiness(), zones)
+                                                            .authenticatedUpPeers().stream()
+                                                            .map(NativeClusterMembership.AuthenticatedPeer::zone)
+                                                            .toList());
                     return new NativeActorSchedulingEnrollment(
                             system,
                             zones,
                             fingerprint,
-                            List.of(),
+                            List.of(zoneReport),
                             LocalActorInstaller::workerEvent,
                             health,
                             () -> !system.getWhenTerminated().toCompletableFuture().isDone(),

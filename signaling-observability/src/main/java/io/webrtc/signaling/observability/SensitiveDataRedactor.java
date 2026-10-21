@@ -55,6 +55,8 @@ public final class SensitiveDataRedactor {
             case "traceId" -> s.matches("[a-f0-9]{32}") && !s.equals("0".repeat(32)) ? s : null;
             case "spanId" -> s.matches("[a-f0-9]{16}") && !s.equals("0".repeat(16)) ? s : null;
             case "configurationFingerprint" -> s.matches("[a-f0-9]{64}") ? s : null;
+            // An enrolled AZ role name (operator configuration), never user or network data.
+            case "missingZone" -> s.matches("az-[a-z0-9][a-z0-9-]{0,62}") ? s : null;
             default -> null;
         };
     }

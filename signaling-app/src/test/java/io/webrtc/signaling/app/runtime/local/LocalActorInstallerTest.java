@@ -284,7 +284,9 @@ class LocalActorInstallerTest {
             // The cell's enrolled zones, not only this actor's own: other-zone peers must count.
             assertThat(scheduling.azRoles()).containsExactlyInAnyOrder("az-a", "az-b");
             assertThat(scheduling.fingerprint()).isEqualTo(LocalPekkoConfigTest.FINGERPRINT);
-            assertThat(scheduling.maintenance()).isEmpty();
+            assertThat(scheduling.maintenance())
+                    .extracting(NativeWorkerScheduler.Job::name)
+                    .containsExactly(LocalZoneReport.JOB);
             assertThat(scheduling.healthAddress()).isEqualTo(new InetSocketAddress("192.0.2.10", 9090));
             assertThat(scheduling.healthAddress().isUnresolved()).isFalse();
             assertThat(scheduling.metrics().get()).isEqualTo("TEST_ONLY_METRICS");
