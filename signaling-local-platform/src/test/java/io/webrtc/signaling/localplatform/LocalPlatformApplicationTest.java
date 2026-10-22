@@ -7,6 +7,8 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -141,5 +143,74 @@ class LocalPlatformApplicationTest {
     assertThat(main.isAlive()).isFalse();
     assertThat(outcome.get()).isInstanceOf(InterruptedException.class);
     assertThat(closes).hasValue(1);
+  }
+
+  private Map<String, String> env() throws java.io.IOException {
+    Path config = Files.writeString(dir.resolve("platform.json"), VALID);
+    return Map.of(
+        "SIGNALING_PLATFORM_CONFIG", config.toString(),
+        "SIGNALING_LOCAL_ACKNOWLEDGEMENT", "LOCAL_TEST_ONLY",
+        "SIGNALING_IDENTITY_ISSUER", "https://issuer.test-only.invalid");
+  }
+
+  @Test
+  void shutdownInProgressWhileRegisteringTheHookClosesThePlatformAndExitsCleanly()
+      throws Exception {
+    AtomicInteger closes = new AtomicInteger();
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    int code =
+        LocalPlatformApplication.run(
+            env(),
+            new PrintStream(err, true, StandardCharsets.UTF_8),
+            loaded -> closes::incrementAndGet,
+            running ->
+                LocalPlatformApplication.awaitShutdown(
+                    running,
+                    hook -> {
+                      throw new IllegalStateException("Shutdown in progress");
+                    }));
+
+    assertThat(code).isZero();
+    assertThat(closes).hasValue(1);
+    assertThat(err.size()).isZero();
+  }
+
+  @Test
+  void unexpectedFailureWhileAwaitingClosesThePlatformAndPrintsOnlyTheCategory() throws Exception {
+    AtomicInteger closes = new AtomicInteger();
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    int code =
+        LocalPlatformApplication.run(
+            env(),
+            new PrintStream(err, true, StandardCharsets.UTF_8),
+            loaded -> closes::incrementAndGet,
+            running -> {
+              throw new SecurityException("secret detail /etc/key");
+            });
+
+    assertThat(code).isEqualTo(1);
+    assertThat(closes).hasValue(1);
+    assertThat(err.toString(StandardCharsets.UTF_8))
+        .isEqualTo("LOCAL_PLATFORM_REJECTED CONFIG" + System.lineSeparator());
+  }
+
+  @Test
+  void aFailingCloseDuringStartupCleanupIsSwallowedAndEveryResourceIsAttempted() {
+    AtomicInteger attempted = new AtomicInteger();
+    Deque<AutoCloseable> opened = new ArrayDeque<>();
+    opened.push(attempted::incrementAndGet);
+    opened.push(
+        () -> {
+          attempted.incrementAndGet();
+          throw new IllegalStateException("close failed");
+        });
+    opened.push(attempted::incrementAndGet);
+
+    LocalPlatformApplication.closeAllQuietly(opened);
+
+    assertThat(attempted).hasValue(3);
+    assertThat(opened).isEmpty();
   }
 }

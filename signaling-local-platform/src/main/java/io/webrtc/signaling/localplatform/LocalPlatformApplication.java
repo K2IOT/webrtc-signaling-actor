@@ -149,6 +149,14 @@ public final class LocalPlatformApplication {
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
       return 0;
+    } catch (IllegalStateException shuttingDown) {
+      // Runtime.addShutdownHook refuses once the JVM is already shutting down (a signal during
+      // startup): the platform is stopped here and that is a normal stop, not a failure.
+      closeQuietly(running);
+      return 0;
+    } catch (RuntimeException unexpected) {
+      closeQuietly(running);
+      return reject(err, LocalPlatformFailure.Category.CONFIG);
     }
   }
 
@@ -240,7 +248,7 @@ public final class LocalPlatformApplication {
               opened);
       return new Running(source, admin, health, opened);
     } catch (IOException | RuntimeException failure) {
-      closeAll(opened);
+      closeAllQuietly(opened);
       throw new LocalPlatformFailure(LocalPlatformFailure.Category.CONFIG);
     }
   }
@@ -322,6 +330,15 @@ public final class LocalPlatformApplication {
     }
     if (!clean) {
       throw new IllegalStateException("local platform did not stop cleanly");
+    }
+  }
+
+  /** {@link #closeAll} for a failure path: a close problem must not replace the original cause. */
+  static void closeAllQuietly(Deque<AutoCloseable> resources) {
+    try {
+      closeAll(resources);
+    } catch (RuntimeException ignored) {
+      // Every resource was attempted; the failure being reported is the startup one.
     }
   }
 

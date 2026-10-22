@@ -102,10 +102,7 @@ public final class ClockReportService {
     Instant observedAt = measurement.observedAt().truncatedTo(ChronoUnit.MICROS);
     int pairUncertainty = reportedPairUncertainty(measurement.pairUncertaintyMicros());
     int rateError = measurement.relativeRateErrorPpm();
-    boolean continuous =
-        measurement.continuous()
-            && pairUncertainty <= MAX_PAIR_UNCERTAINTY_MICROS
-            && rateError <= MAX_RATE_ERROR_PPM;
+    boolean continuous = reportable(measurement);
     ClockSafetyMonitor.Report report =
         new ClockSafetyMonitor.Report(
             signer.keyId(),
@@ -128,6 +125,19 @@ public final class ClockReportService {
     } catch (JsonProcessingException e) {
       throw new IllegalStateException("clock report could not be serialised", null);
     }
+  }
+
+  /**
+   * True when a report built from {@code measurement} is signed {@code continuous=true}: the
+   * measurement is continuous and the figures it would report (measured uncertainty plus the
+   * allowance, and the measured rate error) stay within the consumer's limits. Readiness uses the
+   * same predicate, so {@code /ready} is 200 exactly when the next report would be continuous.
+   */
+  static boolean reportable(HostClockObserver.Measurement measurement) {
+    return measurement.continuous()
+        && reportedPairUncertainty(measurement.pairUncertaintyMicros())
+            <= MAX_PAIR_UNCERTAINTY_MICROS
+        && measurement.relativeRateErrorPpm() <= MAX_RATE_ERROR_PPM;
   }
 
   /** The measured pair uncertainty plus the stated allowance, clamped to {@code int}. */

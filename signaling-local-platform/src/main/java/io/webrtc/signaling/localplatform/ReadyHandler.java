@@ -14,11 +14,12 @@ import javax.sql.DataSource;
 /**
  * Plain-HTTP readiness on the configured concrete health address: {@code GET /ready}.
  *
- * <p>{@code 200} only when the host clock observer reports {@code continuous} and the database
- * answers a query against the migrated schema ({@code SELECT 1 FROM source_state}, which proves
- * both that the database answers and that the source migration is applied). Anything else is an
- * empty {@code 503}. Other paths are {@code 404}, other methods {@code 405}. No detail is ever
- * returned.
+ * <p>{@code 200} only when the next clock report would be {@code continuous} (the observer's
+ * measurement is continuous and the figures a report would carry stay within the consumer's limits,
+ * see {@link ClockReportService#reportable}) and the database answers a query against the migrated
+ * schema ({@code SELECT 1 FROM source_state}, which proves both that the database answers and that
+ * the source migration is applied). Anything else is an empty {@code 503}. Other paths are {@code
+ * 404}, other methods {@code 405}. No detail is ever returned.
  *
  * <p>Status: LOCAL_TEST_ONLY, NOT_QUALIFIED.
  */
@@ -56,7 +57,7 @@ final class ReadyHandler implements HttpHandler {
     if (!"GET".equals(exchange.getRequestMethod())) {
       return Outcome.methodNotAllowed("GET");
     }
-    boolean ready = observer.snapshot().continuous() && databaseAnswers();
+    boolean ready = ClockReportService.reportable(observer.snapshot()) && databaseAnswers();
     return Outcome.empty(ready ? Responses.OK : Responses.UNAVAILABLE);
   }
 

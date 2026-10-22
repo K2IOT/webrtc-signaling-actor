@@ -357,6 +357,24 @@ class ClockReportServiceTest {
   }
 
   @Test
+  void reportablePredicateSitsOnTheUncertaintyAndRateBoundaries() {
+    Instant at = WALL_ORIGIN;
+    assertThat(ClockReportService.reportable(measurement(at, 150_000, 0, true))).isTrue();
+    assertThat(ClockReportService.reportable(measurement(at, 150_001, 0, true))).isFalse();
+    assertThat(ClockReportService.reportable(measurement(at, 0, 1_000, true))).isTrue();
+    assertThat(ClockReportService.reportable(measurement(at, 0, 1_001, true))).isFalse();
+    // An observer that is not continuous is never reportable, whatever its figures.
+    assertThat(ClockReportService.reportable(measurement(at, 0, 0, false))).isFalse();
+    assertThat(ClockReportService.reportable(measurement(at, 1_000_000, 1_000_000, false)))
+        .isFalse();
+  }
+
+  private static HostClockObserver.Measurement measurement(
+      Instant at, int uncertaintyMicros, int ppm, boolean continuous) {
+    return new HostClockObserver.Measurement(at, uncertaintyMicros, ppm, continuous);
+  }
+
+  @Test
   void measuredUncertaintyAboveTheAllowanceHeadroomIsReportedUnsafe() throws Exception {
     // Every sample brackets its wall read with a 320 ms monotonic gap: a measured pair uncertainty
     // of 160_001 microseconds, a constant offset (no jump, 0 ppm), so the measurement itself is
