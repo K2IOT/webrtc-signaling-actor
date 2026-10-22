@@ -2,7 +2,13 @@
 set -euo pipefail
 # image-contract.sh LOCAL_IMAGE [LOCAL_PLATFORM_IMAGE]   app image checks, then the optional platform image checks
 # image-contract.sh --local-platform-only LOCAL_PLATFORM_IMAGE   only the local platform image checks
-if [[ "${1:-}" == --local-platform-only ]]; then
+# image-contract.sh --identity-only IDENTITY_IMAGE   only the compose test identity image checks
+identity_only=false
+if [[ "${1:-}" == --identity-only ]]; then
+  identity_only=true
+  platform_only=false
+  image=${2:?Usage: image-contract.sh --identity-only IDENTITY_IMAGE}
+elif [[ "${1:-}" == --local-platform-only ]]; then
   platform_only=true
   image=${2:?Usage: image-contract.sh --local-platform-only LOCAL_PLATFORM_IMAGE}
 else
@@ -13,10 +19,16 @@ image_workspace=$(mktemp -d)
 cleanup_image_smoke(){
   for cid_file in "$image_workspace"/*.cid; do
     [[ -f "$cid_file" ]] || continue
-    if read -r candidate_container < "$cid_file" && [[ "$candidate_container" =~ ^[a-f0-9]{64}$ ]]; then
+    # docker writes the cidfile without a trailing newline, so read reports EOF; keep what it read.
+    candidate_container=""
+    read -r candidate_container < "$cid_file" || true
+    if [[ "$candidate_container" =~ ^[a-f0-9]{64}$ ]]; then
       docker rm -f "$candidate_container" >/dev/null 2>&1 || true
     fi
   done
+  if [[ -n "${identity_network:-}" ]]; then
+    docker network rm "$identity_network" >/dev/null 2>&1 || true
+  fi
   rm -rf "$image_workspace"
 }
 trap cleanup_image_smoke EXIT
@@ -81,6 +93,95 @@ for text in (out,err):
     assert 'TEST_ONLY_ISSUER' not in text,'Platform rejection exposed the identity value'
 PYPLATFORM
 }
+# LOCAL_TEST_ONLY / NOT_QUALIFIED: the compose test identity image (Dockerfile.identity). Native Docker
+# metadata and runtime. The accounts below are the committed TEST_ONLY ones, not secrets. The container
+# gets no published port; it is probed over its address on a throwaway user-defined network.
+check_identity_image(){
+  local identity_image=$1 identity_ip="" attempt ready=false
+  local admin_id=6acdfd9e63f4055d3f6672d4 mod_id=6acdfda663f4055d3f6672d7
+  docker image inspect "$identity_image" > "$image_workspace/identity-inspect.json"
+  python3 - "$image_workspace/identity-inspect.json" <<'PYIDENTITY'
+import json,re,sys
+image=json.load(open(sys.argv[1]))[0]
+assert image['Os']=='linux' and image['Architecture']=='amd64','Unqualified identity image architecture'
+config=image['Config'];labels=config.get('Labels') or {}
+assert config['User']=='10001:10001','Identity image must run as the declared unprivileged identity'
+assert config['WorkingDir']=='/opt/signaling','Unexpected identity launcher working directory'
+assert config['Entrypoint']==['java','-jar','/opt/signaling/app.jar'],'Unexpected identity executable launcher'
+assert labels.get('io.webrtc.signaling.release.status')=='NOT_QUALIFIED','Identity image must be labelled NOT_QUALIFIED'
+assert re.fullmatch('[a-f0-9]{40}',labels.get('org.opencontainers.image.revision','')),'Missing immutable source commit'
+assert re.fullmatch('sha256:[a-f0-9]{64}',labels.get('org.opencontainers.image.base.digest','')),'Missing pinned native base digest'
+bad=[e.split('=',1)[0] for e in config.get('Env',[]) if e.startswith(('SIGNALING_IDENTITY_','SERVER_PORT=','SPRING_'))]
+assert not bad,'Identity image must not embed an environment enrollment: '+','.join(bad)
+PYIDENTITY
+  identity_network="identity-contract-$$-$RANDOM"
+  docker network create "$identity_network" > /dev/null
+  timeout 60s docker run -d --cidfile "$image_workspace/identity.cid" --network "$identity_network" \
+    --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --cpus 1 --memory 512m --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --env SIGNALING_IDENTITY_ISSUER=http://identity.test --env SIGNALING_IDENTITY_AUDIENCE=test-audience \
+    --env SIGNALING_IDENTITY_ACCOUNTS_0_USERNAME=admin --env SIGNALING_IDENTITY_ACCOUNTS_0_PASSWORD=admin123 \
+    --env "SIGNALING_IDENTITY_ACCOUNTS_0_USER_ID=$admin_id" \
+    --env SIGNALING_IDENTITY_ACCOUNTS_1_USERNAME=mod --env SIGNALING_IDENTITY_ACCOUNTS_1_PASSWORD=mod123 \
+    --env "SIGNALING_IDENTITY_ACCOUNTS_1_USER_ID=$mod_id" \
+    "$identity_image" > /dev/null
+  local container
+  container=$(<"$image_workspace/identity.cid")
+  identity_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$identity_network\").IPAddress}}" "$container")
+  if [[ ! "$identity_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo 'Identity container has no address on the throwaway network' >&2
+    return 1
+  fi
+  # Bounded wait for readiness: the JWKS endpoint answers 200 once the application is up.
+  for attempt in $(seq 1 60); do
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://$identity_ip:8081/.well-known/jwks.json" || true)" == 200 ]]; then
+      ready=true
+      break
+    fi
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]]; then
+      echo 'Identity container exited before it became ready' >&2
+      return 1
+    fi
+    sleep 1
+  done
+  if [[ "$ready" != true ]]; then
+    echo 'Identity container did not become ready within 60 seconds' >&2
+    return 1
+  fi
+  python3 - "$identity_ip" "$admin_id" "$mod_id" <<'PYIDENTITY'
+import base64,json,sys,urllib.error,urllib.request
+ip,admin_id,mod_id=sys.argv[1:4]
+def login(username,password):
+    request=urllib.request.Request('http://%s:8081/api/v1/auth/login'%ip,
+        data=json.dumps({'username':username,'password':password}).encode(),
+        headers={'Content-Type':'application/json'},method='POST')
+    try:
+        with urllib.request.urlopen(request,timeout=10) as response:
+            return response.status,json.load(response)
+    except urllib.error.HTTPError as error:
+        return error.code,json.load(error)
+def payload(token):
+    part=token.split('.')[1]
+    return json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4)))
+for username,password,expected in (('admin','admin123',admin_id),('mod','mod123',mod_id)):
+    status,body=login(username,password)
+    assert status==200,'Login for %s returned %d'%(username,status)
+    claims=payload(body['access_token'])
+    assert claims['iss']=='http://identity.test','Issuer is not the configured environment value'
+    assert claims['aud']=='test-audience','Audience is not the configured environment value'
+    assert claims['userId']==expected,'userId of %s is not the configured account id'%username
+status,body=login('admin','not-the-password')
+assert status==401 and body=={'error':'invalid_credentials'},'A wrong password must be rejected with 401 invalid_credentials'
+PYIDENTITY
+  docker rm -f "$container" > /dev/null
+  docker network rm "$identity_network" > /dev/null
+  identity_network=""
+}
+if [[ "$identity_only" == true ]]; then
+  check_identity_image "$image"
+  echo 'Identity image contract PASS (LOCAL_TEST_ONLY, NOT_QUALIFIED); the environment-configured accounts, issuer and audience reach the issued tokens and a wrong password is rejected. This does not prove qualification.'
+  exit 0
+fi
 if [[ "$platform_only" == true ]]; then
   check_local_platform_image "$image"
   echo 'Local platform image contract PASS; a missing acknowledgement and a missing configuration are rejected with fixed lines. This does not prove a started platform or qualification.'

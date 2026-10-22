@@ -9,3 +9,7 @@
 !signaling-local-platform/
 !signaling-local-platform/target/
 !signaling-local-platform/target/signaling-local-platform-0.1.0-SNAPSHOT-exec.jar
+!Dockerfile.identity
+!signaling-identity/
+!signaling-identity/target/
+!signaling-identity/target/signaling-identity-0.1.0-SNAPSHOT-exec.jar

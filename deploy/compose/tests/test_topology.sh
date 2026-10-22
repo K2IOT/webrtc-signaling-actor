@@ -116,9 +116,11 @@ other_fixed_values() {
   assert_eq "$(printf 'TEST_ONLY_COMPOSE_CLUSTER_FINGERPRINT' | sha256sum | cut -d' ' -f1)" "$CLUSTER_FINGERPRINT" \
     "CLUSTER_FINGERPRINT follows its documented derivation"
   assert_eq "unset:unset" "${CLUSTER_FINGERPRINT_C001-unset}:${CLUSTER_FINGERPRINT_C002-unset}" "no per-cell fingerprints"
-  # Task 6 fills the account ids; they must stay unset here
-  assert_eq "unset" "${ACCOUNT_ADMIN_USER_ID-unset}" "ACCOUNT_ADMIN_USER_ID unset"
-  assert_eq "unset" "${ACCOUNT_MOD_USER_ID-unset}" "ACCOUNT_MOD_USER_ID unset"
+  # Account user ids: set, distinct, 24 lower-hex; the cell mapping itself is pinned by
+  # ComposeUserBucketsTest (SessionRegistryService.bucket is Java only).
+  assert_true "ACCOUNT_ADMIN_USER_ID is 24 lower-case hex" bash -c '[[ "$1" =~ ^[0-9a-f]{24}$ ]]' _ "${ACCOUNT_ADMIN_USER_ID-}"
+  assert_true "ACCOUNT_MOD_USER_ID is 24 lower-case hex" bash -c '[[ "$1" =~ ^[0-9a-f]{24}$ ]]' _ "${ACCOUNT_MOD_USER_ID-}"
+  assert_true "account user ids are distinct" test "${ACCOUNT_ADMIN_USER_ID-}" != "${ACCOUNT_MOD_USER_ID-}"
 }
 
 service_list_has_17_names() {
