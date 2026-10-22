@@ -477,6 +477,68 @@ class SourceServerIT {
   }
 
   @Test
+  void successfulStartPrintsNothingToStdoutOrStderr() throws Exception {
+    LocalPlatformConfig fresh = config(createDatabase());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    PrintStream originalOut = System.out;
+    PrintStream originalErr = System.err;
+    System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+    System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+    try {
+      LocalPlatformApplication.start(fresh).close();
+    } finally {
+      System.setOut(originalOut);
+      System.setErr(originalErr);
+    }
+
+    assertNoMigrationOutput(out.toString(StandardCharsets.UTF_8));
+    assertNoMigrationOutput(err.toString(StandardCharsets.UTF_8));
+  }
+
+  @Test
+  void failedMigrationPrintsNothingToStdoutOrStderr() throws Exception {
+    int closedPort;
+    try (java.net.ServerSocket probe = new java.net.ServerSocket(0, 1, LOOPBACK)) {
+      closedPort = probe.getLocalPort();
+    }
+    LocalPlatformConfig unreachable =
+        LocalPlatformConfig.load(
+                env(
+                    writeConfigWithUrl(
+                        "jdbc:postgresql://127.0.0.1:" + closedPort + "/" + createDatabase())))
+            .withPorts(0, 0, 0);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    PrintStream originalOut = System.out;
+    PrintStream originalErr = System.err;
+    System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+    System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+    try {
+      assertThatThrownBy(() -> LocalPlatformApplication.start(unreachable))
+          .isInstanceOf(LocalPlatformFailure.class)
+          .extracting(failure -> ((LocalPlatformFailure) failure).category())
+          .isEqualTo(LocalPlatformFailure.Category.DATABASE);
+    } finally {
+      System.setOut(originalOut);
+      System.setErr(originalErr);
+    }
+
+    assertNoMigrationOutput(out.toString(StandardCharsets.UTF_8));
+    assertNoMigrationOutput(err.toString(StandardCharsets.UTF_8));
+  }
+
+  private static void assertNoMigrationOutput(String printed) {
+    assertThat(printed).isEmpty();
+    assertThat(printed.toLowerCase(Locale.ROOT))
+        .doesNotContain("jdbc:postgresql")
+        .doesNotContain("migrating")
+        .doesNotContain("flyway");
+  }
+
+  @Test
   void runningCloseIsIdempotentAndStopsEveryListener() {
     int[] ports = {running.sourcePort(), running.adminPort(), running.healthPort()};
 
@@ -843,6 +905,16 @@ class SourceServerIT {
   }
 
   private Path writeConfig(String name) throws IOException {
+    return writeConfigWithUrl(
+        "jdbc:postgresql://"
+            + POSTGRES.getHost()
+            + ":"
+            + POSTGRES.getFirstMappedPort()
+            + "/"
+            + name);
+  }
+
+  private Path writeConfigWithUrl(String jdbcUrl) throws IOException {
     Path dbPassword = Files.writeString(dir.resolve("db.pass"), POSTGRES.getPassword() + "\n");
     ObjectNode root = JSON.createObjectNode();
     root.putObject("cells").put("cell-a", 3).put("cell-b", 7);
@@ -852,14 +924,7 @@ class SourceServerIT {
     listener(root.putObject("admin"), adminKeystore, adminTrust);
     root.putObject("health").put("bind", "127.0.0.1").put("port", 1);
     root.putObject("database")
-        .put(
-            "jdbcUrl",
-            "jdbc:postgresql://"
-                + POSTGRES.getHost()
-                + ":"
-                + POSTGRES.getFirstMappedPort()
-                + "/"
-                + name)
+        .put("jdbcUrl", jdbcUrl)
         .put("user", POSTGRES.getUsername())
         .put("passwordFile", dbPassword.toString());
     return Files.writeString(dir.resolve("platform.json"), JSON.writeValueAsString(root));

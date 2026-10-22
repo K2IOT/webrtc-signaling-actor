@@ -81,6 +81,8 @@ public final class JdbcRevocationLog implements RevocationLog {
           .locations(MIGRATION_LOCATION)
           .table(HISTORY_TABLE)
           .cleanDisabled(true)
+          // Flyway logs the JDBC URL and the migration progress; the process prints nothing else.
+          .loggers(SilentFlywayLog.class.getName())
           .load()
           .migrate();
     } catch (RuntimeException failure) {
