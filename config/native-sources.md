@@ -608,7 +608,10 @@ runs as. The profile pins the boot because the actors' compatibility enrollment 
 targets need every gateway boot in advance (see "Directory snapshot"). Consequence: the
 boot id is fixed for a provisioned run. Restarting only the gateway container is
 unsupported, since a restarted process must not reuse a boot id. Recovery is to
-re-provision and restart the cell's containers (compose down, then up).
+re-provision and restart the cell's containers: in the compose environment `make reset`
+(`docker compose down -v`) then `make up`. A plain `compose down` then `up` is not enough: the
+provisioner runs with `--if-needed` and skips the completed stages, so the restarted gateway would
+reuse the expired boot id.
 
 ### Plane behaviour
 
@@ -688,6 +691,15 @@ a repeated key with `contract/DUPLICATE_KEY`; a digest mismatch or any other def
 The JWT public keys are parsed and checked (RSA, modulus of at least 2048 bits) before any
 bean is registered, so a bad key fails startup with `contract/INVALID`. Worker outcomes other
 than completion are logged at WARN with the job name and status only.
+
+## Compose environment (LOCAL_TEST_ONLY)
+
+The contracts of this document (`provider.json`, `process.json`, `runtime.yaml`, the directory
+snapshot and each service's `launch.sh`) are rendered for the two-cell compose environment by the
+provisioner in `deploy/compose/provisioner` (`lib/render.sh`, stage 2), from the addresses and
+identifiers in `deploy/compose/topology.env`. How to build, start, smoke-test and reset it, and its
+limits, are in `deploy/compose/README.md`. Status is LOCAL_TEST_ONLY and NOT_QUALIFIED; nothing there
+is evidence of production readiness, high availability or capacity.
 
 ## Local platform source (LOCAL_TEST_ONLY)
 
