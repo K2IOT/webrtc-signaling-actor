@@ -1,0 +1,24 @@
+## pg_hba.conf template for the compose PostgreSQL servers. LOCAL_TEST_ONLY / NOT_QUALIFIED.
+##
+## Provisioner stage 1 (lib/dbprep.sh) renders one hba.conf per server into its mount:
+##   * lines starting with ## (this documentation) are dropped;
+##   * a line starting with [kind,...] is kept only for the listed kinds (primary = cell primary,
+##     standby = cell standby, directory = pg-directory, all = every server), tag removed;
+##   * SERVER, KIND, CLIENT_NET (the subnet of the server's only network) and STANDBY_IP (the
+##     cell standby; primaries only) are substituted from topology.env as {{NAME}} placeholders;
+##   * every other line is copied as is.
+## Rules: scram-sha-256 only, TCP only over TLS (hostssl), no password-less method. The one socket
+## entry is for the image's docker-entrypoint.sh, which initialises the cluster as
+## signaling_owner over the container-private unix socket (password from POSTGRES_PASSWORD_FILE).
+# pg_hba.conf of {{SERVER}} ({{KIND}}), rendered by provisioner stage 1 from
+# deploy/compose/postgres/pg_hba.conf.tmpl. LOCAL_TEST_ONLY / NOT_QUALIFIED.
+# TYPE    DATABASE     USER             ADDRESS              METHOD
+[all]       local    all          signaling_owner                       scram-sha-256
+[all]       hostssl  all          signaling_owner  {{CLIENT_NET}}       scram-sha-256
+[primary]   hostssl  signaling    signaling_app    {{CLIENT_NET}}       scram-sha-256
+[primary]   hostssl  replication  replicator       {{STANDBY_IP}}/32    scram-sha-256
+[directory] hostssl  directory    signaling_app    {{CLIENT_NET}}       scram-sha-256
+## signaling_nodir passes hba on purpose: the refusal is the database privilege
+## (REVOKE CONNECT ON DATABASE directory FROM PUBLIC), which test_db.sh proves.
+[directory] hostssl  directory    signaling_nodir  {{CLIENT_NET}}       scram-sha-256
+[directory] hostssl  source       source_owner     {{CLIENT_NET}}       scram-sha-256

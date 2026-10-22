@@ -374,20 +374,33 @@ second_stage1_run_is_refused() {
   assert_eq "$before" "$after" "refused run changed nothing"
 }
 
-stage2_and_all_are_not_implemented_yet() {
-  local rc
+# Stage 2 itself needs the PostgreSQL servers (test_db.sh); here only its guards, which act
+# before any connection: no stage 1, an earlier stage 2, and `all` on a provisioned volume.
+stage2_guards_refuse_before_any_work() {
+  local rc empty="$TMP/empty-run"
+  mkdir -p "$empty"
+  set +e
+  RUN_ROOT="$empty" bash "$prov/provision.sh" stage2 >/dev/null 2>"$TMP/s2.err"
+  rc=$?
+  set -e
+  assert_eq "1" "$rc" "stage2 before stage1 exit"
+  assert_true "stage2 before stage1 message" grep -q 'PROVISION_REFUSED stage 2 needs a completed stage 1' "$TMP/s2.err"
+  assert_eq "0" "$(find "$empty" -mindepth 1 | wc -l | tr -d ' ')" "stage2 before stage1 wrote nothing"
+  : >"$RUN_ROOT/_shared/.stage2-done"
   set +e
   bash "$prov/provision.sh" stage2 >/dev/null 2>"$TMP/s2.err"
   rc=$?
   set -e
-  assert_eq "2" "$rc" "stage2 exit"
-  assert_true "stage2 message" grep -q STAGE_NOT_IMPLEMENTED "$TMP/s2.err"
+  assert_eq "1" "$rc" "second stage2 exit"
+  assert_true "second stage2 message" grep -q 'PROVISION_REFUSED stage 2 already done (_shared/.stage2-done exists)' "$TMP/s2.err"
+  assert_true "marker kept" test -e "$RUN_ROOT/_shared/.stage2-done"
+  rm -f "$RUN_ROOT/_shared/.stage2-done"
   set +e
   bash "$prov/provision.sh" all >/dev/null 2>"$TMP/all.err"
   rc=$?
   set -e
-  assert_eq "2" "$rc" "all exit"
-  assert_true "all message" grep -q STAGE_NOT_IMPLEMENTED "$TMP/all.err"
+  assert_eq "1" "$rc" "all on a provisioned volume exit"
+  assert_true "all runs stage 1 first, which refuses" grep -q 'PROVISION_REFUSED volume not empty' "$TMP/all.err"
   set +e
   bash "$prov/provision.sh" bogus >/dev/null 2>&1
   rc=$?
@@ -428,7 +441,7 @@ for t in stage1_succeeds service_dirs_cover_all_24_names each_workload_leaf_has_
   jwt_pub_is_the_identity_public_key platform_p12_loads_with_keytool_and_has_ip_san kube_tokens_differ_per_cell \
   pod_uids_are_unique_lowercase_uuids privacy_key_is_32_bytes_per_cell db_passwords_are_present_and_random \
   no_key_is_world_readable modes_are_0440_files_and_0750_dirs shared_dir_has_no_ca_private_key no_secret_appears_in_stdout \
-  second_stage1_run_is_refused stage2_and_all_are_not_implemented_yet refuses_a_foreign_non_empty_directory force_flag_regenerates; do
+  second_stage1_run_is_refused stage2_guards_refuse_before_any_work refuses_a_foreign_non_empty_directory force_flag_regenerates; do
   run_test "$t"
 done
 finish

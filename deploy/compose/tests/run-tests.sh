@@ -10,6 +10,11 @@ failed=0
 ran=0
 for t in "$compose"/tests/test_*.sh "$compose"/*/tests/test_*.sh; do
   [ -e "$t" ] || continue
+  # Files marked `# REQUIRES_DOCKER` (real containers, minutes) run only on request.
+  if grep -q '^# REQUIRES_DOCKER' "$t" && [ "${RUN_DOCKER_TESTS:-0}" != "1" ]; then
+    printf '== %s\nSKIP (needs Docker; run with RUN_DOCKER_TESTS=1)\n' "${t#"$compose"/}"
+    continue
+  fi
   ran=$((ran + 1))
   printf '== %s\n' "${t#"$compose"/}"
   if ! bash "$t"; then

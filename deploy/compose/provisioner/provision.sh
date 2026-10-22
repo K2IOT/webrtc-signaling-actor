@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Provisioner: provision.sh stage1|stage2|all
-#   stage1  PKI, keys, passwords, pod identities (this file)
-#   stage2  contract rendering and database seeding (later tasks)
+#   stage1  PKI, keys, passwords, pod identities, PostgreSQL mount files (this file, lib/pki.sh,
+#           lib/dbprep.sh); marker .provisioned
+#   stage2  databases (lib/db.sh migrate-and-seed, wal-facts), then the contracts (lib/render.sh
+#           render, online); marker _shared/.stage2-done, written last. Needs the five PostgreSQL
+#           servers started from the stage-1 mounts and reachable by IP.
+#   all     stage1 then stage2
 # Writes under $RUN_ROOT (default /run/signaling-src, the root of the `run` volume).
 # Logs file names only, never contents. LOCAL_TEST_ONLY / NOT_QUALIFIED.
 set -euo pipefail
@@ -11,6 +15,8 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$here/../lib/topology.sh"
 # shellcheck source=lib/pki.sh
 source "$here/lib/pki.sh"
+# shellcheck source=lib/dbprep.sh
+source "$here/lib/dbprep.sh"
 load_topology
 
 RUN_ROOT="${RUN_ROOT:-/run/signaling-src}"
@@ -18,6 +24,7 @@ IDENTITY_PUBLIC_KEY="${IDENTITY_PUBLIC_KEY:-/opt/provisioner/identity-public.pem
 GROUP_ID="${PROVISION_GROUP_ID:-10001}"
 MARKER=".provisioned"
 SENTINEL=".stage1-started"
+STAGE2_MARKER="_shared/.stage2-done"
 
 DB_SERVICES="pg-c001-primary pg-c001-standby pg-c002-primary pg-c002-standby pg-directory"
 KUBE_SERVICES="kube-api-c001 kube-api-c002"
@@ -214,6 +221,9 @@ stage1() {
   } >"$RUN_ROOT/_shared/db-passwords.env"
   pki_log "wrote _shared/db-passwords.env"
 
+  # --- PostgreSQL mounts: start.sh, hba.conf, password files (the servers start before stage 2) ---
+  for s in $DB_SERVICES; do prepare_pg_mount "$s"; done
+
   # --- pod identities and gateway boot ids (generated once, here) ---
   : >"$RUN_ROOT/_shared/pod-uids.env"
   for s in $(service_list); do
@@ -232,15 +242,44 @@ stage1() {
   pki_log "stage1 done: $(find "$RUN_ROOT" -type f | wc -l | tr -d ' ') files (LOCAL_TEST_ONLY / NOT_QUALIFIED)"
 }
 
-not_implemented() {
-  printf 'STAGE_NOT_IMPLEMENTED %s\n' "$1" >&2
-  exit 2
+# --- stage 2 ---------------------------------------------------------------------------
+
+# stage2: refuses before stage 1 is complete, and refuses a second run (its own marker,
+# independent of .provisioned) unless PROVISION_FORCE=1. The marker is removed before any work
+# and written last, so a failed run never looks complete.
+stage2() {
+  check_run_root
+  if [ ! -f "$RUN_ROOT/$MARKER" ] || [ -e "$RUN_ROOT/$SENTINEL" ]; then
+    printf 'PROVISION_REFUSED stage 2 needs a completed stage 1 (%s missing or stage 1 interrupted)\n' "$MARKER" >&2
+    exit 1
+  fi
+  if [ -e "$RUN_ROOT/$STAGE2_MARKER" ]; then
+    if [ "${PROVISION_FORCE:-0}" != "1" ]; then
+      printf 'PROVISION_REFUSED stage 2 already done (%s exists); PROVISION_FORCE=1 runs it again\n' "$STAGE2_MARKER" >&2
+      exit 1
+    fi
+    pki_log "PROVISION_FORCE=1: running stage 2 again"
+  fi
+  rm -f "$RUN_ROOT/$STAGE2_MARKER"
+  pki_log "stage2 start (LOCAL_TEST_ONLY / NOT_QUALIFIED)"
+  bash "$here/lib/db.sh" migrate-and-seed || die "stage 2 failed: databases (cause above)"
+  bash "$here/lib/db.sh" wal-facts || die "stage 2 failed: WAL facts (cause above)"
+  bash "$here/lib/render.sh" render || die "stage 2 failed: contract rendering (cause above)"
+  local tmp="$RUN_ROOT/$STAGE2_MARKER.tmp"
+  printf 'LOCAL_TEST_ONLY stage2 complete %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$tmp"
+  chmod 0440 "$tmp"
+  [ "$(id -u)" -ne 0 ] || chown "root:$GROUP_ID" "$tmp"
+  mv -f "$tmp" "$RUN_ROOT/$STAGE2_MARKER"
+  pki_log "stage2 done (LOCAL_TEST_ONLY / NOT_QUALIFIED)"
 }
 
 case "${1:-}" in
   stage1) stage1 ;;
-  stage2) not_implemented stage2 ;;
-  all) not_implemented all ;;
+  stage2) stage2 ;;
+  all)
+    stage1
+    stage2
+    ;;
   *)
     printf 'usage: provision.sh stage1|stage2|all\n' >&2
     exit 64
