@@ -28,6 +28,7 @@ Java 21 is required. The wrapper pins Maven 3.9.11.
 - Deployment render check: `bash qualification/scenarios/deployment-contract.sh` (needs Helm 3.19.0 and PyYAML). It checks Kubernetes object semantics only.
 - Local platform source (`signaling-local-platform`, LOCAL_TEST_ONLY, see `config/native-sources.md`): `./mvnw -pl signaling-local-platform -am package` builds `signaling-local-platform/target/signaling-local-platform-0.1.0-SNAPSHOT-exec.jar`. Select its ITs with fully-qualified names: `-Dit.test=io.webrtc.signaling.localplatform.JdbcRevocationLogIT` or `...SourceServerIT`, and the composition IT in `signaling-integration-tests` with `-Dit.test=io.webrtc.signaling.storage.LocalPlatformCompositionIT` (its package is `storage`, so an `it.*` name matches nothing). Image: `docker build -f Dockerfile.local-platform --build-arg SOURCE_COMMIT=$(git rev-parse HEAD) -t signaling-local-platform:local .`, checked with `bash qualification/scenarios/image-contract.sh --local-platform-only signaling-local-platform:local`.
 - Browser client (`clients/native-browser`): ES modules with `*.test.mjs` / `*.test.cjs` files. `package.json` defines no test script.
+- Compose environment (`deploy/compose`, LOCAL_TEST_ONLY, acceptance not run): `make -C deploy/compose build|up|smoke|down|test` (`make help` lists all targets). Supported lifecycle is `up`, use, `down` (always `-v`); recover with `make reset`. See `deploy/compose/README.md`.
 
 ### Running the application
 
@@ -55,6 +56,7 @@ One jar, `signaling-app/target/signaling-app-0.1.0-SNAPSHOT-exec.jar`, serves al
 - `clients/native-browser`: an ES module client for the WSS `v:1` contract. It takes an injected `RTCPeerConnection`. It never persists SDP or ICE. Its durable command journal is IndexedDB and holds only allow-listed intents.
 - `qualification/`: Python scenario runner, fault matrix, and evidence verifier. Evidence is written to git-ignored `.superpowers/` directories or to `qualification/evidence/`.
 - `deploy/`: Helm chart and CloudNativePG manifests. `runbooks/` holds operator procedures for failover, drain and PITR restore.
+- `deploy/compose`: two-cell Docker Compose environment (provisioner, PostgreSQL, fake kube-API, smoke client, Makefile). LOCAL_TEST_ONLY and NOT_QUALIFIED; spec in `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
 - `config/`: packaged production defaults, the compatibility manifest (pins an unqualified candidate), and native-source contract notes.
 
 ## Conventions specific to this repo
