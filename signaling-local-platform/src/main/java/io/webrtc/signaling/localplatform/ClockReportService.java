@@ -87,7 +87,9 @@ public final class ClockReportService {
    * Returns {@code {"report": {...}, "signature": "<86 chars>"}} for the registered caller.
    *
    * @throws IllegalArgumentException if the caller's cell has no configured storage epoch
-   * @throws IllegalStateException if a new pod would exceed the pod bound
+   * @throws IllegalStateException if a new pod would exceed the pod bound (over HTTP the same
+   *     condition surfaces as 403 from the {@link BootRegistry} bound; this one is a second line of
+   *     defence, reachable only when the service is called directly)
    */
   public String clockBody(BootRegistry.Registration registration) {
     Objects.requireNonNull(registration, "registration");

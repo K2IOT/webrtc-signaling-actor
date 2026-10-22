@@ -742,7 +742,7 @@ host clock discipline, high availability, production readiness or capacity.
 
 ### Endpoints and statuses
 
-All three source-plane requests are `GET` with no query and no body.
+The two source-plane requests are `GET` with no query and no body.
 
 - `GET /v1/clock-bound` (source listener): `X-Signaling-Pod-Uid` and `X-Signaling-Process-Boot`,
   each exactly once and in canonical 8-4-4-4-12 hexadecimal form. 200 returns `{"report","signature"}`
@@ -762,11 +762,11 @@ All three source-plane requests are `GET` with no query and no body.
 | Status | Meaning |
 |---|---|
 | 400 | malformed request: header, offset, query, body, JSON or user id; duplicate `Content-Type` |
-| 403 | identity refused, pod bound to another identity, replaced boot, unconfigured cell |
+| 403 | identity refused, pod bound to another identity, replaced boot, pod table full (new pod beyond 4096), unconfigured cell |
 | 404 / 405 | unknown path / wrong method (405 carries `Allow`) |
 | 409 | revocation offset above the high-water mark; admin epoch not above the latest of the subject |
 | 413 / 415 | admin body above 4096 bytes / wrong admin `Content-Type` |
-| 503 | database unavailable, pod table full, oversized page, any unexpected failure; the body is empty |
+| 503 | database unavailable, oversized page, any unexpected failure; the body is empty |
 
 ### Clock report semantics
 
@@ -831,7 +831,7 @@ All three source-plane requests are `GET` with no query and no body.
   where an error response is not empty.
 - The boot replay window is bounded: only the last 8 replaced boots per pod are remembered, so an
   older boot is forgotten and can be replayed by the holder of the same identity. The pod table
-  holds at most 4096 pods and is never reclaimed; a new pod beyond it gets 503.
+  holds at most 4096 pods and is never reclaimed; a new pod beyond it gets 403.
 - One new database connection (with TLS and SCRAM when the JDBC URL and database require them) is
   opened per revocation page, per admin append and per readiness probe. There is no pool, and host
   load can exceed a consumer's connection deadline.
