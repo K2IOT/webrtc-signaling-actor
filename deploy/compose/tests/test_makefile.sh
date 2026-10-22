@@ -105,6 +105,75 @@ EOF
 }
 make_guard_stub
 
+# --- smoke-ca with a stub docker -------------------------------------------------------------
+# STUB_VOLUME=0 the run volume does not exist; STUB_FAIL_PATH=<substring>: `docker run ... cat <path>`
+# fails when its path contains it, after writing a partial byte (like a broken pipe).
+make_smoke_stub() {
+  mkdir -p "$WORK/sbin"
+  cat >"$WORK/sbin/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "volume inspect") [ "${STUB_VOLUME:-1}" = "1" ] ;;
+  "run --rm")
+    path="${*: -1}"
+    if [ -n "${STUB_FAIL_PATH:-}" ] && [[ "$path" == *"$STUB_FAIL_PATH"* ]]; then printf 'part'; exit 1; fi
+    printf 'TEST_ONLY %s\n' "$path" ;;
+  *) echo "stub docker: unexpected: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$WORK/sbin/docker"
+}
+make_smoke_stub
+
+# run_smoke_ca <smoke-dir> [VAR=value...] -> OUT, RC (SMOKE_DIR is redirected to a temp directory)
+run_smoke_ca() {
+  local dir="$1"
+  shift
+  RC=0
+  OUT="$(env PATH="$WORK/sbin:$PATH" "$@" make -C "$compose" smoke-ca SMOKE_DIR="$dir" 2>&1)" || RC=$?
+}
+
+mode_of() { stat -c '%a' "$1"; }
+tmp_files() { find "$1" -maxdepth 1 -name '.tmp*' | wc -l | tr -d ' '; }
+
+smoke_ca_success_path_is_unchanged() {
+  local d="$WORK/smoke-ok" f
+  run_smoke_ca "$d"
+  assert_eq "0" "$RC" "all exports succeed"
+  assert_eq "700" "$(mode_of "$d")" "directory mode"
+  for f in ca-workload.crt admin-client.crt admin-client.key; do
+    assert_true "$f exists" test -f "$d/$f"
+    assert_eq "600" "$(mode_of "$d/$f")" "$f mode"
+    assert_true "$f reported" grep -q "exported .smoke/$f" <<<"$OUT"
+  done
+  assert_eq "0" "$(tmp_files "$d")" "no tmp files left"
+}
+
+smoke_ca_fails_when_the_ca_export_fails() {
+  local d="$WORK/smoke-ca-fail"
+  mkdir -p "$d"
+  echo STALE >"$d/ca-workload.crt"
+  run_smoke_ca "$d" STUB_FAIL_PATH=ca-workload.crt
+  assert_true "non-zero exit" test "$RC" -ne 0
+  assert_false "no 'exported' for the CA" grep -q 'exported .smoke/ca-workload.crt' <<<"$OUT"
+  assert_false "a stale CA is not left behind" test -e "$d/ca-workload.crt"
+  assert_eq "0" "$(tmp_files "$d")" "no tmp files left"
+}
+
+smoke_ca_fails_when_only_the_admin_key_export_fails() {
+  local d="$WORK/smoke-key-fail"
+  run_smoke_ca "$d" STUB_FAIL_PATH=admin-client.key
+  assert_true "non-zero exit" test "$RC" -ne 0
+  assert_false "no 'exported' for the key" grep -q 'exported .smoke/admin-client.key' <<<"$OUT"
+  assert_false "no key file" test -e "$d/admin-client.key"
+  assert_eq "0" "$(tmp_files "$d")" "no tmp files left"
+}
+
+smoke_ca_refuses_without_the_volume() {
+  run_smoke_ca "$WORK/smoke-novol" STUB_VOLUME=0
+  assert_true "non-zero exit" test "$RC" -ne 0
+}
+
 all_jvm="$(load_topology; service_list | tr '\n' ' ')"
 
 run_guard() {
@@ -147,6 +216,10 @@ run_test down_removes_volumes
 run_test help_lists_all_targets
 run_test smoke_exports_material_then_runs_the_client
 run_test lint_and_test_targets
+run_test smoke_ca_success_path_is_unchanged
+run_test smoke_ca_fails_when_the_ca_export_fails
+run_test smoke_ca_fails_when_only_the_admin_key_export_fails
+run_test smoke_ca_refuses_without_the_volume
 run_test guard_passes_when_the_volume_does_not_exist
 run_test guard_refuses_when_the_volume_exists_and_a_jvm_container_is_missing
 run_test guard_refuses_an_offline_marker

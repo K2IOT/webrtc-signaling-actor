@@ -11,12 +11,16 @@
 # Environment: PREFLIGHT_SKIP=name1,name2 skips checks; PREFLIGHT_MIN_MEM_GIB; test overrides
 # PREFLIGHT_MEMINFO (default /proc/meminfo), PREFLIGHT_LOADAVG (default /proc/loadavg),
 # PREFLIGHT_NPROC (default `nproc`).
+# A re-run `make up` on a stack whose 17 JVM services all run skips memory and load (the stack
+# itself uses that RAM and CPU) and prints PREFLIGHT_NOTE; the other checks still run.
 # Exit: 0 ok, 1 a check failed, 2 usage.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/topology.sh
 source "$here/lib/topology.sh"
+# shellcheck source=lib/compose_state.sh
+source "$here/lib/compose_state.sh"
 load_topology
 
 PROJECT_PREFIX="signaling-compose-local_"
@@ -150,8 +154,19 @@ check_images() {
   fi
 }
 
+stack_up=0
+if [ -z "$(missing_jvm_services)" ]; then
+  stack_up=1
+  if ! skipped memory || ! skipped load; then
+    echo "PREFLIGHT_NOTE stack already running; memory/load not checked"
+  fi
+fi
+
 for c in $KNOWN_CHECKS; do
   skipped "$c" && continue
+  if [ "$stack_up" -eq 1 ] && { [ "$c" = memory ] || [ "$c" = load ]; }; then
+    continue
+  fi
   "check_$c"
 done
 

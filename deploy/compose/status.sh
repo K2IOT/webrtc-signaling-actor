@@ -5,15 +5,19 @@
 #             running (other than a one-shot that exited 0), or restarting. The logs are JVM and
 #             PostgreSQL logs; they carry no secret (launch.sh and the provisioner print file
 #             names only).
-# Uses the same project/env files as the Makefile (COMPOSE_CMD may override the compose command).
+# Uses the same project/env files as the Makefile (COMPOSE_CMD, split on spaces, may override the compose command).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_CMD="${COMPOSE_CMD:-docker compose --project-directory $here --env-file $here/topology.env --env-file $here/.env -f $here/compose.yaml}"
+if [ -n "${COMPOSE_CMD:-}" ]; then
+  read -r -a COMPOSE <<<"$COMPOSE_CMD"
+else
+  COMPOSE=(docker compose --project-directory "$here" --env-file "$here/topology.env" --env-file "$here/.env" -f "$here/compose.yaml")
+fi
 LOG_LINES="${LOG_LINES:-40}"
 FORMAT='{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}'
 
-rows() { $COMPOSE_CMD ps -a --format "$FORMAT" | sort; }
+rows() { "${COMPOSE[@]}" ps -a --format "$FORMAT" | sort; }
 
 case "${1:-}" in
   table)
@@ -30,7 +34,7 @@ case "${1:-}" in
     fi
     for s in $bad; do
       printf '\n===== %s (last %s lines) =====\n' "$s" "$LOG_LINES"
-      $COMPOSE_CMD logs --no-color --tail "$LOG_LINES" "$s" 2>&1 || true
+      "${COMPOSE[@]}" logs --no-color --tail "$LOG_LINES" "$s" 2>&1 || true
     done
     ;;
   *)

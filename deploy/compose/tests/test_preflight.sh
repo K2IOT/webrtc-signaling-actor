@@ -15,6 +15,7 @@ trap 'rm -rf "$WORK"' EXIT
 #   STUB_COMPOSE_VERSION   output of `docker compose version --short` (default 2.40.0)
 #   STUB_NETWORKS          file with lines "<network name> <subnet>"
 #   STUB_MISSING_IMAGES    space-separated image references `docker image inspect` rejects
+#   STUB_RUNNING           services that `docker ps --filter ...` reports as running
 make_stub() {
   mkdir -p "$WORK/bin"
   cat >"$WORK/bin/docker" <<'EOF'
@@ -25,6 +26,7 @@ case "$1 ${2:-}" in
   "network inspect")
     name="$3"
     [ -f "${STUB_NETWORKS:-/nonexistent}" ] && awk -v n="$name" '$1 == n {print $2}' "$STUB_NETWORKS" || true ;;
+  "ps --filter") for s in ${STUB_RUNNING:-}; do echo "$s"; done ;;
   "image inspect")
     for m in ${STUB_MISSING_IMAGES:-}; do
       [ "$3" = "$m" ] && { echo "Error: No such image: $3" >&2; exit 1; }
@@ -124,6 +126,44 @@ skip_env_skips_a_check() {
   assert_eq "2" "$RC" "an unknown check name is a usage error"
 }
 
+all_jvm="$(
+  source "$compose/lib/topology.sh"
+  load_topology
+  service_list | tr '\n' ' '
+)"
+
+running_stack_skips_memory_and_load_checks() {
+  printf 'MemAvailable: 1048576 kB\n' >"$WORK/meminfo.busy" # 1 GiB: the stack itself uses the RAM
+  printf '30.00 20.00 10.00 1/100 1234\n' >"$WORK/loadavg.busy"
+  run_preflight PREFLIGHT_MEMINFO="$WORK/meminfo.busy" PREFLIGHT_LOADAVG="$WORK/loadavg.busy" STUB_RUNNING="$all_jvm"
+  assert_eq "0" "$RC" "all 17 running: resource checks skipped"
+  assert_eq "1" "$(lines_with 'PREFLIGHT_NOTE stack already running; memory/load not checked')" "the note"
+  assert_eq "PREFLIGHT_OK" "$(printf '%s\n' "$OUT" | tail -n 1)" "still ends with OK"
+  # the other checks still run on a running stack
+  run_preflight STUB_RUNNING="$all_jvm" STUB_COMPOSE_VERSION=2.1.0
+  assert_eq "1" "$RC" "compose check still runs"
+  run_preflight STUB_RUNNING="$all_jvm" STUB_MISSING_IMAGES="signaling-app:local"
+  assert_eq "1" "$RC" "image check still runs"
+  printf 'foreign 172.30.2.0/24\n' >"$WORK/networks.foreign2"
+  run_preflight STUB_RUNNING="$all_jvm" STUB_NETWORKS="$WORK/networks.foreign2"
+  assert_eq "1" "$RC" "subnet check still runs"
+  # no note on a stack that is not up
+  run_preflight
+  assert_eq "0" "$(lines_with 'PREFLIGHT_NOTE')" "no note when nothing runs"
+}
+
+sixteen_running_still_fails_memory_and_load() {
+  local sixteen
+  sixteen="$(printf '%s\n' $all_jvm | grep -v '^gateway-c002$' | tr '\n' ' ')"
+  printf 'MemAvailable: 1048576 kB\n' >"$WORK/meminfo.busy"
+  printf '30.00 20.00 10.00 1/100 1234\n' >"$WORK/loadavg.busy"
+  run_preflight PREFLIGHT_MEMINFO="$WORK/meminfo.busy" PREFLIGHT_LOADAVG="$WORK/loadavg.busy" STUB_RUNNING="$sixteen"
+  assert_eq "1" "$RC" "16 running: checks apply"
+  assert_eq "1" "$(lines_with 'FAIL memory')" "memory fails"
+  assert_eq "1" "$(lines_with 'FAIL load')" "load fails"
+  assert_eq "0" "$(lines_with 'PREFLIGHT_NOTE')" "no note"
+}
+
 run_test passes_on_a_quiet_host_stub
 run_test fails_when_compose_is_too_old
 run_test fails_below_memory_floor
@@ -131,4 +171,6 @@ run_test fails_when_load_is_high
 run_test fails_when_a_foreign_network_uses_a_subnet
 run_test fails_when_an_image_is_missing
 run_test skip_env_skips_a_check
+run_test running_stack_skips_memory_and_load_checks
+run_test sixteen_running_still_fails_memory_and_load
 finish

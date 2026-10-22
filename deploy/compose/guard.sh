@@ -17,9 +17,11 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/topology.sh
 source "$here/lib/topology.sh"
+# shellcheck source=lib/compose_state.sh
+source "$here/lib/compose_state.sh"
 load_topology
 
-PROJECT="${COMPOSE_PROJECT:-signaling-compose-local}"
+PROJECT="$COMPOSE_PROJECT"
 VOLUME="${PROJECT}_run"
 
 provisioner_image() {
@@ -51,12 +53,7 @@ case "$rc" in
   *) echo "guard: cannot inspect volume $VOLUME with image $IMAGE (docker run exit $rc); run 'make build' or 'make reset'" >&2; exit 1 ;;
 esac
 
-running="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter status=running \
-  --format '{{.Label "com.docker.compose.service"}}' | sort -u)"
-missing=""
-for s in $(service_list); do
-  printf '%s\n' "$running" | grep -qx "$s" || missing="$missing $s"
-done
+missing="$(missing_jvm_services)"
 if [ -n "$missing" ]; then
   refuse "volume $VOLUME exists but no running container for:$missing (leftover state of a 'docker compose down' without -v, or a crashed plane)"
 fi

@@ -51,10 +51,10 @@ hosts: ## print the /etc/hosts lines to add (never writes a file)
 	@bash $(COMPOSE_DIR)/hosts.sh
 
 preflight: ensure-env ## check compose version, free RAM, load, subnets and images
-	@bash $(COMPOSE_DIR)/preflight.sh
+	@COMPOSE_PROJECT=$(PROJECT) bash $(COMPOSE_DIR)/preflight.sh
 
 up: ensure-env ## preflight, lifecycle guard, then docker compose up -d --wait
-	bash $(COMPOSE_DIR)/preflight.sh
+	COMPOSE_PROJECT=$(PROJECT) bash $(COMPOSE_DIR)/preflight.sh
 	COMPOSE_PROJECT=$(PROJECT) PROVISIONER_IMAGE=$(PROVISIONER_IMAGE) bash $(COMPOSE_DIR)/guard.sh
 	$(COMPOSE) up -d --wait --wait-timeout 600 || { rc=$$?; echo "make up: a service did not become healthy"; bash $(COMPOSE_DIR)/status.sh failures; exit $$rc; }
 	bash $(COMPOSE_DIR)/status.sh table
@@ -62,10 +62,14 @@ up: ensure-env ## preflight, lifecycle guard, then docker compose up -d --wait
 smoke-ca: ## export the CA and admin client material for the smoke client to .smoke/
 	@docker volume inspect $(RUN_VOLUME) >/dev/null 2>&1 || { echo "smoke-ca: volume $(RUN_VOLUME) does not exist; run make up first"; exit 1; }
 	umask 077; mkdir -p $(SMOKE_DIR); chmod 0700 $(SMOKE_DIR)
-	umask 077; for f in ca-workload.crt admin/admin-client.crt admin/admin-client.key; do \
-	  docker run --rm -v $(RUN_VOLUME):/r:ro $(PROVISIONER_IMAGE) cat /r/_shared/$$f > $(SMOKE_DIR)/.tmp.$$$$ \
-	    && chmod 0600 $(SMOKE_DIR)/.tmp.$$$$ && mv -f $(SMOKE_DIR)/.tmp.$$$$ $(SMOKE_DIR)/$$(basename $$f) \
-	    && echo "exported .smoke/$$(basename $$f)"; \
+	umask 077; rm -f $(SMOKE_DIR)/ca-workload.crt $(SMOKE_DIR)/admin-client.crt $(SMOKE_DIR)/admin-client.key; \
+	for f in ca-workload.crt admin/admin-client.crt admin/admin-client.key; do \
+	  b=$$(basename $$f); t=$(SMOKE_DIR)/.tmp.$$$$; \
+	  if docker run --rm -v $(RUN_VOLUME):/r:ro $(PROVISIONER_IMAGE) cat /r/_shared/$$f > $$t && chmod 0600 $$t && mv -f $$t $(SMOKE_DIR)/$$b; then \
+	    echo "exported .smoke/$$b"; \
+	  else \
+	    rm -f $$t $(SMOKE_DIR)/$$b; echo "smoke-ca: export of $$b failed" >&2; exit 1; \
+	  fi; \
 	done
 
 smoke: smoke-ca ## run the cross-cell smoke test against the running stack
