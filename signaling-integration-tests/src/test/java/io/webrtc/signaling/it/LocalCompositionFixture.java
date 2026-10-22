@@ -100,6 +100,8 @@ final class LocalCompositionFixture implements AutoCloseable {
     final int entryPort;
     private final String kubeToken = "TEST_ONLY_KUBE_TOKEN_" + UUID.randomUUID();
     private final List<Started> started = new ArrayList<>();
+    /** Base URL of an external TEST_ONLY source the contracts publish; null keeps the fixture's own. */
+    private volatile String externalSource;
 
     /** One process launched by the fixture, with its log. */
     record Started(String name, Process process, Path log, String healthHost, int healthPort) {
@@ -157,6 +159,17 @@ final class LocalCompositionFixture implements AutoCloseable {
             throw failure;
         }
         database = db;
+    }
+
+    /**
+     * Seam for {@code LocalPlatformCompositionIT}: contracts mounted after this call publish
+     * {@code baseUrl} (e.g. {@code https://127.0.0.30:<port>}) as the clock and revocation source in
+     * place of the fixture's own. The published key id and public key do not change, so that source
+     * must sign with {@link #sourceKeys} under {@link LocalCompositionServices#SOURCE_KEY_ID}. Never
+     * called by {@code LocalRuntimeCompositionIT}, whose contracts stay exactly as before.
+     */
+    void useExternalSource(String baseUrl) {
+        externalSource = java.util.Objects.requireNonNull(baseUrl);
     }
 
     static String wssUrl(String cell, int port) {
@@ -328,7 +341,8 @@ final class LocalCompositionFixture implements AutoCloseable {
         tls.put("remotingKeyStore", file(mount, "remoting.p12"));
         tls.put("remotingTrustStore", file(mount, "trust.p12"));
         document.put("tls", tls);
-        var sourceUrl = "https://" + SOURCE_IP + ":" + services.sourcePort();
+        var external = externalSource;
+        var sourceUrl = external != null ? external : "https://" + SOURCE_IP + ":" + services.sourcePort();
         var sources = new LinkedHashMap<String, Object>();
         sources.put("clockUrl", sourceUrl + "/v1/clock-bound");
         sources.put("revocationUrl", sourceUrl + "/v1/revocations");
@@ -551,6 +565,8 @@ final class LocalCompositionFixture implements AutoCloseable {
                         .filter(entry -> !entry.endsWith("test-classes") && !entry.contains("test-classes" + File.separator))
                         .filter(entry -> !entry.endsWith("-tests.jar"))
                         .filter(entry -> !entry.contains("surefire") && !entry.contains("failsafe"))
+                        // The in-process TEST_ONLY platform is a test dependency, never part of a plane.
+                        .filter(entry -> !entry.contains("signaling-local-platform"))
                         .toList();
         if (entries.stream().noneMatch(entry -> entry.contains("signaling-app")))
             throw new IllegalStateException("TEST_ONLY application classpath lacks signaling-app: " + entries);

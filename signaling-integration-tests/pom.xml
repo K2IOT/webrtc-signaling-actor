@@ -20,6 +20,13 @@
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
+        <!-- LOCAL_TEST_ONLY platform run in-process by LocalPlatformCompositionIT; never on a child classpath. -->
+        <dependency>
+            <groupId>io.webrtc.signaling</groupId>
+            <artifactId>signaling-local-platform</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
