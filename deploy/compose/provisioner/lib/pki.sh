@@ -65,7 +65,7 @@ new_ca() {
   quiet openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$CA_DIR/$name.key"
   quiet openssl req -x509 -new -config "$CA_DIR/openssl.cnf" -key "$CA_DIR/$name.key" \
     -subj "/O=LOCAL_TEST_ONLY/CN=$cn" -days "$CA_DAYS" -sha256 \
-    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
     -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -addext "subjectKeyIdentifier=hash" \
     -out "$CA_DIR/$name.crt"
@@ -76,6 +76,12 @@ new_ca() {
 #   san-list: "URI:...,DNS:...,IP:..." ; EKU serverAuth+clientAuth, keyUsage digitalSignature.
 issue_leaf() {
   local ca="$1" cn="$2" san="$3" keyout="$4" crtout="$5"
+  # fail closed: a leaf without SANs must never be issued (an empty value usually means an
+  # upstream lookup failed inside a command substitution, where set -e does not fire)
+  if [ -z "$san" ]; then
+    printf 'provision: refusing to issue a leaf without SANs (%s)\n' "$cn" >&2
+    return 1
+  fi
   local csr="$CA_DIR/tmp/leaf.csr" ext="$CA_DIR/tmp/leaf.ext"
   quiet openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$keyout"
   quiet openssl req -new -config "$CA_DIR/openssl.cnf" -key "$keyout" -subj "/O=LOCAL_TEST_ONLY/CN=$cn" -out "$csr"

@@ -144,24 +144,68 @@ pg_server_leafs_carry_dns_and_ip_sans() {
   assert_true "pg-directory DNS" grep -q 'DNS:pg-directory' <(san_of "$RUN_ROOT/pg-directory/server.crt")
 }
 
+# fingerprint_of_pem <file>: SHA-256 fingerprint, hex only, from openssl
+fingerprint_of_pem() { openssl x509 -in "$1" -noout -fingerprint -sha256 | sed 's/^.*=//' | tr -d ':' | tr '[:lower:]' '[:upper:]'; }
+
 remoting_p12_has_ip_san_and_loads_with_keytool() {
-  local s d out ip
+  local s d out ip cell other leaf sans fp_trust fp_ca
   for s in $(actors); do
     d="$RUN_ROOT/$s"
+    cell="$(cell_of "$s")"
+    other="c001"
+    [ "$cell" = "c001" ] && other="c002"
     ip="$(ip_of "$s" cell)"
     out="$(keytool -list -v -keystore "$d/remoting.p12" -storetype PKCS12 -storepass:file "$d/remoting.pass" 2>&1)" || true
     assert_true "$s remoting.p12 has one entry" grep -q 'Your keystore contains 1 entry' <<<"$out"
     assert_true "$s remoting.p12 PrivateKeyEntry" grep -q 'PrivateKeyEntry' <<<"$out"
     assert_true "$s remoting.p12 IP SAN $ip" grep -q "IPAddress: $ip" <<<"$out"
+
+    # the remoting leaf itself: signed by THIS cell's remoting CA, by no other CA, exact IP SAN
+    leaf="$TMP/remoting-leaf-$s.pem"
+    openssl pkcs12 -in "$d/remoting.p12" -passin "file:$d/remoting.pass" -nokeys -clcerts 2>/dev/null >"$leaf"
+    assert_true "$s remoting leaf verifies against CA-remoting-$cell" openssl verify -CAfile "$RUN_ROOT/_shared/ca-remoting-$cell.crt" "$leaf"
+    assert_false "$s remoting leaf does not verify against CA-remoting-$other" openssl verify -CAfile "$RUN_ROOT/_shared/ca-remoting-$other.crt" "$leaf"
+    assert_false "$s remoting leaf does not verify against CA-workload" openssl verify -CAfile "$RUN_ROOT/_shared/ca-workload.crt" "$leaf"
+    sans="$(openssl x509 -in "$leaf" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ')"
+    assert_eq "IPAddress:$ip" "$sans" "$s remoting leaf SAN is exactly its net-cell address"
+
+    # trust.p12: exactly one entry, and it is this cell's remoting CA (compare fingerprints)
     out="$(keytool -list -v -keystore "$d/trust.p12" -storetype PKCS12 -storepass:file "$d/remoting.pass" 2>&1)" || true
     assert_true "$s trust.p12 has one entry" grep -q 'Your keystore contains 1 entry' <<<"$out"
     assert_true "$s trust.p12 is a trusted cert entry" grep -q 'trustedCertEntry' <<<"$out"
+    assert_true "$s trust.p12 alias names the CA" grep -q "Alias name: remoting-ca-$cell\$" <<<"$out"
+    assert_true "$s trust.p12 owner is CA-remoting-$cell" grep -q "Owner: .*CN=LOCAL_TEST_ONLY CA-remoting-$cell\b" <<<"$out"
+    fp_trust="$(sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' <<<"$out" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+    fp_ca="$(fingerprint_of_pem "$RUN_ROOT/_shared/ca-remoting-$cell.crt")"
+    assert_true "$s trust.p12 fingerprint is non-empty" test -n "$fp_trust"
+    assert_eq "$fp_ca" "$fp_trust" "$s trust.p12 holds the CA-remoting-$cell certificate"
+    assert_true "$s trust.p12 fingerprint differs from CA-remoting-$other" test "$fp_trust" != "$(fingerprint_of_pem "$RUN_ROOT/_shared/ca-remoting-$other.crt")"
   done
-  # per-cell remoting CA: the two cells' trust stores differ and a c001 leaf does not verify against the c002 CA
-  assert_true "cell trust stores differ" test "$(sha256sum <"$RUN_ROOT/actor-c001-1/trust.p12")" != "$(sha256sum <"$RUN_ROOT/actor-c002-1/trust.p12")"
-  assert_false "c002 trust store password also differs" cmp -s "$RUN_ROOT/actor-c001-1/remoting.pass" "$RUN_ROOT/actor-c002-1/remoting.pass"
+  assert_false "the two cells use different remoting passwords" cmp -s "$RUN_ROOT/actor-c001-1/remoting.pass" "$RUN_ROOT/actor-c002-1/remoting.pass"
   assert_false "c001 trust store does not open with the c002 password" \
     keytool -list -keystore "$RUN_ROOT/actor-c001-1/trust.p12" -storetype PKCS12 -storepass:file "$RUN_ROOT/actor-c002-1/remoting.pass"
+}
+
+ca_certs_are_path_length_zero() {
+  local f txt
+  for f in "$RUN_ROOT"/_shared/ca-*.crt "$RUN_ROOT"/_shared/admin/admin-ca.crt; do
+    txt="$(openssl x509 -in "$f" -noout -ext basicConstraints 2>/dev/null | tr -d ' \n')"
+    assert_eq "X509v3BasicConstraints:critical" "${txt%%CA:*}" "$(basename "$f") basicConstraints is critical"
+    assert_true "$(basename "$f") is CA:TRUE,pathlen:0" grep -q 'CA:TRUE,pathlen:0' <<<"$txt"
+  done
+  assert_eq "7" "$(ls "$RUN_ROOT"/_shared/ca-*.crt "$RUN_ROOT"/_shared/admin/admin-ca.crt | wc -l | tr -d ' ')" "CA certificates checked"
+}
+
+issue_leaf_refuses_an_empty_san_list() {
+  local d="$TMP/emptysan" rc
+  mkdir -p "$d/tmp"
+  cp "$RUN_ROOT/.ca/workload.key" "$RUN_ROOT/.ca/workload.crt" "$d/" 2>/dev/null || { _fail "cannot read CA material"; return 1; }
+  set +e
+  ( CA_DIR="$d"; source "$prov/lib/pki.sh"; issue_leaf workload x "" "$d/x.key" "$d/x.crt" ) >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_true "issue_leaf with an empty SAN list fails" test "$rc" -ne 0
+  assert_false "no certificate was written" test -e "$d/x.crt"
 }
 
 proof_key_is_ed25519_and_pub_matches() {
@@ -380,7 +424,7 @@ setup_run
 for t in stage1_succeeds service_dirs_cover_all_24_names each_workload_leaf_has_exactly_one_uri_san actor_uri_san_is_per_pod_id \
   gateway_uri_san_carries_gateway_id control_leaf_has_control_uri_and_bootstrap_dns gateway_leaf_has_public_dns_san \
   leaf_has_server_and_client_eku eku_and_key_usage leaf_chains_to_workload_ca pg_server_leafs_carry_dns_and_ip_sans \
-  remoting_p12_has_ip_san_and_loads_with_keytool proof_key_is_ed25519_and_pub_matches source_pub_matches_source_key \
+  remoting_p12_has_ip_san_and_loads_with_keytool ca_certs_are_path_length_zero issue_leaf_refuses_an_empty_san_list proof_key_is_ed25519_and_pub_matches source_pub_matches_source_key \
   jwt_pub_is_the_identity_public_key platform_p12_loads_with_keytool_and_has_ip_san kube_tokens_differ_per_cell \
   pod_uids_are_unique_lowercase_uuids privacy_key_is_32_bytes_per_cell db_passwords_are_present_and_random \
   no_key_is_world_readable modes_are_0440_files_and_0750_dirs shared_dir_has_no_ca_private_key no_secret_appears_in_stdout \
