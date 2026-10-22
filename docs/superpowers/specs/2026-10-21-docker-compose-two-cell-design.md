@@ -1,7 +1,7 @@
 # Docker Compose hai cell — môi trường signaling chạy được trên một máy
 
 Date: 2026-10-21
-Status: DRAFT — SP1 (Local runtime adapter) đã triển khai trên `dev-docker-fix`, cùng image contract và tài liệu `config/native-sources.md`; spec bằng văn bản chờ rà soát (thiết kế đã được người dùng duyệt ở mức hội thoại, 2026-10-21). SP2, SP3 và deployment NOT_RUN. Các mục §4.1–§4.3, §4.5–§4.6, §8, §9 phản ánh những gì SP1 thực sự xây; mục còn lại vẫn là thiết kế chưa triển khai.
+Status: DRAFT — SP1 (Local runtime adapter) và SP2 (Local platform, `signaling-local-platform`) đã triển khai trên `dev-docker-fix`, cùng image contract và tài liệu `config/native-sources.md`; spec bằng văn bản chờ rà soát (thiết kế đã được người dùng duyệt ở mức hội thoại, 2026-10-21). SP3 và deployment NOT_RUN. Các mục §4.1–§4.4, §4.5–§4.6, §8, §9 phản ánh những gì SP1 và SP2 thực sự xây; mục còn lại vẫn là thiết kế chưa triển khai. Mọi thứ vẫn `LOCAL_TEST_ONLY` và `NOT_QUALIFIED`.
 Environment: **LOCAL_TEST_ONLY** / `local-minikube` / `local-test-only`.
 Qualification: **NOT_QUALIFIED**. Compose chỉ có thể đạt `LOCAL_QUALIFIED`. Không có tuyên bố production, HA thật, physical fencing hay 10M.
 Source baseline: branch `dev-docker-fix`.
@@ -139,9 +139,11 @@ Không đưa `TestOnlyNativeCapabilities`, đồng hồ giả, WAL fact giả ha
 
 ### 4.4 Nhiệm vụ SP2 — `signaling-local-platform`
 
+**Đã triển khai (SP2)**, `LOCAL_TEST_ONLY` và `NOT_QUALIFIED`. Hợp đồng chi tiết (cổng, khóa config, quy tắc danh tính, endpoint và mã trạng thái, ngữ nghĩa đồng hồ và epoch, giới hạn đã biết) nằm ở `config/native-sources.md`, mục "Local platform source (LOCAL_TEST_ONLY)"; image: `Dockerfile.local-platform`, kiểm bằng `image-contract.sh`. Bằng chứng: `LocalPlatformCompositionIT` (`signaling-integration-tests`; một cell thật chạy với source của SP2, gồm khởi động chỉ sau khi đồng hồ đo được ấm lên, revoke qua endpoint admin làm các plane từ chối user, và bước lùi đồng hồ làm các plane không an toàn trở lại), `SourceServerIT` (mTLS, danh tính, mã trạng thái, framing, cô lập vai trò admin), `JdbcRevocationLogIT` (log append-only, offset không hở, thứ tự commit), `ClockReportServiceTest` và `HostClockObserverTest` (số liệu đo và trạng thái không an toàn). Không có gì ở đây là bằng chứng về kỷ luật đồng hồ của host.
+
 Server HTTPS/mTLS cổng 9443, TLS 1.3, chỉ nhận caller đã enroll; tuân theo wire contract trong `config/native-sources.md`: header `X-Signaling-Pod-Uid`, `X-Signaling-Process-Boot`, `X-Signaling-Source-Offset`; `Content-Length` đúng, `Connection: close`, không redirect/chunked/nén, body ≤ 32768 byte.
 
-- **Đồng hồ**: báo cáo ký Ed25519 trên `ClockSafetyMonitor.signingBytes`, hiệu lực ≤ 5s, `pairUncertainty` ≤ 250000µs, `relativeRateError` ≤ 1000 ppm. Số liệu đến từ đo thật (lệch giữa wall clock và monotonic clock qua các mẫu liên tiếp); không có đo thì trả trạng thái không an toàn, không bao giờ hằng số an toàn. Giới hạn của phép đo (chỉ thấy đồng hồ của container, không phải kỷ luật thời gian của host) được in vào evidence.
+- **Đồng hồ**: báo cáo ký Ed25519 trên `ClockSafetyMonitor.signingBytes`, hiệu lực ≤ 5s, `pairUncertainty` ≤ 250000µs, `relativeRateError` ≤ 1000 ppm. Số liệu đến từ đo thật (lệch giữa wall clock và monotonic clock qua các mẫu liên tiếp); không có đo thì trả trạng thái không an toàn, không bao giờ hằng số an toàn. Giới hạn của phép đo (chỉ thấy đồng hồ của container, không phải kỷ luật thời gian của host) được in vào evidence. Khi triển khai: hiệu lực là 2s, và `pairUncertainty` báo cáo = giá trị đo + phụ cấp cố định 100000µs (`CONSUMER_OBSERVATION_ALLOWANCE_MICROS`) cho độ trễ đọc đồng hồ của chính consumer, thứ source không đo được; `continuous` là false cho đến khi có ≥ 2s mẫu sạch và trong 5s sau một bước nhảy hay đứng đồng hồ.
 - **Revocation**: log append-only bền trong database `source` của `pg-directory`, offset và high-water đơn điệu, mỗi trang ≤ 16 mục (sự kiện + khóa bị loại), ký bằng `RevocationSourceVerifier.signingBytes`. Endpoint admin (mTLS, vai trò riêng) để thêm revoke user/token.
 - `registerBoot(podUid, processBoot, cell, plane)` gắn với danh tính certificate; boot mới thay boot cũ của Pod đó; header không tự đăng ký được danh tính.
 - Chạy được độc lập, yêu cầu `LOCAL_TEST_ONLY` trước khi khởi động; không nằm trong auto-configuration của `signaling-app`.
@@ -223,15 +225,15 @@ Cấu trúc payload chính xác lấy từ `ProtocolValidator`, kiểm trong pla
 
 ## 8. Rủi ro đã biết và cách xử lý
 
-Cột "Trạng thái" phản ánh SP1 đã triển khai.
+Cột "Trạng thái" phản ánh SP1 và SP2 đã triển khai.
 
 | Rủi ro | Trạng thái | Xử lý |
 |---|---|---|
 | `NativeCompatibility` đọc `...artery.ssl.config.require-mutual-authentication` nhưng conf đặt dưới `ssl.config-ssl-engine`; gate tương thích có thể không bao giờ mở | **Đã sửa (SP1)**: lỗi đường dẫn khóa là có thật; nơi đọc dùng khóa hiệu lực `ssl.config-ssl-engine`, `ssl.config` chỉ là dự phòng khi thiếu | Có test; gate mở trong `LocalRuntimeCompositionIT` |
-| Epoch phát hành của Identity so với watermark `RevocationState` (nguy cơ epoch 0 bị coi là đã revoke) | Còn lại (SP2/SP3) | Kiểm bằng test trước khi bật smoke bước 5; không đổi ngữ nghĩa `RevocationState` |
+| Epoch phát hành của Identity so với watermark `RevocationState` (nguy cơ epoch 0 bị coi là đã revoke) | **Đã giải quyết bằng test (SP2)**: token không có claim `securityEpoch` được đọc là epoch 0; user không có sự kiện nào không bị ảnh hưởng, còn revoke đầu tiên (epoch 0) chặn token epoch 0 | `RevocationPageServiceTest`, `LocalPlatformCompositionIT` (revoke trả epoch 0, user bị từ chối trên các plane đang chạy, user khác không bị); không đổi ngữ nghĩa `RevocationState`. Revoke user là vĩnh viễn trong môi trường này |
 | Control cần `CellRpcClient`; `NativeCellRpcConfiguration` hiện chỉ profile `actor`, `gateway` | **Đã giải quyết (SP1)** bằng danh tính workload `control` chỉ-quan-sát (§4.3 mục 7, §4.6) | Test từ chối của server actor cho execute, relay và sync; `LocalRuntimeCompositionIT` chứng minh gate control quay về 503 khi chỉ dừng actor (§9) |
 | Cổng thời gian 30s của actor khi khởi động | Còn lại (SP3) | Khởi động đồng thời; nếu compose chậm, tăng giới hạn trong chính config có kiểm range, không bỏ kiểm tra |
-| Phép đo đồng hồ chỉ trong container | Còn lại (SP2) | Ghi rõ trong evidence; không dùng làm bằng chứng kỷ luật đồng hồ host. Source của IT SP1 không đo gì, chỉ khai mức tối đa đã enroll |
+| Phép đo đồng hồ chỉ trong container | **Giới hạn đã chấp nhận (SP2)**: source đo thật lệch wall/monotonic của chính process (`HostClockObserver`) và cộng phụ cấp cố định 100000µs cho độ trễ đọc của consumer | Không dùng làm bằng chứng kỷ luật đồng hồ host; đo trên 5s gần nhất, không thấy drift làm hai đồng hồ lệch cùng nhau (xem `config/native-sources.md`). `ClockReportServiceTest`, `HostClockObserverTest`, `LocalPlatformCompositionIT`. Source của IT SP1 vẫn không đo gì, chỉ khai mức tối đa đã enroll |
 | Control giữ credential hai cell | Chấp nhận, chỉ `LOCAL_TEST_ONLY`; SP1 giới hạn còn đúng một `transferCells` | Đóng bằng A3/A4 |
 | Cổng RPC ingress của actor (`CellRpcServer`) và relay của gateway (`GatewayRelayRpcServer`) bind mọi interface; WSS và HTTPS của control cũng vậy (chỉ Artery, management và health bind `podIp`) | **Còn lại (SP3)** | Thiết kế mạng compose phải cô lập: mỗi cổng chỉ có đường tới từ đúng mạng (§3.2); không dựa vào việc listener tự giới hạn |
 | Release Helm `local-minikube` mở cổng kích hoạt vì chart luôn đặt `SIGNALING_NATIVE_PROVIDER_CONTRACT`, nhưng không render `process.json` | **Giới hạn đã chấp nhận (SP1)**: đóng khi lỗi với `LOCAL_RUNTIME_REJECTED` `profile/MISSING` (trước đó `NATIVE_RUNTIME_NOT_INSTALLED`); `SIGNALING_POD_UID` từ `metadata.uid` cũng không bao giờ bằng `podUid` của profile | Adapter chỉ dành cho compose; SP3 sở hữu việc sinh profile và contract. Không sửa chart; chế độ local của Helm cần một quyết định chart riêng sau này |

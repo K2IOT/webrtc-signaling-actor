@@ -21,11 +21,12 @@ Java 21 is required. The wrapper pins Maven 3.9.11.
 
 - **The spotless check currently fails** on about 40 pre-existing files, so `./mvnw verify` and any `verify` run stop with `BUILD FAILURE` after the tests have run. Pass `-Dspotless.check.skip=true` to run tests through `verify` until the formatting debt is cleared.
 
-- `*IT` classes run under failsafe in `signaling-actors`, `signaling-cell-rpc`, `signaling-control-api`, `signaling-gateway`, `signaling-integration-tests` and `signaling-storage`. They use Testcontainers PostgreSQL 17.6, so Docker is required.
+- `*IT` classes run under failsafe in `signaling-actors`, `signaling-cell-rpc`, `signaling-control-api`, `signaling-gateway`, `signaling-integration-tests`, `signaling-local-platform` and `signaling-storage`. They use Testcontainers PostgreSQL 17.6, so Docker is required.
 - `signaling-integration-tests` also needs Chromium. Run `npm ci` in `signaling-integration-tests/src/test/webrtc` first; `CHROMIUM_PATH` selects the browser (default `/usr/bin/chromium`).
 - Python qualification regression: `python3 -m unittest discover -s qualification/scenarios/tests` (the pinned venv setup is in `qualification/scenarios/README.md`).
 - Local fault suite (Task 22): `qualification/scenarios/fault_suite.py`. It needs Linux, Docker, Node and Chromium, and takes a long time. Its output is `LOCAL TEST ONLY` evidence.
 - Deployment render check: `bash qualification/scenarios/deployment-contract.sh` (needs Helm 3.19.0 and PyYAML). It checks Kubernetes object semantics only.
+- Local platform source (`signaling-local-platform`, LOCAL_TEST_ONLY, see `config/native-sources.md`): `./mvnw -pl signaling-local-platform -am package` builds `signaling-local-platform/target/signaling-local-platform-0.1.0-SNAPSHOT-exec.jar`. Select its ITs with fully-qualified names: `-Dit.test=io.webrtc.signaling.localplatform.JdbcRevocationLogIT` or `...SourceServerIT`, and the composition IT in `signaling-integration-tests` with `-Dit.test=io.webrtc.signaling.storage.LocalPlatformCompositionIT` (its package is `storage`, so an `it.*` name matches nothing). Image: `docker build -f Dockerfile.local-platform --build-arg SOURCE_COMMIT=$(git rev-parse HEAD) -t signaling-local-platform:local .`, checked with `bash qualification/scenarios/image-contract.sh --local-platform-only signaling-local-platform:local`.
 - Browser client (`clients/native-browser`): ES modules with `*.test.mjs` / `*.test.cjs` files. `package.json` defines no test script.
 
 ### Running the application
@@ -48,7 +49,7 @@ One jar, `signaling-app/target/signaling-app-0.1.0-SNAPSHOT-exec.jar`, serves al
 **Observability and contracts.** `signaling-observability` holds telemetry and its contract test. Telemetry and deployment contracts are documented under `docs/operations/` and `docs/contracts/`.
 
 **Module dependencies** (upstream → downstream):
-`signaling-protocol`, `signaling-observability` → `signaling-auth` → `signaling-storage` → `signaling-actors` / `signaling-control-api` → `signaling-cell-rpc` → `signaling-gateway` → `signaling-app`. `signaling-loadgen` depends on `signaling-auth` and `signaling-gateway`. `signaling-integration-tests` depends on `signaling-app`, `signaling-gateway` and `signaling-storage`.
+`signaling-protocol`, `signaling-observability` → `signaling-auth` → `signaling-storage` → `signaling-actors` / `signaling-control-api` → `signaling-cell-rpc` → `signaling-gateway` → `signaling-app`. `signaling-loadgen` depends on `signaling-auth` and `signaling-gateway`. `signaling-local-platform` depends on `signaling-protocol`, `signaling-auth` and `signaling-storage` and is not part of `signaling-app`. `signaling-integration-tests` depends on `signaling-app`, `signaling-gateway` and `signaling-storage`, and (test scope) on `signaling-local-platform`.
 
 **Outside the reactor:**
 - `clients/native-browser`: an ES module client for the WSS `v:1` contract. It takes an injected `RTCPeerConnection`. It never persists SDP or ICE. Its durable command journal is IndexedDB and holds only allow-listed intents.

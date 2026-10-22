@@ -688,3 +688,151 @@ a repeated key with `contract/DUPLICATE_KEY`; a digest mismatch or any other def
 The JWT public keys are parsed and checked (RSA, modulus of at least 2048 bits) before any
 bean is registered, so a bad key fails startup with `contract/INVALID`. Worker outcomes other
 than completion are logged at WARN with the job name and status only.
+
+## Local platform source (LOCAL_TEST_ONLY)
+
+Module `signaling-local-platform` (image `Dockerfile.local-platform`, executable jar
+`signaling-local-platform-0.1.0-SNAPSHOT-exec.jar`, main `LocalPlatformApplication`) serves the
+two sources of this contract, the signed clock report and the signed revocation page, for the
+local compose environment. It is a plain Java process: it is not part of `signaling-app` and not in
+its auto-configuration. Status is LOCAL_TEST_ONLY and NOT_QUALIFIED. Nothing here is evidence of
+host clock discipline, high availability, production readiness or capacity.
+
+### Start and configuration
+
+- `SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY` is required before anything else is read.
+  `SIGNALING_IDENTITY_ISSUER` (the issuer carried by signed events) and `SIGNALING_PLATFORM_CONFIG`
+  (absolute path of a strict JSON file, at most 64 KiB) follow. There is no default for any of them.
+- A refusal prints exactly one line to stderr, `LOCAL_PLATFORM_REJECTED <CATEGORY>`, and exits 1. The
+  categories are `ACKNOWLEDGEMENT`, `CONFIG`, `IDENTITY`, `KEY`, `TLS` and `DATABASE`. No path, value,
+  message or stack trace is printed. A bind failure is `CONFIG`; an unreadable DB password or a
+  failed migration is `DATABASE`. The process prints nothing else on a successful start.
+- The configuration has exactly these keys; unknown, duplicate or missing keys, trailing content and
+  relative paths are `CONFIG`:
+  - `cells`: object of 1 to 8 cell names (`[a-z][a-z0-9-]{0,23}`) to a storage epoch (integer >= 1).
+  - `keyId`: key identifier of the proof signature (no whitespace, 1 to 128 characters).
+  - `signingKey`: absolute path of the Ed25519 private key (PKCS#8). The process only signs; it never
+    needs or derives the public key. Provisioning publishes the public half to the consumers.
+  - `source`, `admin`: `bind` (an IP literal, not a wildcard address), `port` (1 to 65535),
+    `keystore` (PKCS12 with exactly one private-key entry), `keystorePasswordFile`, `clientTrust`
+    (PEM bundle of 1 to 16 CA certificates).
+  - `health`: `bind`, `port`.
+  - `database`: `jdbcUrl` (must start with `jdbc:postgresql://`), `user`, `passwordFile`. Passwords come
+    from files, never from the environment.
+- Conventional ports (compose chooses them): source 9443, admin 9444, health 8559.
+
+### Listeners and caller identity
+
+| Listener | Protocol | Trusts | Caller identity |
+|---|---|---|---|
+| source | TLS 1.3, client certificate required | `source.clientTrust` | `spiffe://signaling/local-test-only/cell/<cell>/(actor\|gateway\|control)[/<instance>]`, `<cell>` one of `cells` |
+| admin | TLS 1.3, client certificate required | `admin.clientTrust` (a CA separate from the workload CA) | `spiffe://signaling/local-test-only/admin/<name>` |
+| health | plain HTTP on a concrete address | nothing | none |
+
+- The caller identity is the single URI SAN of the verified client certificate. A header never
+  supplies identity. A certificate with zero or several URI SANs, another trust domain or path shape,
+  or an unconfigured cell is refused with 403. A workload identity is not accepted on the admin
+  listener and an admin identity is not accepted on the source listener.
+- A pod UID is bound to the SPIFFE identity that first claimed it. A different identity presenting
+  the same pod gets 403. A new boot of the same pod and identity replaces the old one; a boot that a
+  newer one already replaced gets 403.
+- Every response has an exact `Content-Length`, `Connection: close` and `Cache-Control: no-store`,
+  is never chunked, compressed or redirected, and a body above 32768 bytes is never sent (503
+  with an empty body instead). Error bodies are empty, except for the JDK-generated 400 and 501 under "Known limits".
+
+### Endpoints and statuses
+
+All three source-plane requests are `GET` with no query and no body.
+
+- `GET /v1/clock-bound` (source listener): `X-Signaling-Pod-Uid` and `X-Signaling-Process-Boot`,
+  each exactly once and in canonical 8-4-4-4-12 hexadecimal form. 200 returns `{"report","signature"}`
+  as described in "Native clock source contract". The offset header is ignored here.
+- `GET /v1/revocations` (source listener): the same two headers plus exactly one
+  `X-Signaling-Source-Offset`, a decimal `0|[1-9][0-9]{0,18}` that fits a long. 200 returns the
+  seven-field page with at most 16 events, `retiredKeys` always empty, and a proof
+  `<keyId>.<base64url signature>` that verifies only for the requesting cell and the configured issuer.
+  An offset above the high-water mark is 409.
+- `POST /v1/admin/revocations` (admin listener): `Content-Type: application/json` (optionally
+  `;charset=utf-8`), a body of at most 4096 bytes, strict UTF-8 JSON with the keys `userId`
+  (required), `jti` (string; `null` rejected; omitted means the user scope) and `epoch` (integer;
+  optional). 201 returns `{"offset":n,"epoch":e}`.
+- `GET /ready` (health listener): 200 only while the clock observer reports a continuous
+  measurement and the database answers `SELECT 1 FROM source_state`; otherwise 503.
+
+| Status | Meaning |
+|---|---|
+| 400 | malformed request: header, offset, query, body, JSON or user id; duplicate `Content-Type` |
+| 403 | identity refused, pod bound to another identity, replaced boot, unconfigured cell |
+| 404 / 405 | unknown path / wrong method (405 carries `Allow`) |
+| 409 | revocation offset above the high-water mark; admin epoch not above the latest of the subject |
+| 413 / 415 | admin body above 4096 bytes / wrong admin `Content-Type` |
+| 503 | database unavailable, pod table full, oversized page, any unexpected failure; the body is empty |
+
+### Clock report semantics
+
+- Figures are this process's own measurement of its wall clock against its monotonic clock, sampled
+  every 100 ms over the last 5 seconds, plus a fixed consumer observation allowance.
+  `pairUncertaintyMicros` is the largest bracketed read uncertainty in the window plus
+  `CONSUMER_OBSERVATION_ALLOWANCE_MICROS` (100000 microseconds, `ClockReportService`). The
+  allowance is a stated constant for the consumer's own wall and monotonic reads (separate reads
+  across JVM, GC and scheduler jitter and an HTTP hop), which the source cannot measure. The
+  consumer's `ClockSafetyMonitor.valid()` bounds that jitter with the reported figures; without the
+  allowance the genuine figures (tens of microseconds) made the planes flip to unsafe between polls.
+  `relativeRateErrorPpm` is reported as measured. Validity is 2 seconds from the observation time.
+- `continuous` is false until the window holds at least 2 seconds of clean samples, for 5 seconds
+  after a step or stall (an offset jump above 50 ms between consecutive samples stays in the window
+  that long), and whenever the reported uncertainty exceeds 250000 microseconds or the rate error
+  exceeds 1000 ppm. A measured uncertainty above 150000 microseconds therefore reports unsafe. A
+  snapshot older than 500 ms, or a failed clock read, is reported unsafe with figures of at least
+  1000000. An unsafe figure is never rewritten into a safe-looking one.
+- The sequence of each pod is `max(last + 1, epoch microseconds)`: strictly increasing within a
+  process, and above earlier sequences after a restart if the wall clock has advanced.
+- This measures only this container or process. A drift that moves the wall and monotonic clocks
+  together, or an error against any external reference, is invisible to it. It is not a claim about
+  host clock discipline.
+
+### Revocation epoch semantics
+
+- The token verifier (`Rs256TokenVerifier`) reads a missing `securityEpoch` claim as 0, and
+  `RevocationState` revokes a token when the stored epoch of its user or session subject is
+  `>=` the token's epoch; a subject with no stored row counts as -1. So the first admin revoke of a
+  user (epoch 0) revokes an epoch-0 token, and a user with no events is not affected. This is pinned
+  by `RevocationPageServiceTest` and `LocalPlatformCompositionIT` (an admin revoke returns epoch 0,
+  the user is denied on the running planes, and a bystander is not). `RevocationState` is unchanged.
+- An event with epoch `e` revokes every token of the subject with a security epoch `<= e`. A revoke
+  needs `epoch >= 0`. When the admin request omits `epoch`, the platform uses the latest epoch of
+  the subject plus one, or 0 when there is none. An explicit epoch not above the latest of the subject
+  is 409. A user-scope event (no `jti`) and a session-scope event are separate subjects.
+- Revoking a user is permanent in this environment: there is no unrevoke, and the log is append-only.
+
+### Durable log
+
+- The `source` database is migrated by the platform itself at start, before any listener opens, with
+  Flyway location `classpath:db/source/migration` and its own history table
+  `source_schema_history`. The cell schema's migrations and history are not touched.
+- `revocation_log` and `source_state` are append-only: row triggers reject update and delete, statement
+  triggers reject `TRUNCATE`, and the high-water mark only moves forward by one per append. Offsets are
+  gapless and committed in offset order. Limit: this is enforced by triggers, not by privileges. The
+  platform connects as the owner of the tables, and an owner can `DROP TRIGGER`. A database
+  owner is trusted in this environment.
+
+### Known limits
+
+- JDK `HttpsServer` pre-authentication worker pinning. The source and admin listeners are the JDK
+  `HttpsServer`, which performs the TLS handshake and reads the request on its worker threads. A
+  single byte sent to the source port, without any certificate, pins one of its 4 workers
+  indefinitely; 4 such connections stall the source. The admin listener has 2 workers. This is an
+  availability limit only: the actors fail closed when the source stops answering. No scenario may
+  assume the source survives a hostile peer.
+- No per-request deadline and unbounded executor queues. A slow client ties up a worker. The JDK
+  server also drains a declared but unread request body before closing.
+- Malformed request lines and unsupported transfer encodings are answered by the JDK itself with a
+  400 or 501 that carries a fixed `text/html` body (the request is not echoed). This is the one case
+  where an error response is not empty.
+- The boot replay window is bounded: only the last 8 replaced boots per pod are remembered, so an
+  older boot is forgotten and can be replayed by the holder of the same identity. The pod table
+  holds at most 4096 pods and is never reclaimed; a new pod beyond it gets 503.
+- One new database connection (with TLS and SCRAM when the JDBC URL and database require them) is
+  opened per revocation page, per admin append and per readiness probe. There is no pool, and host
+  load can exceed a consumer's connection deadline.
+- `retiredKeys` is always empty: no key retirement is modelled.
