@@ -95,6 +95,7 @@ prepare_pg_mount() {
   local values=("SERVER=$s" "KIND=$kind" "PG_PORT=${PG_PORT:?}")
   if [ "$kind" = directory ]; then
     net="${NET_SHARED:?}"
+    values+=("CONTROL_IP=${CONTROL_IP:?}" "PLATFORM_IP=${PLATFORM_IP:?}")
   else
     cell="${s#pg-}"
     cell="${cell%-*}"

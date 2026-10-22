@@ -34,6 +34,10 @@ PROV_IMAGE="${PROVISIONER_IMAGE:-signaling-provisioner:local}"
 PG_IMAGE="${POSTGRES_IMAGE:-postgres:17.6}"
 RUN_VOL="$PREFIX-run"
 PROBE="$PREFIX-probe"
+# Probes at the control's and local-platform's shared addresses (free in this test): the only
+# sources pg-directory admits for signaling_app on `directory` and source_owner on `source`.
+CONTROL_PROBE="$PREFIX-probe-control"
+PLATFORM_PROBE="$PREFIX-probe-platform"
 SRC=/run/signaling-src
 CA_DB="$SRC/_shared/ca-db.crt"
 PG_SERVERS="pg-c001-primary pg-c001-standby pg-c002-primary pg-c002-standby pg-directory"
@@ -169,11 +173,14 @@ start_pg() {
     --entrypoint bash "$PG_IMAGE" /run/signaling/start.sh >/dev/null
 }
 
-# The probe: psql/flyway/jq from the provisioner image, attached to all networks, the run volume
-# read-only. Its pgpass and owner password file are written inside the container from
-# db-passwords.env, so no password crosses the host's argv.
-start_probe() {
-  docker create --name "$PROBE" --label "$LABEL" --network "$(net_name c001)" \
+# A probe: psql/flyway/jq from the provisioner image, the run volume read-only. Its pgpass and
+# owner password file are written inside the container from db-passwords.env, so no password
+# crosses the host's argv.
+# create_probe <name> <network> [<static ip>]
+create_probe() {
+  local ip_args=()
+  [ "$#" -lt 3 ] || ip_args=(--ip "$3")
+  docker create --name "$1" --label "$LABEL" --network "$(net_name "$2")" "${ip_args[@]}" \
     -v "$RUN_VOL:$SRC:ro" "${PROV_MOUNTS[@]}" "$PROV_IMAGE" bash -c '
       set -euo pipefail
       set -a; . /run/signaling-src/_shared/db-passwords.env; set +a
@@ -188,20 +195,77 @@ start_probe() {
       printf "%s" "$DB_PASSWORD_OWNER" >/tmp/owner.pass
       unset DB_PASSWORD_OWNER DB_PASSWORD_APP DB_PASSWORD_NODIR DB_PASSWORD_SOURCE_OWNER DB_PASSWORD_REPLICATOR
       exec sleep infinity' >/dev/null
+}
+
+# start_probes: the control/platform probes claim their static addresses first; the general
+# probe joins all three networks with dynamic addresses (never the control or platform one).
+start_probes() {
+  create_probe "$CONTROL_PROBE" shared "$CONTROL_IP"
+  create_probe "$PLATFORM_PROBE" shared "$PLATFORM_IP"
+  docker start "$CONTROL_PROBE" "$PLATFORM_PROBE" >/dev/null
+  create_probe "$PROBE" c001
   docker network connect "$(net_name c002)" "$PROBE"
   docker network connect "$(net_name shared)" "$PROBE"
   docker start "$PROBE" >/dev/null
+  PROBE_SHARED_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$(net_name shared)\").IPAddress}}" "$PROBE")"
 }
 
-probe() { docker exec -e PGPASSFILE=/tmp/pgpass -e PGCONNECT_TIMEOUT=5 "$PROBE" "$@"; }
-
-# q <host> <db> <user> <sql>: one query over verify-full TLS; prints unaligned tuples.
-q() {
-  probe psql -X -q -tA -v ON_ERROR_STOP=1 \
-    -d "host=$1 port=$PG_PORT dbname=$2 user=$3 sslmode=verify-full sslrootcert=$CA_DB" -c "$4"
+probe_in() {
+  local name="$1"
+  shift
+  docker exec -e PGPASSFILE=/tmp/pgpass -e PGCONNECT_TIMEOUT=5 "$name" "$@"
 }
+probe() { probe_in "$PROBE" "$@"; }
+
+# qp <probe> <host> <db> <user> <sql>: one query over verify-full TLS; unaligned tuples.
+qp() {
+  probe_in "$1" psql -X -q -tA -v ON_ERROR_STOP=1 \
+    -d "host=$2 port=$PG_PORT dbname=$3 user=$4 sslmode=verify-full sslrootcert=$CA_DB" -c "$5"
+}
+# q <host> <db> <user> <sql>: qp from the general probe.
+q() { qp "$PROBE" "$@"; }
 # qc <conninfo> <sql>: a query with a caller-built connection string (the TLS negatives).
 qc() { probe psql -X -q -tA -v ON_ERROR_STOP=1 -d "$1" -c "$2"; }
+
+# assert_refused <message> <ERE> <command...>: passes only when the command fails AND its output
+# matches the ERE, so a refusal for the wrong reason (unreachable, other error) does not count.
+assert_refused() {
+  local msg="$1" pattern="$2" out rc=0
+  shift 2
+  out="$("$@" 2>&1)" || rc=$?
+  CHECKS=$((CHECKS + 1))
+  if [ "$rc" -eq 0 ]; then
+    _fail "$msg (unexpectedly succeeded)"
+    return 1
+  fi
+  if ! grep -Eq -- "$pattern" <<<"$out"; then
+    _fail "$msg (refused, but not with /$pattern/: $(grep -m1 . <<<"$out"))"
+    return 1
+  fi
+}
+
+# hba_refusal <host> <user> <db>: the server's "no pg_hba.conf entry" text for that triple.
+hba_refusal() { printf 'no pg_hba\.conf entry for host "%s", user "%s", database "%s"' "${1//./\\.}" "$2" "$3"; }
+
+# quorum_state <cell>: state/sync_state of standby-<cell> on its primary ("none" if absent).
+quorum_state() {
+  local ip="PG_$(upper "$1")_PRIMARY_IP"
+  q "${!ip}" postgres signaling_owner \
+    "SELECT coalesce(string_agg(state || '/' || sync_state, ','), 'none') FROM pg_stat_replication WHERE application_name='standby-$1'" 2>/dev/null || true
+}
+
+# wait_quorum_of <cell>: bounded wait (120 s) for streaming/quorum; prints the last state.
+wait_quorum_of() {
+  local deadline=$(($(date +%s) + 120)) state
+  while :; do
+    state="$(quorum_state "$1")"
+    if [ "$state" = "streaming/quorum" ] || [ "$(date +%s)" -ge "$deadline" ]; then
+      printf '%s' "$state"
+      return 0
+    fi
+    sleep 1
+  done
+}
 
 wait_servers() {
   local deadline=$(($(date +%s) + 180)) s ok
@@ -224,7 +288,7 @@ say "test_db: stage 1"
 STAGE1_RC=0
 provisioner "$LOGS/stage1.log" "${PROVISION[@]}" stage1 || STAGE1_RC=$?
 [ "$STAGE1_RC" -eq 0 ] || { cat "$LOGS/stage1.log" >&2; abort "stage 1 failed (rc $STAGE1_RC)"; }
-start_probe
+start_probes
 say "test_db: starting PostgreSQL servers"
 for s in $PG_SERVERS; do start_pg "$s"; done
 wait_servers
@@ -355,10 +419,14 @@ source_database_is_left_to_the_platform() {
     "source is owned by source_owner"
   assert_eq "0" "$(q "$PG_DIRECTORY_IP" source signaling_owner "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" \
     "source holds no table (the platform migrates it)"
-  assert_true "source_owner may create in source.public" \
-    q "$PG_DIRECTORY_IP" source source_owner 'BEGIN; CREATE TABLE sp3_probe(i int); ROLLBACK'
-  assert_false "signaling_app cannot connect to source" q "$PG_DIRECTORY_IP" source signaling_app 'SELECT 1'
-  assert_false "source_owner cannot connect to directory" q "$PG_DIRECTORY_IP" directory source_owner 'SELECT 1'
+  assert_true "source_owner from local-platform's address may create in source.public" \
+    qp "$PLATFORM_PROBE" "$PG_DIRECTORY_IP" source source_owner 'BEGIN; CREATE TABLE sp3_probe(i int); ROLLBACK'
+  assert_refused "source_owner from another shared address is refused by hba" \
+    "$(hba_refusal "$PROBE_SHARED_IP" source_owner source)" q "$PG_DIRECTORY_IP" source source_owner 'SELECT 1'
+  assert_refused "signaling_app cannot connect to source (hba)" \
+    "$(hba_refusal "$PROBE_SHARED_IP" signaling_app source)" q "$PG_DIRECTORY_IP" source signaling_app 'SELECT 1'
+  assert_refused "source_owner cannot connect to directory, even from local-platform (hba)" \
+    "$(hba_refusal "$PLATFORM_IP" source_owner directory)" qp "$PLATFORM_PROBE" "$PG_DIRECTORY_IP" directory source_owner 'SELECT 1'
 }
 
 quorum_standby_per_cell() {
@@ -407,19 +475,29 @@ app_role_monitors_but_cannot_ddl() {
     assert_eq "16384|t|f" \
       "$(q "$ip" signaling signaling_app "SELECT (SELECT count(*) FROM bucket_authority), has_table_privilege('bucket_authority','INSERT,UPDATE,DELETE'), has_table_privilege('flyway_schema_history','INSERT')")" \
       "$cell signaling_app: DML on the schema, read-only history"
-    assert_false "$cell signaling_app cannot CREATE TABLE" q "$ip" signaling signaling_app 'CREATE TABLE sp3_probe(i int)'
+    assert_refused "$cell signaling_app cannot CREATE TABLE" 'permission denied for schema public' \
+      q "$ip" signaling signaling_app 'CREATE TABLE sp3_probe(i int)'
   done
-  assert_eq "16384" "$(q "$PG_DIRECTORY_IP" directory signaling_app 'SELECT count(*) FROM directory_bucket')" \
-    "signaling_app reads the directory"
-  assert_false "signaling_app cannot CREATE TABLE in directory" \
-    q "$PG_DIRECTORY_IP" directory signaling_app 'CREATE TABLE sp3_probe(i int)'
+  # Every actor and gateway holds the signaling_app password and a shared address: pg-directory
+  # admits signaling_app on `directory` from control's address only.
+  assert_true "the general probe is not at the control or platform address ($PROBE_SHARED_IP)" \
+    test "$PROBE_SHARED_IP" != "$CONTROL_IP" -a "$PROBE_SHARED_IP" != "$PLATFORM_IP" -a -n "$PROBE_SHARED_IP"
+  assert_eq "16384" "$(qp "$CONTROL_PROBE" "$PG_DIRECTORY_IP" directory signaling_app 'SELECT count(*) FROM directory_bucket')" \
+    "signaling_app from control's address reads the directory"
+  assert_refused "signaling_app from another shared address (an actor's or gateway's) is refused by hba" \
+    "$(hba_refusal "$PROBE_SHARED_IP" signaling_app directory)" q "$PG_DIRECTORY_IP" directory signaling_app 'SELECT 1'
+  assert_refused "signaling_app from the platform address is refused by hba" \
+    "$(hba_refusal "$PLATFORM_IP" signaling_app directory)" qp "$PLATFORM_PROBE" "$PG_DIRECTORY_IP" directory signaling_app 'SELECT 1'
+  assert_refused "signaling_app cannot CREATE TABLE in directory" 'permission denied for schema public' \
+    qp "$CONTROL_PROBE" "$PG_DIRECTORY_IP" directory signaling_app 'CREATE TABLE sp3_probe(i int)'
 }
 
 nodir_role_reaches_nothing() {
-  local out
-  out="$(q "$PG_DIRECTORY_IP" directory signaling_nodir 'SELECT 1' 2>&1 || true)"
-  assert_true "signaling_nodir refused by privilege on directory (got: $out)" grep -q 'permission denied for database' <<<"$out"
-  assert_false "signaling_nodir cannot connect to signaling (c001)" q "$PG_C001_PRIMARY_IP" signaling signaling_nodir 'SELECT 1'
+  assert_refused "signaling_nodir passes hba but has no CONNECT on directory" \
+    'permission denied for database "directory"' q "$PG_DIRECTORY_IP" directory signaling_nodir 'SELECT 1'
+  assert_refused "signaling_nodir cannot connect to signaling (c001; no role there, no hba entry)" \
+    'no pg_hba\.conf entry for host "[0-9.]+", user "signaling_nodir", database "signaling"' \
+    q "$PG_C001_PRIMARY_IP" signaling signaling_nodir 'SELECT 1'
   assert_eq "f|f|t" \
     "$(q "$PG_DIRECTORY_IP" postgres signaling_owner "SELECT rolsuper, pg_has_role('signaling_nodir','pg_monitor','member'), rolcanlogin FROM pg_roles WHERE rolname='signaling_nodir'")" \
     "signaling_nodir: login only, no pg_monitor"
@@ -432,10 +510,12 @@ tls_is_mandatory_and_verified() {
     base="host=$ip port=$PG_PORT dbname=postgres user=signaling_owner"
     assert_eq "TLSv1.3" "$(qc "$base sslmode=verify-full sslrootcert=$CA_DB" 'SELECT version FROM pg_stat_ssl WHERE pid=pg_backend_pid()')" \
       "$s positive control: verify-full over TLS 1.3"
-    assert_false "$s refuses a TLS 1.2-only client" \
+    assert_refused "$s refuses a TLS 1.2-only client" 'SSL error: .*(protocol version|unsupported protocol)' \
       qc "$base sslmode=verify-full sslrootcert=$CA_DB ssl_max_protocol_version=TLSv1.2" 'SELECT 1'
-    assert_false "$s refuses a plaintext client" qc "$base sslmode=disable" 'SELECT 1'
-    assert_false "$s is not trusted under another CA" \
+    assert_refused "$s refuses a plaintext client" \
+      'no pg_hba\.conf entry for host "[0-9.]+", user "signaling_owner", database "postgres", no encryption' \
+      qc "$base sslmode=disable" 'SELECT 1'
+    assert_refused "$s is not trusted under another CA" 'certificate verify failed' \
       qc "$base sslmode=verify-full sslrootcert=$SRC/_shared/ca-workload.crt" 'SELECT 1'
   done
 }
@@ -507,33 +587,54 @@ no_secret_leaks() {
 }
 
 # A restart takes the "cluster exists" path: start.sh re-creates its tmpfs files (TLS, hba,
-# the standby's pgpass), initialises nothing, and the standby streams as quorum again.
+# the standby's pgpass), initialises nothing, takes no new base backup, and the standby streams
+# as quorum again.
 servers_survive_a_restart() {
-  local s deadline state text
+  local since state text logs
+  since="$(date +%s)"
   docker restart "$PREFIX-pg-c001-primary" "$PREFIX-pg-c001-standby" >/dev/null
-  deadline=$(($(date +%s) + 120))
-  while :; do
-    state="$(q "$PG_C001_PRIMARY_IP" postgres signaling_owner \
-      "SELECT coalesce(string_agg(state || '/' || sync_state, ','), 'none') FROM pg_stat_replication WHERE application_name='standby-c001'" 2>/dev/null || true)"
-    [ "$state" != "streaming/quorum" ] || break
-    [ "$(date +%s)" -lt "$deadline" ] || break
-    sleep 1
-  done
+  state="$(wait_quorum_of c001)"
   assert_eq "streaming/quorum" "$state" "standby-c001 is a quorum standby again after restarting both"
   assert_eq "1|c001|1|GROUPED|1|ACTIVE" "$(q "$PG_C001_STANDBY_IP" signaling signaling_owner 'SELECT * FROM cell_authority')" \
     "the restarted standby kept its data"
+  logs="$(docker logs --since "$since" "$PREFIX-pg-c001-primary" 2>&1)"
+  assert_true "primary restart skipped initialisation" grep -q 'cluster exists; skipping initialisation' <<<"$logs"
+  assert_false "primary restart did not initialise" grep -q 'initialises the cluster' <<<"$logs"
+  logs="$(docker logs --since "$since" "$PREFIX-pg-c001-standby" 2>&1)"
+  assert_true "standby restart found complete data" grep -q 'standby data complete; no base backup needed' <<<"$logs"
+  assert_false "standby restart took no base backup" grep -qi 'base backup' <<<"$(grep -v 'no base backup needed' <<<"$logs")"
   for s in pg-c001-primary pg-c001-standby; do
-    assert_true "$s skipped initialisation" grep -q 'cluster exists; skipping initialisation\|Skipping initialization' \
-      <<<"$(docker logs --since 2m "$PREFIX-$s" 2>&1)"
     text="$(docker exec -u postgres "$PREFIX-$s" cat /proc/1/environ | tr '\0' '\n')"
     assert_false "$s restarted postmaster environment holds no password" contains_secret "$text"
   done
 }
 
+# An interrupted base backup leaves PG_VERSION without standby.signal/primary_conninfo: start.sh
+# must wipe it and back up again instead of starting (or crash-looping on) a partial copy.
+standby_recovers_from_an_interrupted_base_backup() {
+  local s=pg-c002-standby since state logs
+  docker stop "$PREFIX-$s" >/dev/null
+  docker run --rm --label "$LABEL" --network none -v "$PREFIX-data-$s:/var/lib/postgresql/data" \
+    --entrypoint rm "$PG_IMAGE" -f /var/lib/postgresql/data/pgdata/standby.signal
+  assert_true "simulated partial copy keeps PG_VERSION" docker run --rm --label "$LABEL" --network none \
+    -v "$PREFIX-data-$s:/var/lib/postgresql/data" --entrypoint test "$PG_IMAGE" -s /var/lib/postgresql/data/pgdata/PG_VERSION
+  since="$(date +%s)"
+  docker start "$PREFIX-$s" >/dev/null
+  state="$(wait_quorum_of c002)"
+  assert_eq "streaming/quorum" "$state" "standby-c002 is a quorum standby again after the re-backup"
+  logs="$(docker logs --since "$since" "$PREFIX-$s" 2>&1)"
+  assert_true "the partial data directory was detected and wiped" grep -q 'data directory incomplete' <<<"$logs"
+  assert_true "a new base backup completed" grep -q "base backup from $PG_C002_PRIMARY_IP complete" <<<"$logs"
+  assert_eq "1|c002|1|GROUPED|1|ACTIVE" "$(q "$PG_C002_STANDBY_IP" signaling signaling_owner 'SELECT * FROM cell_authority')" \
+    "the re-backed-up standby holds the seed"
+  assert_true "standby.signal is back" docker exec -u postgres "$PREFIX-$s" test -f /var/lib/postgresql/data/pgdata/standby.signal
+}
+
 for t in stage2_succeeds second_stage2_is_refused cell_seed_matches_the_fixture flyway_history_is_complete \
   directory_seed_matches_the_snapshot source_database_is_left_to_the_platform quorum_standby_per_cell \
   server_settings app_role_monitors_but_cannot_ddl nodir_role_reaches_nothing tls_is_mandatory_and_verified \
-  wal_env_holds_numeric_facts standby_conninfo_holds_no_password no_secret_leaks servers_survive_a_restart; do
+  wal_env_holds_numeric_facts standby_conninfo_holds_no_password servers_survive_a_restart \
+  standby_recovers_from_an_interrupted_base_backup no_secret_leaks; do
   run_test "$t"
 done
 say "test_db: total $(($(date +%s) - STARTED_AT)) s"

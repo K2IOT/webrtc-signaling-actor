@@ -102,6 +102,8 @@ start_scripts_carry_the_replication_topology() {
     assert_true "pg-$cell-standby backs up from its primary" grep -qF "host=${!ip} " "$p"
     assert_true "pg-$cell-standby application_name" grep -qF "application_name=standby-$cell " "$p"
     assert_true "pg-$cell-standby verifies the primary certificate" grep -qF 'sslmode=verify-full' "$p"
+    assert_true "pg-$cell-standby bounds its connection attempts" grep -qF 'connect_timeout=5 ' "$p"
+    assert_true "pg-$cell-standby only trusts a finished base backup" grep -qF 'standby.signal' "$p"
     assert_true "pg-$cell-standby is a hot standby" grep -q 'hot_standby=on' "$p"
     assert_false "pg-$cell-standby sets no synchronous names" grep -q 'synchronous_standby_names=' "$p"
   done
@@ -130,9 +132,9 @@ hba_matches_the_server_role() {
   expected="$(printf '%s\n' \
     "local all signaling_owner scram-sha-256" \
     "hostssl all signaling_owner $NET_SHARED scram-sha-256" \
-    "hostssl directory signaling_app $NET_SHARED scram-sha-256" \
+    "hostssl directory signaling_app $CONTROL_IP/32 scram-sha-256" \
     "hostssl directory signaling_nodir $NET_SHARED scram-sha-256" \
-    "hostssl source source_owner $NET_SHARED scram-sha-256")"
+    "hostssl source source_owner $PLATFORM_IP/32 scram-sha-256")"
   assert_eq "$expected" "$(hba_lines "$RUN_ROOT/pg-directory/hba.conf")" "pg-directory hba"
 }
 

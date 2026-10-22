@@ -5,8 +5,11 @@
 # from a pgpass file in tmpfs, re-created on every start, and primary_conninfo refers to that
 # file (passfile=), so the password is never written to the data volume. Then the image's
 # entrypoint starts postgres as a hot standby; it never initialises a cluster here.
+# A data directory counts as a standby only when the base backup finished: -R writes
+# standby.signal and primary_conninfo last, so anything without them (an interrupted backup) is
+# wiped and backed up again instead of crash-looping on a partial copy.
 BASEBACKUP_ATTEMPTS="${BASEBACKUP_ATTEMPTS:-90}"
-PRIMARY_CONNINFO="host={{PRIMARY_IP}} port=$PG_PORT user=replicator application_name={{STANDBY_NAME}} sslmode=verify-full sslrootcert=$TLS/db-ca.crt ssl_min_protocol_version=TLSv1.3 passfile=$TLS/pgpass"
+PRIMARY_CONNINFO="host={{PRIMARY_IP}} port=$PG_PORT user=replicator application_name={{STANDBY_NAME}} connect_timeout=5 sslmode=verify-full sslrootcert=$TLS/db-ca.crt ssl_min_protocol_version=TLSv1.3 passfile=$TLS/pgpass"
 
 write_pgpass() {
   local password
@@ -38,8 +41,22 @@ base_backup() {
   fail "no base backup from {{PRIMARY_IP}} after $BASEBACKUP_ATTEMPTS attempts"
 }
 
+# standby_complete: PG_VERSION, standby.signal and a primary_conninfo written by -R.
+standby_complete() {
+  cluster_exists && [ -f "$PGDATA/standby.signal" ] &&
+    grep -q '^primary_conninfo' "$PGDATA/postgresql.auto.conf" 2>/dev/null
+}
+
 install_runtime_files
 unset POSTGRES_PASSWORD POSTGRES_PASSWORD_FILE
 write_pgpass
-cluster_exists || base_backup
+if standby_complete; then
+  say "standby data complete; no base backup needed"
+else
+  if [ -d "$PGDATA" ] && [ -n "$(find "$PGDATA" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    say "data directory incomplete (interrupted base backup?); wiping it for a new base backup"
+    find "$PGDATA" -mindepth 1 -delete
+  fi
+  base_backup
+fi
 exec docker-entrypoint.sh postgres "${SERVER_OPTS[@]}" -c hot_standby=on
