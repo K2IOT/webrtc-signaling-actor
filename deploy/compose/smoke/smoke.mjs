@@ -13,6 +13,11 @@
 // certificates. ADMIN_CERT_FILE/ADMIN_KEY_FILE are the client identity the admin listener checks
 // against its own trust (CA-admin); ADMIN_CA_FILE, when given, is only used to check locally that
 // the client certificate was issued by CA-admin. It never verifies a server.
+// Revoke scope: REVOKE_SCOPE=token (default) revokes only the callee's current jti, so the smoke
+// can run again. REVOKE_SCOPE=user sends {"userId"} with the default epoch 0, which revokes every
+// token of that user whose securityEpoch is <= 0 - all identity tokens, as they carry none - so it
+// PERMANENTLY locks the callee (`mod`) out of that source database until `make reset`. A warning
+// line is printed first when it is used.
 // Output: one `STEP n ok <name>` line per step, then SMOKE_PASSED; or `SMOKE_FAILED step n: <reason>`
 // and exit 1. Tokens, passwords and key material are never printed.
 import { X509Certificate } from 'node:crypto';
@@ -167,6 +172,8 @@ export async function main(env = process.env, print = (line) => process.stdout.w
     ctx.config = resolveConfig(env);
     ctx.secrets.push(ctx.config.caller.password, ctx.config.callee.password);
     ctx.lookup = ctx.config.resolve.size ? makeLookup(ctx.config.resolve) : undefined;
+    if (ctx.config.revokeScope === 'user')
+      print(`WARNING REVOKE_SCOPE=user: step 5 permanently revokes every token of ${ctx.config.callee.username} in this source database; later runs fail until the stack is reset`);
     for (const [n, name, run] of STEPS) {
       progress.step = n;
       const detail = await run(ctx);

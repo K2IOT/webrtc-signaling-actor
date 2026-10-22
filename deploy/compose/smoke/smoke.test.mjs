@@ -132,8 +132,14 @@ describe('smoke.mjs against the fake stack', { skip: opensslMissing && 'openssl 
         assert.equal(f.v, 1);
         for (const k of ['negotiationId', 'iceGeneration']) if (k in f) assert.match(f[k], /^[1-9][0-9]*$/);
       }
-      const invite = stack.clientFrames.find((f) => f.type === 'INVITE');
-      assert.equal(invite.payload.targetUserId, USERS.mod.userId);
+      const invites = stack.clientFrames.filter((f) => f.type === 'INVITE');
+      assert.equal(invites.length, 1, 'the inline RING saga commits on the first INVITE');
+      assert.equal(invites[0].payload.targetUserId, USERS.mod.userId);
+      // The relay arrives canonical (key-sorted, ProtocolValidator.canonical): different text, same value.
+      const sentIce = stack.clientFrames.find((f) => f.type === 'ICE_CANDIDATES');
+      const relayedIce = JSON.parse(stack.relayedTexts.find((t) => JSON.parse(t).type === 'ICE_CANDIDATES'));
+      assert.notEqual(JSON.stringify(relayedIce.payload), JSON.stringify(sentIce.payload), 'key order differs on the wire');
+      assert.deepEqual(relayedIce.payload, sentIce.payload);
     });
   });
 
@@ -178,7 +184,45 @@ describe('smoke.mjs against the fake stack', { skip: opensslMissing && 'openssl 
 
   test('smoke_fails_step_4_without_ack_committed', async () => {
     await withStack({ noAck: true }, async (stack) => {
-      assertFailedAt(await runSmoke(smokeEnv(stack, { SMOKE_TIMEOUT_MS: '1500' })), 4, /INVITE.*ACK_COMMITTED/);
+      assertFailedAt(await runSmoke(smokeEnv(stack, { SMOKE_TIMEOUT_MS: '1500' })), 4,
+        /INVITE: no ACK_COMMITTED within 1500 ms \(last: ERROR OUTCOME_UNKNOWN\)/);
+    });
+  });
+
+  test('smoke_retries_a_pending_accept_until_ack_committed', async () => {
+    await withStack({ acceptPendingFirst: true }, async (stack) => {
+      const result = await runSmoke(smokeEnv(stack));
+      assert.equal(result.code, 0, result.output);
+      const accepts = stack.clientFrames.filter((f) => f.type === 'ACCEPT');
+      assert.equal(accepts.length, 2);
+      assert.deepEqual(accepts[0], accepts[1], 'the retry is the identical frame (same requestId, same intent)');
+    });
+  });
+
+  test('smoke_fails_step_4_on_a_changed_relay_payload', async () => {
+    await withStack({ relayTamper: true }, async (stack) => {
+      assertFailedAt(await runSmoke(smokeEnv(stack)), 4, /ICE_CANDIDATES: the other side received a different ICE_CANDIDATES payload/);
+    });
+  });
+
+  test('smoke_fails_step_4_on_a_relay_for_another_round_or_incarnation', async () => {
+    await withStack({ relayRound: true }, async (stack) => {
+      assertFailedAt(await runSmoke(smokeEnv(stack)), 4, /OFFER: .*another negotiation round/);
+    });
+    await withStack({ relayIncarnation: true }, async (stack) => {
+      assertFailedAt(await runSmoke(smokeEnv(stack)), 4, /OFFER: relay addressed to another session incarnation/);
+    });
+  });
+
+  test('smoke_fails_step_4_without_negotiation_granted_at_the_callee', async () => {
+    await withStack({ noNegotiationEvent: true }, async (stack) => {
+      assertFailedAt(await runSmoke(smokeEnv(stack, { SMOKE_TIMEOUT_MS: '1500' })), 4, /callee: no NEGOTIATION_GRANTED event/);
+    });
+  });
+
+  test('smoke_fails_step_4_when_the_sides_are_granted_different_rounds', async () => {
+    await withStack({ splitRound: true }, async (stack) => {
+      assertFailedAt(await runSmoke(smokeEnv(stack)), 4, /granted different rounds/);
     });
   });
 
@@ -191,6 +235,15 @@ describe('smoke.mjs against the fake stack', { skip: opensslMissing && 'openssl 
   test('smoke_fails_step_4_without_the_event_at_the_other_side', async () => {
     await withStack({ noTerminatedEvent: true }, async (stack) => {
       assertFailedAt(await runSmoke(smokeEnv(stack, { SMOKE_TIMEOUT_MS: '1500' })), 4, /CALL_TERMINATED/);
+    });
+  });
+
+  test('smoke_warns_before_a_user_scoped_revoke', async () => {
+    await withStack({}, async (stack) => {
+      const result = await runSmoke(smokeEnv(stack, { REVOKE_SCOPE: 'user' }));
+      assert.equal(result.code, 0, result.output);
+      assert.match(result.stdout.split('\n')[0], /^WARNING REVOKE_SCOPE=user: .*permanently/);
+      assert.deepEqual(Object.keys(stack.revocations[0]), ['userId']);
     });
   });
 

@@ -27,18 +27,27 @@ const send = (res, status, value) => {
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) });
   res.end(text);
 };
+/** ProtocolValidator.canonical: object keys recursively sorted, arrays kept in order. */
+export const canonical = (value) => (Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical(value[k])])) : value);
 const claims = (token) => JSON.parse(Buffer.from(String(token).split('.')[1] ?? '', 'base64url').toString('utf8') || '{}');
 
 /**
  * Starts identity, control, two gateways and the admin listener.
  * @param pki   paths and PEM text from the test's TEST_ONLY openssl PKI
  * @param users {username: {password, userId}}
- * @param faults sameCell | authReject | noAck | nonMonotonic | noTerminatedEvent | revokeClose [code, reason]
+ * @param faults sameCell | authReject | noAck (INVITE always OUTCOME_UNKNOWN) | acceptPendingFirst |
+ *   nonMonotonic | noNegotiationEvent | splitRound | relayTamper | relayRound | relayIncarnation |
+ *   noTerminatedEvent | revokeClose [code, reason]
+ * Relay frames carry the canonical (key-sorted) payload, as ProtocolValidator stores and
+ * GatewayRelayStream forwards it.
  */
 export async function startFakeStack({ pki, users, origin, faults = {} }) {
   const issued = [];
   const clientFrames = [];
   const revocations = [];
+  const relayedTexts = [];
   const sessions = new Map(); // userId -> session
   const calls = new Map();
   const servers = [];
@@ -93,49 +102,66 @@ export async function startFakeStack({ pki, users, origin, faults = {} }) {
     ackCommitted: false, callVersion: '0', callId: call.callId,
     result: { status: 'PENDING', code: 'WORKFLOW_PENDING', state: 'PENDING', eventIds: [] } });
   const later = (fn) => setTimeout(fn, 40);
+  const transientError = (session, f) => frameFor(session, 'ERROR', f.requestId, { ackCommitted: false, error: { code: 'OUTCOME_UNKNOWN' } });
+
+  function accept(call) {
+    if (call.accept) return;
+    // Accept and activation run inline (NativeSetupCommandExecutor): ACCEPTED v3, ACTIVATING v4, CONNECTING v5.
+    call.version = 5; call.accept = 3;
+    later(() => {
+      for (const s of [call.caller, call.callee]) event(s, 'ACCEPTED_PENDING_ACTIVATION', call, 3, { state: 'ACCEPTED' });
+      for (const s of [call.caller, call.callee]) event(s, 'CALL_READY', call, 5, { state: 'CONNECTING' });
+    });
+  }
+
+  function relayTo(session, peer, call, f) {
+    let payload = canonical(f.payload);
+    if (faults.relayTamper && f.type === 'ICE_CANDIDATES')
+      payload = canonical({ ...f.payload, candidates: [{ ...f.payload.candidates[0], candidate: 'candidate:9 1 udp 1 192.0.2.99 9 typ host' }] });
+    const text = JSON.stringify({ v: 1, type: f.type, requestId: f.requestId, callId: call.callId,
+      callVersion: String(call.version), negotiationId: faults.relayRound ? '2' : f.negotiationId, iceGeneration: f.iceGeneration,
+      sessionIncarnation: faults.relayIncarnation ? randomUUID() : peer.incarnation, connectionGeneration: '1',
+      sender: { userId: session.userId, key: { issuer: 'http://identity.signaling.local:8081', jti: session.jti },
+        incarnation: { value: session.incarnation }, connectionGeneration: 1, connectionId: randomUUID() },
+      payload });
+    relayedTexts.push(text);
+    peer.ws.send(text);
+  }
 
   function command(session, f) {
     const reply = (value) => session.ws.send(JSON.stringify(value));
     if (f.type === 'EVENT_RECEIVED')
       return reply(frameFor(session, 'EVENT_RECEIPT', f.requestId, { ackCommitted: false }));
     if (f.type === 'INVITE') {
-      let call = [...calls.values()].find((c) => c.inviteRequest === f.requestId);
-      if (!call) {
-        call = { callId: `${session.cell}.e1.${randomUUID()}`, inviteRequest: f.requestId, caller: session,
-          callee: sessions.get(f.payload.targetUserId), version: 1, invite: null, accept: null };
-        calls.set(call.callId, call);
-        later(() => { // cross-cell RING step: invite result final, RINGING to caller and offered callee
-          call.version = 2; call.invite = 2;
-          event(call.callee, 'RINGING', call, 2, { state: 'RINGING' });
-          event(call.caller, 'RINGING', call, 2, { state: 'RINGING' });
-        });
-      }
-      return reply(call.invite && !faults.noAck ? ack(session, f, call, call.invite, 'RINGING', 'RINGING') : pending(session, f, call));
+      // The RESERVE/RING saga runs inline within the 2 s budget: ACK_COMMITTED RINGING on the first
+      // attempt; a slow one is ERROR OUTCOME_UNKNOWN, and a retry mints a new callId that cannot
+      // resume it (NativeGatewayCommands), so `noAck` keeps answering OUTCOME_UNKNOWN.
+      if (faults.noAck) return reply(transientError(session, f));
+      const call = { callId: `${session.cell}.e1.${randomUUID()}`, caller: session,
+        callee: sessions.get(f.payload.targetUserId), version: 2, accept: 0, acceptTries: 0 };
+      calls.set(call.callId, call);
+      reply(ack(session, f, call, 2, 'RINGING', 'RINGING'));
+      for (const s of [call.callee, call.caller]) event(s, 'RINGING', call, 2, { state: 'RINGING' });
+      return undefined;
     }
     const call = calls.get(f.callId);
     if (!call) return reply(frameFor(session, 'ERROR', f.requestId, { ackCommitted: false, error: { code: 'UNAUTHORIZED' } }));
     const peer = session === call.caller ? call.callee : call.caller;
     switch (f.type) {
       case 'ACCEPT':
-        if (call.accept === null) {
-          call.accept = 0;
-          later(() => {
-            call.version = 3; call.accept = 3;
-            for (const s of [call.caller, call.callee]) event(s, 'ACCEPTED_PENDING_ACTIVATION', call, 3, { state: 'ACCEPTED' });
-            later(() => {
-              call.version = 5;
-              for (const s of [call.caller, call.callee]) event(s, 'CALL_READY', call, 5, { state: 'CONNECTING' });
-            });
-          });
+        call.acceptTries += 1;
+        if (faults.acceptPendingFirst && call.acceptTries === 1) {
+          later(() => accept(call));
+          return reply(pending(session, f, call));
         }
-        return reply(call.accept
-          ? ack(session, f, call, faults.nonMonotonic ? 1 : call.accept, 'ACCEPTED_PENDING_ACTIVATION', 'ACCEPTED')
-          : pending(session, f, call));
+        accept(call);
+        return reply(ack(session, f, call, faults.nonMonotonic ? 1 : call.accept, 'ACCEPTED_PENDING_ACTIVATION', 'ACCEPTED'));
       case 'NEGOTIATE_REQUEST':
         call.version = 6;
         reply(ack(session, f, call, 6, 'NEGOTIATION_GRANTED', 'CONNECTING'));
-        for (const s of [session, peer]) event(s, 'NEGOTIATION_GRANTED', call, 6,
-          { negotiationId: '1', iceGeneration: '1', offerer: session.userId, negotiationUntil: new Date().toISOString() });
+        event(session, 'NEGOTIATION_GRANTED', call, 6, { negotiationId: '1', iceGeneration: '1', offerer: session.userId });
+        if (!faults.noNegotiationEvent)
+          event(peer, 'NEGOTIATION_GRANTED', call, 6, { negotiationId: faults.splitRound ? '2' : '1', iceGeneration: '1', offerer: session.userId });
         return undefined;
       case 'HANGUP':
         call.version = 7;
@@ -148,12 +174,7 @@ export async function startFakeStack({ pki, users, origin, faults = {} }) {
         reply(frameFor(session, 'COMMAND_RESULT', f.requestId, { ackCommitted: false, callId: call.callId,
           callVersion: String(call.version), negotiationId: f.negotiationId, iceGeneration: f.iceGeneration,
           result: { status: 'VOLATILE', code: 'WRITE_COMPLETED', frameType: f.type } }));
-        peer.ws.send(JSON.stringify({ v: 1, type: f.type, requestId: f.requestId, callId: call.callId,
-          callVersion: String(call.version), negotiationId: f.negotiationId, iceGeneration: f.iceGeneration,
-          sessionIncarnation: peer.incarnation, connectionGeneration: '1',
-          sender: { userId: session.userId, key: { issuer: 'http://identity.signaling.local:8081', jti: session.jti },
-            incarnation: { value: session.incarnation }, connectionGeneration: 1, connectionId: randomUUID() },
-          payload: f.payload }));
+        relayTo(session, peer, call, f);
         return undefined;
     }
   }
@@ -215,7 +236,7 @@ export async function startFakeStack({ pki, users, origin, faults = {} }) {
     identityUrl: `http://127.0.0.1:${identityPort}`,
     bootstrapUrl: `https://bootstrap.signaling.local:${controlPort}`,
     adminUrl: `https://127.0.0.1:${adminPort}/v1/admin/revocations`,
-    issued, clientFrames, revocations,
+    issued, clientFrames, revocations, relayedTexts,
     async close() {
       for (const s of sessions.values()) s.ws.terminate();
       await Promise.all(servers.map((s) => new Promise((resolve) => { s.closeAllConnections?.(); s.close(() => resolve()); })));

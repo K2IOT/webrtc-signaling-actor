@@ -1,16 +1,25 @@
 // Step 4: one cross-cell call, caller in one cell, callee in the other. LOCAL_TEST_ONLY /
 // NOT_QUALIFIED. The sequence is the one loadgen ScenarioRunner drives and the storage code commits:
-//   caller INVITE            -> ACK_COMMITTED RINGING                (CallCommandService.create, saga RING)
-//   callee RINGING event     -> ACCEPT -> ACK_COMMITTED ACCEPTED_PENDING_ACTIVATION (CallWorkflowService ACCEPT)
+//   caller INVITE            -> ACK_COMMITTED RINGING (NativeSetupCommandExecutor runs the RESERVE/RING
+//                               saga inline within the 2 s budget, CallCommandService.create)
+//   callee RINGING event     -> ACCEPT -> ACK_COMMITTED ACCEPTED_PENDING_ACTIVATION (accept and activate run
+//                               inline too; the stored ACCEPT result is CallWorkflowService's ACCEPT step)
 //   caller CALL_READY event  -> NEGOTIATE_REQUEST -> ACK_COMMITTED NEGOTIATION_GRANTED, the event
 //                               on both sides carries negotiationId/iceGeneration (CallCommandService.negotiate)
 //   caller OFFER, callee ANSWER, caller ICE_CANDIDATES -> COMMAND_RESULT VOLATILE WRITE_COMPLETED
 //                               and the relay frame at the other side (NativeGatewayCommands, GatewayRelayStream)
 //   callee HANGUP            -> ACK_COMMITTED, CALL_TERMINATED event at the caller (CallCommandService.terminal
 //                               addresses the caller only, so the callee hangs up to observe the other side)
-// A cross-cell command first answers COMMAND_RESULT PENDING (WORKFLOW_PENDING); the identical frame
-// (same requestId, same intent) is re-sent until the stored FINAL result replays as ACK_COMMITTED.
+// A command answering COMMAND_RESULT PENDING (WORKFLOW_PENDING) or a transient ERROR is re-sent
+// identically (same requestId, same intent) for a bounded time. For INVITE this cannot rescue a
+// slow first attempt: the gateway mints a fresh callId per INVITE (NativeGatewayCommands), and the
+// stored result of the first attempt names the old one (CallCommandService.authorizedRead ->
+// AuthorizationRejected -> OUTCOME_UNKNOWN). A first INVITE slower than 2 s therefore fails here
+// with the last code; the retry is harmless, it is not a recovery.
+// Relay payloads are compared key-order independently: the server relays ProtocolValidator's
+// canonical (recursively key-sorted) payload, not the sender's text.
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   acceptFrame, answerFrame, hangupFrame, iceFrame, inviteFrame, negotiateFrame, offerFrame,
   TEST_ONLY_ANSWER_SDP, TEST_ONLY_CANDIDATE, TEST_ONLY_OFFER_SDP,
@@ -110,9 +119,11 @@ async function relayLeg(from, to, frame, label, timeoutMs, committedFloor) {
   const receipt = await relay(from, frame, label, timeoutMs);
   if (version(receipt, label) < committedFloor) throw new SmokeFailure(`${label}: relay callVersion below the granted round`);
   const delivered = await to.waitRelay(frame.type, frame.callId, frame.requestId, timeoutMs);
-  if (delivered.negotiationId !== frame.negotiationId || delivered.iceGeneration !== frame.iceGeneration
-      || JSON.stringify(delivered.payload) !== JSON.stringify(frame.payload))
-    throw new SmokeFailure(`${label}: the other side received a different ${frame.type}`);
+  if (delivered.negotiationId !== frame.negotiationId || delivered.iceGeneration !== frame.iceGeneration)
+    throw new SmokeFailure(`${label}: the other side received the relay for another negotiation round`);
+  // Key order is not compared (canonical relay); values, nesting and array order are.
+  if (!isDeepStrictEqual(delivered.payload, frame.payload))
+    throw new SmokeFailure(`${label}: the other side received a different ${frame.type} payload`);
   if (delivered.sessionIncarnation !== undefined && delivered.sessionIncarnation !== to.route.sessionIncarnation)
     throw new SmokeFailure(`${label}: relay addressed to another session incarnation`);
 }

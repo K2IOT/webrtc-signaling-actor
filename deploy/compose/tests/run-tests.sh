@@ -35,7 +35,8 @@ else
 fi
 # Smoke client (smoke/): the wire builders need node only; the behaviour tests against the
 # in-process fakes also need the pinned `ws` from smoke/package-lock.json (npm ci, needs the
-# registry once) and openssl. Without node_modules and a working `npm ci`, they are skipped.
+# registry once) and openssl. Without node_modules and a working `npm ci`, they are skipped, or
+# counted as a failure when CI is set.
 smoke="$compose/smoke"
 if command -v node >/dev/null 2>&1; then
   ran=$((ran + 1))
@@ -52,6 +53,10 @@ if command -v node >/dev/null 2>&1; then
     if ! node --test "$smoke/smoke.test.mjs"; then
       failed=$((failed + 1))
     fi
+  elif [ -n "${CI:-}" ]; then
+    ran=$((ran + 1))
+    failed=$((failed + 1))
+    printf '== smoke/smoke.test.mjs\nFAIL (CI: smoke/node_modules/ws absent and npm ci failed)\n'
   else
     printf '== smoke/smoke.test.mjs\nSKIP (smoke/node_modules absent and npm ci failed; run npm ci in deploy/compose/smoke)\n'
   fi
