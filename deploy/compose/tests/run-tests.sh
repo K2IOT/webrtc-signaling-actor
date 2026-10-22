@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Runs every tests/test_*.sh; exits non-zero when any of them fails.
+# LOCAL_TEST_ONLY / NOT_QUALIFIED.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+failed=0
+ran=0
+for t in "$here"/test_*.sh; do
+  [ -e "$t" ] || continue
+  ran=$((ran + 1))
+  printf '== %s\n' "$(basename "$t")"
+  if ! bash "$t"; then
+    failed=$((failed + 1))
+  fi
+done
+if [ "$ran" -eq 0 ]; then
+  echo "no tests found in $here" >&2
+  exit 1
+fi
+printf '%d test files, %d failed\n' "$ran" "$failed"
+[ "$failed" -eq 0 ]
