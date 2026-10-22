@@ -1,0 +1,6 @@
+# Allow-list build context for deploy/compose/kube-api/Dockerfile (BuildKit picks this file up
+# automatically because it is named <Dockerfile>.dockerignore next to the Dockerfile). The
+# repository root .dockerignore belongs to the other images and is not used for this build.
+*
+!deploy/compose/kube-api/server.mjs
+!deploy/compose/kube-api/Dockerfile

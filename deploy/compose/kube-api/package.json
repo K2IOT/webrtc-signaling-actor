@@ -1,0 +1,9 @@
+{
+  "name": "signaling-compose-kube-api",
+  "private": true,
+  "version": "0.0.0",
+  "description": "LOCAL_TEST_ONLY fake Kubernetes API for Pekko discovery. Zero dependencies.",
+  "type": "module",
+  "main": "server.test.mjs",
+  "scripts": { "test": "node --test server.test.mjs" }
+}

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs every tests/test_*.sh and every <component>/tests/test_*.sh (for example
-# provisioner/tests); exits non-zero when any of them fails.
+# provisioner/tests), plus the Node tests of kube-api when `node` is installed (built-ins only,
+# run as a file because `node --test <dir>` is not portable across Node majors); exits non-zero
+# when any of them fails.
 # LOCAL_TEST_ONLY / NOT_QUALIFIED.
 set -euo pipefail
 
@@ -21,6 +23,15 @@ for t in "$compose"/tests/test_*.sh "$compose"/*/tests/test_*.sh; do
     failed=$((failed + 1))
   fi
 done
+if command -v node >/dev/null 2>&1; then
+  ran=$((ran + 1))
+  printf '== kube-api/server.test.mjs\n'
+  if ! node --test "$compose/kube-api/server.test.mjs"; then
+    failed=$((failed + 1))
+  fi
+else
+  printf '== kube-api/server.test.mjs\nSKIP (node not installed)\n'
+fi
 if [ "$ran" -eq 0 ]; then
   echo "no tests found in $here" >&2
   exit 1
