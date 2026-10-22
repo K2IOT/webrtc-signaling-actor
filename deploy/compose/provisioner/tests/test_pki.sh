@@ -408,6 +408,58 @@ stage2_guards_refuse_before_any_work() {
   assert_true "unknown stage is an error" test "$rc" -ne 0
 }
 
+# Compose starts the exited one-shot provisioner containers again on every `docker compose up`,
+# so both stages take --if-needed: a completed stage is skipped with exit 0 and changes nothing;
+# everything else (foreign directory, missing stage 1) is still refused.
+if_needed_skips_completed_stages() {
+  local before after rc out
+  before="$(find "$RUN_ROOT" -type f -exec sha256sum {} + | sort | sha256sum)"
+  set +e
+  out="$(bash "$prov/provision.sh" stage1 --if-needed 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "0" "$rc" "stage1 --if-needed on a provisioned volume exit"
+  assert_true "stage1 skip message" grep -q 'PROVISION_SKIPPED stage 1 already done' <<<"$out"
+  after="$(find "$RUN_ROOT" -type f -exec sha256sum {} + | sort | sha256sum)"
+  assert_eq "$before" "$after" "skipped stage 1 changed nothing"
+
+  : >"$RUN_ROOT/_shared/.stage2-done"
+  set +e
+  out="$(bash "$prov/provision.sh" stage2 --if-needed 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "0" "$rc" "stage2 --if-needed after a completed stage 2 exit"
+  assert_true "stage2 skip message" grep -q 'PROVISION_SKIPPED stage 2 already done' <<<"$out"
+  assert_true "stage2 marker kept" test -e "$RUN_ROOT/_shared/.stage2-done"
+  rm -f "$RUN_ROOT/_shared/.stage2-done"
+
+  local empty="$TMP/empty-if-needed" foreign="$TMP/foreign-if-needed"
+  mkdir -p "$empty" "$foreign"
+  : >"$foreign/precious"
+  set +e
+  RUN_ROOT="$empty" bash "$prov/provision.sh" stage2 --if-needed >/dev/null 2>"$TMP/ifn.err"
+  rc=$?
+  set -e
+  assert_eq "1" "$rc" "stage2 --if-needed before stage 1 is still refused"
+  assert_true "stage2 --if-needed refusal names stage 1" grep -q 'PROVISION_REFUSED stage 2 needs a completed stage 1' "$TMP/ifn.err"
+  set +e
+  RUN_ROOT="$foreign" bash "$prov/provision.sh" stage1 --if-needed >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "1" "$rc" "stage1 --if-needed still refuses a foreign directory"
+  assert_true "precious file survived --if-needed" test -f "$foreign/precious"
+  set +e
+  PROVISION_FORCE=1 bash "$prov/provision.sh" stage1 --if-needed >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "64" "$rc" "--if-needed together with PROVISION_FORCE=1 is a usage error"
+  set +e
+  bash "$prov/provision.sh" stage1 --bogus >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "64" "$rc" "unknown option is a usage error"
+}
+
 force_flag_regenerates() {
   local key_before uid_before key_after uid_after
   key_before="$(sha256sum <"$RUN_ROOT/actor-c001-1/leaf.key")"
@@ -441,7 +493,7 @@ for t in stage1_succeeds service_dirs_cover_all_24_names each_workload_leaf_has_
   jwt_pub_is_the_identity_public_key platform_p12_loads_with_keytool_and_has_ip_san kube_tokens_differ_per_cell \
   pod_uids_are_unique_lowercase_uuids privacy_key_is_32_bytes_per_cell db_passwords_are_present_and_random \
   no_key_is_world_readable modes_are_0440_files_and_0750_dirs shared_dir_has_no_ca_private_key no_secret_appears_in_stdout \
-  second_stage1_run_is_refused stage2_guards_refuse_before_any_work refuses_a_foreign_non_empty_directory force_flag_regenerates; do
+  second_stage1_run_is_refused stage2_guards_refuse_before_any_work if_needed_skips_completed_stages refuses_a_foreign_non_empty_directory force_flag_regenerates; do
   run_test "$t"
 done
 finish

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Provisioner: provision.sh stage1|stage2|all
+# Provisioner: provision.sh stage1|stage2|all [--if-needed]
 #   stage1  PKI, keys, passwords, pod identities, PostgreSQL mount files (this file, lib/pki.sh,
 #           lib/dbprep.sh); marker .provisioned
 #   stage2  databases (lib/db.sh migrate-and-seed, wal-facts), then the contracts (lib/render.sh
 #           render, online); marker _shared/.stage2-done, written last. Needs the five PostgreSQL
 #           servers started from the stage-1 mounts and reachable by IP.
 #   all     stage1 then stage2
+#   --if-needed  a stage whose marker is present is skipped (exit 0, nothing touched) instead of
+#           refused. Compose passes it because `docker compose up` starts the exited one-shot
+#           provisioner containers again on every run. Never together with PROVISION_FORCE=1.
 # Writes under $RUN_ROOT (default /run/signaling-src, the root of the `run` volume).
 # Logs file names only, never contents. LOCAL_TEST_ONLY / NOT_QUALIFIED.
 set -euo pipefail
@@ -99,6 +102,10 @@ finalize_modes() {
 
 stage1() {
   check_run_root
+  if [ "$IF_NEEDED" -eq 1 ] && [ -f "$RUN_ROOT/$MARKER" ] && [ ! -e "$RUN_ROOT/$SENTINEL" ]; then
+    printf 'PROVISION_SKIPPED stage 1 already done (%s exists)\n' "$MARKER" >&2
+    return 0
+  fi
   guard_volume
   umask 077
   : >"$RUN_ROOT/$SENTINEL"
@@ -254,6 +261,10 @@ stage2() {
     exit 1
   fi
   if [ -e "$RUN_ROOT/$STAGE2_MARKER" ]; then
+    if [ "$IF_NEEDED" -eq 1 ]; then
+      printf 'PROVISION_SKIPPED stage 2 already done (%s exists)\n' "$STAGE2_MARKER" >&2
+      return 0
+    fi
     if [ "${PROVISION_FORCE:-0}" != "1" ]; then
       printf 'PROVISION_REFUSED stage 2 already done (%s exists); PROVISION_FORCE=1 runs it again\n' "$STAGE2_MARKER" >&2
       exit 1
@@ -273,6 +284,23 @@ stage2() {
   pki_log "stage2 done (LOCAL_TEST_ONLY / NOT_QUALIFIED)"
 }
 
+usage() {
+  printf 'usage: provision.sh stage1|stage2|all [--if-needed]\n' >&2
+  exit 64
+}
+
+IF_NEEDED=0
+case "${2:-}" in
+  "") ;;
+  --if-needed) IF_NEEDED=1 ;;
+  *) usage ;;
+esac
+[ "$#" -le 2 ] || usage
+if [ "$IF_NEEDED" -eq 1 ] && [ "${PROVISION_FORCE:-0}" = "1" ]; then
+  printf 'provision: --if-needed and PROVISION_FORCE=1 contradict each other\n' >&2
+  exit 64
+fi
+
 case "${1:-}" in
   stage1) stage1 ;;
   stage2) stage2 ;;
@@ -280,8 +308,5 @@ case "${1:-}" in
     stage1
     stage2
     ;;
-  *)
-    printf 'usage: provision.sh stage1|stage2|all\n' >&2
-    exit 64
-    ;;
+  *) usage ;;
 esac
