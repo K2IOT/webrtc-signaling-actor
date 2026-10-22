@@ -337,8 +337,55 @@ class ClockReportServiceTest {
     Body body = parse(service().clockBody(registration()));
 
     assertThat(body.report().continuous()).isFalse();
-    assertThat(body.report().pairUncertaintyMicros()).isEqualTo(1_000_000);
+    // The unsafe figure plus the stated allowance: still at least 1_000_000, no overflow.
+    assertThat(body.report().pairUncertaintyMicros())
+        .isEqualTo(1_000_000 + ClockReportService.CONSUMER_OBSERVATION_ALLOWANCE_MICROS)
+        .isGreaterThanOrEqualTo(1_000_000);
     assertThat(body.report().relativeRateErrorPpm()).isEqualTo(1_000_000);
+    assertThat(verifies(pair.getPublic(), body.report(), body.signature())).isTrue();
+  }
+
+  @Test
+  void reportedUncertaintyAddsTheAllowanceAndClampsWithoutOverflow() {
+    assertThat(ClockReportService.reportedPairUncertainty(0))
+        .isEqualTo(ClockReportService.CONSUMER_OBSERVATION_ALLOWANCE_MICROS);
+    assertThat(ClockReportService.reportedPairUncertainty(1_000_000)).isEqualTo(1_100_000);
+    assertThat(ClockReportService.reportedPairUncertainty(Integer.MAX_VALUE))
+        .isEqualTo(Integer.MAX_VALUE);
+    assertThat(ClockReportService.reportedPairUncertainty(Integer.MAX_VALUE - 1))
+        .isEqualTo(Integer.MAX_VALUE);
+  }
+
+  @Test
+  void measuredUncertaintyAboveTheAllowanceHeadroomIsReportedUnsafe() throws Exception {
+    // Every sample brackets its wall read with a 320 ms monotonic gap: a measured pair uncertainty
+    // of 160_001 microseconds, a constant offset (no jump, 0 ppm), so the measurement itself is
+    // continuous. Measured + allowance exceeds 250_000, so the report must not be.
+    AtomicLong slowMono = new AtomicLong(MONO_ORIGIN);
+    long gap = 320 * MS;
+    HostClockObserver slow =
+        new HostClockObserver(
+            slowMono::get,
+            () -> {
+              Instant midpoint = WALL_ORIGIN.plusNanos(slowMono.get() - MONO_ORIGIN + gap / 2);
+              slowMono.addAndGet(gap);
+              return midpoint;
+            },
+            Duration.ofMillis(100));
+    for (int i = 0; i < 8; i++) {
+      slow.sample();
+      if (i < 7) slowMono.addAndGet(100 * MS);
+    }
+    HostClockObserver.Measurement measured = slow.snapshot();
+    assertThat(measured.continuous()).isTrue();
+    assertThat(measured.pairUncertaintyMicros()).isEqualTo(160_001);
+
+    Body body =
+        parse(new ClockReportService(signer, slow, epochs, wallClock).clockBody(registration()));
+
+    assertThat(body.report().continuous()).isFalse();
+    assertThat(body.report().pairUncertaintyMicros())
+        .isEqualTo(160_001 + ClockReportService.CONSUMER_OBSERVATION_ALLOWANCE_MICROS);
     assertThat(verifies(pair.getPublic(), body.report(), body.signature())).isTrue();
   }
 
@@ -361,9 +408,13 @@ class ClockReportServiceTest {
     ClockSafetyMonitor.Report report = parse(service().clockBody(registration())).report();
 
     assertThat(report.continuous()).isEqualTo(measured.continuous()).isTrue();
-    assertThat(report.pairUncertaintyMicros()).isEqualTo(measured.pairUncertaintyMicros());
+    // Measured figure plus the stated consumer observation allowance; rate error as measured.
+    assertThat(report.pairUncertaintyMicros())
+        .isEqualTo(
+            measured.pairUncertaintyMicros()
+                + ClockReportService.CONSUMER_OBSERVATION_ALLOWANCE_MICROS);
     assertThat(report.relativeRateErrorPpm()).isEqualTo(measured.relativeRateErrorPpm());
-    assertThat(report.pairUncertaintyMicros()).isLessThan(250_000);
+    assertThat(report.pairUncertaintyMicros()).isLessThanOrEqualTo(250_000);
   }
 
   @Test
