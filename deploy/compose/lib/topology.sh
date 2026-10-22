@@ -3,8 +3,9 @@
 # LOCAL_TEST_ONLY / NOT_QUALIFIED.
 #
 #   load_topology            export every topology.env variable into the caller
-#   service_list             print the 16 service names, one per line
-#                            (the first 15 are the plane JVMs)
+#   service_list             print the 17 service names, one per line: 12 actors, 2 gateways,
+#                            control (= 15 plane JVMs), then identity, local-platform
+#                            (= 17 JVM services in total)
 #   ip_of <service> <net>    print the address of <service> on <net>; <net> is
 #                            net-c001 | net-c002 | net-shared (or cell | shared, where
 #                            "cell" means the service's own cell network); non-zero if none
@@ -74,11 +75,18 @@ _ip_var() {
         *) return 1 ;;
       esac
       ;;
-    control | identity | local-platform | pg-directory)
+    control)
+      case "$net" in
+        net-c001) printf 'CONTROL_C001_IP' ;;
+        net-c002) printf 'CONTROL_C002_IP' ;;
+        shared | net-shared) printf 'CONTROL_IP' ;;
+        *) return 1 ;;
+      esac
+      ;;
+    identity | local-platform | pg-directory)
       case "$net" in
         shared | net-shared)
           case "$service" in
-            control) printf 'CONTROL_IP' ;;
             identity) printf 'IDENTITY_IP' ;;
             local-platform) printf 'PLATFORM_IP' ;;
             pg-directory) printf 'PG_DIRECTORY_IP' ;;
@@ -108,7 +116,8 @@ ip_of() {
 all_addresses() {
   local cell n key
   for key in CONTROL_IP IDENTITY_IP PLATFORM_IP PG_DIRECTORY_IP GATEWAY_C001_IP GATEWAY_C002_IP \
-    PG_C001_PRIMARY_IP PG_C001_STANDBY_IP PG_C002_PRIMARY_IP PG_C002_STANDBY_IP KUBE_C001_IP KUBE_C002_IP; do
+    PG_C001_PRIMARY_IP PG_C001_STANDBY_IP PG_C002_PRIMARY_IP PG_C002_STANDBY_IP KUBE_C001_IP KUBE_C002_IP \
+    CONTROL_C001_IP CONTROL_C002_IP; do
     printf '%s %s\n' "$key" "${!key}"
   done
   for cell in C001 C002; do
@@ -123,8 +132,8 @@ all_addresses() {
 
 subnet_of_key() {
   case "$1" in
-    ACTOR_C001_*_CELL_IP | PG_C001_*_IP | KUBE_C001_IP) printf '%s\n' "$NET_C001" ;;
-    ACTOR_C002_*_CELL_IP | PG_C002_*_IP | KUBE_C002_IP) printf '%s\n' "$NET_C002" ;;
+    ACTOR_C001_*_CELL_IP | PG_C001_*_IP | KUBE_C001_IP | CONTROL_C001_IP) printf '%s\n' "$NET_C001" ;;
+    ACTOR_C002_*_CELL_IP | PG_C002_*_IP | KUBE_C002_IP | CONTROL_C002_IP) printf '%s\n' "$NET_C002" ;;
     *) printf '%s\n' "$NET_SHARED" ;;
   esac
 }

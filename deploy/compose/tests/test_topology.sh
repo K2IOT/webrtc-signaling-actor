@@ -17,8 +17,8 @@ all_addresses_unique() {
   assert_eq "" "$dups" "duplicate addresses"
   local n
   n="$(all_addresses | wc -l | tr -d ' ')"
-  # 12 actors x 2 addresses + 2 gateways + control/identity/platform/pg-directory + 2 x (2 pg + kube)
-  assert_eq "36" "$n" "number of addressed endpoints"
+  # 12 actors x 2 addresses + 2 gateways + control/identity/platform/pg-directory + 2 x (2 pg + kube + control cell-net address)
+  assert_eq "38" "$n" "number of addressed endpoints"
 }
 
 every_address_inside_its_subnet() {
@@ -62,6 +62,26 @@ actors_have_cell_and_shared_ips() {
       assert_true "actor $cell/$n has distinct cell and shared ips" test "$cip" != "$sip"
       var="ACTOR_${cell}_${n}_AZ"; az="${!var}"
       if [ "$n" -le 3 ]; then assert_eq "az-a" "$az" "AZ of $cell/$n"; else assert_eq "az-b" "$az" "AZ of $cell/$n"; fi
+    done
+  done
+}
+
+control_has_an_address_on_each_cell_network() {
+  assert_eq "172.30.1.10" "$CONTROL_C001_IP" "CONTROL_C001_IP"
+  assert_eq "172.30.2.10" "$CONTROL_C002_IP" "CONTROL_C002_IP"
+  assert_eq "172.30.0.10" "$CONTROL_IP" "CONTROL_IP stays on net-shared"
+  assert_eq "172.30.1.10" "$(ip_of control net-c001)" "control on net-c001"
+  assert_eq "172.30.2.10" "$(ip_of control net-c002)" "control on net-c002"
+  assert_eq "172.30.0.10" "$(ip_of control net-shared)" "control on net-shared"
+  assert_true "control c001 address inside NET_C001" ip_in_cidr "$CONTROL_C001_IP" "$NET_C001"
+  assert_true "control c002 address inside NET_C002" ip_in_cidr "$CONTROL_C002_IP" "$NET_C002"
+  assert_eq "$NET_C001" "$(subnet_of_key CONTROL_C001_IP)" "subnet_of_key CONTROL_C001_IP"
+  assert_eq "$NET_C002" "$(subnet_of_key CONTROL_C002_IP)" "subnet_of_key CONTROL_C002_IP"
+  # gateways, identity and local-platform stay shared-only
+  local s c
+  for s in gateway-c001 gateway-c002 identity local-platform; do
+    for c in net-c001 net-c002; do
+      assert_false "$s has no address on $c" ip_of "$s" "$c"
     done
   done
 }
@@ -132,7 +152,7 @@ hosts_sh_prints_four_lines_and_writes_nothing() {
 }
 
 for t in all_addresses_unique every_address_inside_its_subnet kube_api_has_one_ip_per_cell_network \
-  actors_have_cell_and_shared_ips other_fixed_values service_list_has_17_names \
+  actors_have_cell_and_shared_ips control_has_an_address_on_each_cell_network other_fixed_values service_list_has_17_names \
   hosts_sh_prints_four_lines_and_writes_nothing; do
   run_test "$t"
 done
