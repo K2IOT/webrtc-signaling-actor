@@ -31,11 +31,9 @@ TEMPLATES="$prov/templates"
 RUN_ROOT="${RUN_ROOT:-/run/signaling-src}"
 GROUP_ID="${PROVISION_GROUP_ID:-10001}"
 CONTAINER_MOUNT="/run/signaling"
-# Names stage 1 puts into the DNS SANs (pki.sh workload_san): actor.<cell>.<domain>.
-DOMAIN="signaling.local"
-# Fixed by the compose design, not by topology.env: PostgreSQL and the fake kube-API listen here.
-PG_PORT=5432
-KUBE_API_PORT=443
+# DOMAIN (the TLS-authority suffix pki.sh also puts into the SANs), PG_PORT and KUBE_API_PORT
+# come from topology.env, the single source shared with stage 1.
+MARKER=".rendered"
 CELL_AZ_ROLES='["az-a","az-b"]'
 APP_JAR="/opt/signaling/app.jar"
 
@@ -132,13 +130,17 @@ validate_topology() {
   check EXECUTABLE_ID "$HEX64_RE"
   check SPLIT '^[1-9][0-9]{0,4}$'
   [ "$SPLIT" -le 16383 ] || refuse "SPLIT is out of range"
-  for key in RPC_PORT RELAY_PORT SOURCE_PORT ADMIN_PORT HEALTH_PORT; do check "$key" "$PORT_RE"; done
+  for key in RPC_PORT RELAY_PORT SOURCE_PORT ADMIN_PORT HEALTH_PORT PG_PORT KUBE_API_PORT; do
+    check "$key" "$PORT_RE"
+  done
+  check DOMAIN '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+  # One fingerprint for both cells: the compatibility gates compare it for equality across cells.
+  check CLUSTER_FINGERPRINT "$HEX64_RE"
   for key in CONTROL_IP PLATFORM_IP PG_DIRECTORY_IP; do check "$key" "$IP_RE"; done
   for c in $CELLS; do
     cu="$(upper "$c")"
     for key in "GATEWAY_${cu}_IP" "PG_${cu}_PRIMARY_IP" "KUBE_${cu}_IP"; do check "$key" "$IP_RE"; done
     check "GATEWAY_ID_$cu" '^[A-Za-z0-9_.-]{1,128}$'
-    check "CLUSTER_FINGERPRINT_$cu" "$HEX64_RE"
     check "KUBE_${cu}_NAMESPACE" '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
     for n in 1 2 3 4 5 6; do
       for key in "ACTOR_${cu}_${n}_CELL_IP" "ACTOR_${cu}_${n}_SHARED_IP"; do check "$key" "$IP_RE"; done
@@ -151,6 +153,29 @@ require_stage1() {
   case "$RUN_ROOT" in /?*) ;; *) refuse "RUN_ROOT must be an absolute path" ;; esac
   [ -f "$RUN_ROOT/.provisioned" ] && [ ! -e "$RUN_ROOT/.stage1-started" ] ||
     refuse "stage 1 has not completed in RUN_ROOT (no .provisioned marker)"
+}
+
+# require_stage1_files: every stage-1 file a rendered document or launch.sh points at exists, so a
+# partial tree fails here, with one message naming all missing files, before anything is written.
+require_stage1_files() {
+  local s c f missing=()
+  for s in $(plane_list); do
+    for f in ca.crt leaf.crt leaf.key source.pub jwt.pub db-ca.crt; do
+      [ -s "$RUN_ROOT/$s/$f" ] || missing+=("$s/$f")
+    done
+    for c in $CELLS; do [ -s "$RUN_ROOT/$s/proof-$c.pub" ] || missing+=("$s/proof-$c.pub"); done
+    case "$s" in
+      actor-*)
+        for f in remoting.p12 trust.p12 remoting.pass kube-ca.crt kube-token privacy.key proof.key; do
+          [ -s "$RUN_ROOT/$s/$f" ] || missing+=("$s/$f")
+        done
+        ;;
+    esac
+  done
+  for f in source.key platform.p12 platform.pass source-client-trust.crt admin-ca.crt db-ca.crt; do
+    [ -s "$RUN_ROOT/local-platform/$f" ] || missing+=("local-platform/$f")
+  done
+  [ "${#missing[@]}" -eq 0 ] || refuse "stage-1 files missing (re-provision): ${missing[*]}"
 }
 
 # read_shared: stage-1 identifiers and passwords, and the WAL facts, into globals.
@@ -300,9 +325,8 @@ process_doc() {
 
 # env.list: the non-secret environment of spec 4.2 that compose sets (for comparison by tests).
 env_list_doc() {
-  local s="$1" cell="$2" mount="$3" plane fp kube extra=()
+  local s="$1" cell="$2" mount="$3" plane kube extra=()
   plane="${s%%-*}"
-  fp="CLUSTER_FINGERPRINT_$(upper "$cell")"
   if [ "$plane" = actor ]; then
     kube="KUBE_$(upper "$cell")_IP"
     extra=(--arg SIGNALING_FORMATION_PROFILE initial-six --arg SIGNALING_KUBE_API_HOST "${!kube}"
@@ -317,7 +341,7 @@ env_list_doc() {
     --arg SIGNALING_RUNTIME_CONTRACT "$mount/runtime.yaml" \
     --arg SIGNALING_CELL_ID "$cell" \
     --arg SIGNALING_POD_UID "${POD_UID[$s]}" \
-    --arg SIGNALING_CLUSTER_FINGERPRINT "${!fp}" \
+    --arg SIGNALING_CLUSTER_FINGERPRINT "$CLUSTER_FINGERPRINT" \
     --arg SIGNALING_IDENTITY_ISSUER "$ISSUER" \
     --arg SIGNALING_IDENTITY_AUDIENCE "$AUDIENCE" \
     "${extra[@]}"
@@ -345,7 +369,8 @@ launch_doc() {
         printf 'export SIGNALING_KUBE_API_PORT=%s\n' "$KUBE_API_PORT"
         ;;
     esac
-    printf '# JVM_OPTS is split into words on purpose.\n'
+    printf '# JVM_OPTS is split into words on purpose; set -f keeps those words from globbing.\n'
+    printf 'set -f\n'
     printf 'exec java $JVM_OPTS -jar %s\n' "$APP_JAR"
 }
 
@@ -396,10 +421,22 @@ finalize() {
   fi
 }
 
+# write_marker: $RUN_ROOT/.rendered, the last file written by a successful render.
+write_marker() {
+  local marker="$RUN_ROOT/$MARKER"
+  printf 'LOCAL_TEST_ONLY render complete%s\n' "$([ "$OFFLINE" -eq 1 ] && printf ' (offline)')" >"$marker.render-tmp"
+  chmod 0440 "$marker.render-tmp"
+  [ "$(id -u)" -ne 0 ] || chown "root:$GROUP_ID" "$marker.render-tmp"
+  mv -f "$marker.render-tmp" "$marker"
+}
+
 render() {
   require_stage1
+  # A failed render must never look complete: the marker goes first and comes back last.
+  rm -f "$RUN_ROOT/$MARKER"
   load_topology
   validate_topology
+  require_stage1_files
   read_shared
   umask 077
   WORK="$RUN_ROOT/.render-work"
@@ -417,6 +454,7 @@ render() {
     rm -f "$RUN_ROOT/.offline"
   fi
   finalize
+  write_marker
   log "render done: ${#RENDERED[@]} files (LOCAL_TEST_ONLY / NOT_QUALIFIED$([ "$OFFLINE" -eq 1 ] && printf ', OFFLINE'))"
 }
 
@@ -441,6 +479,9 @@ main() {
     [ "$OFFLINE" -eq 1 ] || usage "--mount-prefix is for --offline validation trees only"
     [[ "$MOUNT_PREFIX" =~ ^/[A-Za-z0-9._/-]+$ ]] || usage "--mount-prefix must be an absolute path of [A-Za-z0-9._/-]"
     MOUNT_PREFIX="${MOUNT_PREFIX%/}"
+    case "$MOUNT_PREFIX/" in
+      *//* | */./* | */../*) usage "--mount-prefix must be a normalized path (no //, . or .. segments)" ;;
+    esac
   fi
   render
 }

@@ -58,6 +58,7 @@ render_offline_succeeds() {
   assert_eq "0" "$RENDER_RC" "render --offline exit status"
   assert_true "offline note on stderr names the placeholders" grep -q 'RENDER_OFFLINE' "$OUT"
   assert_true ".offline marker written" test -f "$RUN_ROOT/.offline"
+  assert_true ".rendered marker after a successful render" test -f "$RUN_ROOT/.rendered"
 }
 
 every_plane_has_its_rendered_files() {
@@ -236,8 +237,7 @@ env_list_matches_contract() {
     assert_eq "$(j "$f" .cell)" "$(kv "$e" SIGNALING_CELL_ID)" "$s env cell"
     assert_eq "$(j "$f" .identity.issuer)" "$(kv "$e" SIGNALING_IDENTITY_ISSUER)" "$s env issuer"
     assert_eq "$(j "$f" .identity.audience)" "$(kv "$e" SIGNALING_IDENTITY_AUDIENCE)" "$s env audience"
-    local fp="CLUSTER_FINGERPRINT_$(up "$c")"
-    assert_eq "${!fp}" "$(kv "$e" SIGNALING_CLUSTER_FINGERPRINT)" "$s fingerprint"
+    assert_eq "$CLUSTER_FINGERPRINT" "$(kv "$e" SIGNALING_CLUSTER_FINGERPRINT)" "$s fingerprint"
     assert_eq "local-minikube" "$(kv "$e" SIGNALING_DEPLOYMENT_MODE)" "$s mode"
     assert_eq "LOCAL_TEST_ONLY" "$(kv "$e" SIGNALING_LOCAL_ACKNOWLEDGEMENT)" "$s acknowledgement"
     assert_eq "/run/signaling/provider.json" "$(kv "$e" SIGNALING_NATIVE_PROVIDER_CONTRACT)" "$s contract location"
@@ -250,11 +250,20 @@ env_list_matches_contract() {
   assert_eq "/run/signaling/platform.json" "$(kv "$RUN_ROOT/local-platform/env.list" SIGNALING_PLATFORM_CONFIG)" "platform config env"
 }
 
+one_cluster_fingerprint_across_all_planes() {
+  local s
+  assert_eq "1" "$(for s in $(planes); do kv "$RUN_ROOT/$s/env.list" SIGNALING_CLUSTER_FINGERPRINT; printf '\n'; done |
+    sort -u | grep -c .)" "one SIGNALING_CLUSTER_FINGERPRINT over all 15 planes of both cells"
+  assert_eq "$CLUSTER_FINGERPRINT" "$(kv "$RUN_ROOT/actor-c002-6/env.list" SIGNALING_CLUSTER_FINGERPRINT)" \
+    "the topology value"
+}
+
 launch_scripts_export_only_what_they_must() {
   local s f
   for s in $(planes); do
     f="$RUN_ROOT/$s/launch.sh"
     assert_eq "exec java \$JVM_OPTS -jar /opt/signaling/app.jar" "$(tail -n 1 "$f")" "$s launch.sh execs the app"
+    assert_eq "set -f" "$(tail -n 2 "$f" | head -n 1)" "$s disables globbing right before the unquoted JVM_OPTS"
     assert_true "$s launch.sh is valid bash" bash -n "$f"
     case "$s" in
       actor-*)
@@ -279,8 +288,9 @@ launch_script_runs_with_a_fake_java() {
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@"\nenv\n' >"$bin/java"
   chmod +x "$bin/java"
   sed "s#/run/signaling/#$RUN_ROOT/$s/#g" "$RUN_ROOT/$s/launch.sh" >"$TMP/launch.sh"
-  out="$(env -i PATH="$bin:/usr/bin:/bin" JVM_OPTS="-Xmx1m -Dx=y" bash "$TMP/launch.sh")"
+  out="$(cd "$TMP" && : >"$TMP/-Xglob1" && env -i PATH="$bin:/usr/bin:/bin" JVM_OPTS="-Xmx1m -Dx=y -Xglob*" bash "$TMP/launch.sh")"
   assert_true "jvm options are split into words" grep -qx -- '-Xmx1m' <<<"$out"
+  assert_true "a glob in JVM_OPTS stays literal (set -f)" grep -qx -- '-Xglob\*' <<<"$out"
   assert_true "jar is passed" grep -qx -- '/opt/signaling/app.jar' <<<"$out"
   assert_true "keystore password exported" grep -qx "SIGNALING_REMOTING_KEYSTORE_PASSWORD=$(cat "$RUN_ROOT/$s/remoting.pass")" <<<"$out"
   assert_true "truststore password exported" grep -qx "SIGNALING_REMOTING_TRUSTSTORE_PASSWORD=$(cat "$RUN_ROOT/$s/remoting.pass")" <<<"$out"
@@ -325,7 +335,9 @@ pg_primary_leaf_has_the_url_ip_san() {
     <(openssl x509 -in "$RUN_ROOT/pg-directory/server.crt" -noout -ext subjectAltName)
 }
 
-# uri_san_count <cert>: the number of URI SANs (the cell RPC identity check needs exactly one).
+# uri_san_count <cert>: the number of URI SANs. The loaders refuse a leaf with a second SPIFFE URI
+# SAN (RpcTlsIdentity.extract via LocalTls.rpc -> identity/IDENTITY_MISMATCH; proven through the
+# real installer in ComposeRenderedContractsTest); this is the stage-1 side of the same rule.
 uri_san_count() { openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | grep -o 'URI:' | wc -l | tr -d ' '; }
 
 leaf_with_a_second_uri_san_is_detected() {
@@ -339,6 +351,54 @@ leaf_with_a_second_uri_san_is_detected() {
     -addext "subjectAltName=URI:spiffe://signaling/local-test-only/cell/c001/actor/a,URI:spiffe://signaling/local-test-only/cell/c001/actor/b" \
     >/dev/null 2>&1
   assert_eq "2" "$(uri_san_count "$TMP/two.crt")" "two URI SANs are counted"
+}
+
+# --- rendered names against the stage-1 certificates ---------------------------------------
+sans() { openssl x509 -noout -ext subjectAltName "$@" 2>/dev/null | tail -n +2 | tr ',' '\n' | sed 's/^ *//; s/IP Address:/IP:/'; }
+url_host() { sed -E 's#^[a-z:]+//([^:/?]+).*#\1#' <<<"$1"; }
+
+rendered_names_match_the_certificates() {
+  local s f c n i host auth actor_sans gw kube_ip
+  for s in $(planes); do
+    f="$RUN_ROOT/$s/provider.json"
+    # every actor leaf of a cell carries the DNS name the contract dials that cell by
+    for i in 0 1; do
+      c="$(j "$f" ".cells[$i].cell")"
+      auth="$(j "$f" ".cells[$i].tlsAuthority")"
+      for n in 1 2 3 4 5 6; do
+        assert_true "$s: actor-$c-$n leaf has DNS:$auth" grep -qx "DNS:$auth" <(sans -in "$RUN_ROOT/actor-$c-$n/leaf.crt")
+      done
+      gw="$(j "$f" ".gateways[$i].cell")"
+      auth="$(j "$f" ".gateways[$i].tlsAuthority")"
+      assert_true "$s: gateway-$gw leaf has DNS:$auth" grep -qx "DNS:$auth" <(sans -in "$RUN_ROOT/gateway-$gw/leaf.crt")
+    done
+    # the source the contract dials is the platform listener's certificate
+    host="$(url_host "$(j "$f" .sources.clockUrl)")"
+    assert_eq "$host" "$(url_host "$(j "$f" .sources.revocationUrl)")" "$s: one source host"
+    assert_true "$s: platform leaf has IP:$host" grep -qx "IP:$host" <(platform_leaf_sans)
+    # the databases the contract dials present a certificate for the URL host
+    host="$(url_host "$(j "$f" .cellDatabase.jdbcUrl)")"
+    assert_true "$s: cell primary leaf has IP:$host" grep -qx "IP:$host" <(sans -in "$RUN_ROOT/pg-$(cell_of "$s")-primary/server.crt")
+    host="$(url_host "$(j "$f" .directoryDatabase.jdbcUrl)")"
+    assert_true "$s: directory leaf has IP:$host" grep -qx "IP:$host" <(sans -in "$RUN_ROOT/pg-directory/server.crt")
+  done
+  host="$(url_host "$(j "$RUN_ROOT/control/process.json" '.transferCells[0].database.jdbcUrl')")"
+  assert_true "transfer primary leaf has IP:$host" grep -qx "IP:$host" <(sans -in "$RUN_ROOT/pg-c002-primary/server.crt")
+  host="$(url_host "$(j "$RUN_ROOT/local-platform/platform.json" .database.jdbcUrl)")"
+  assert_true "platform database leaf has IP:$host" grep -qx "IP:$host" <(sans -in "$RUN_ROOT/pg-directory/server.crt")
+  # each actor's kube-API address is on its cell's kube-api certificate, which chains to the CA it holds
+  for s in $(actors); do
+    c="$(cell_of "$s")"
+    kube_ip="$(j "$RUN_ROOT/$s/process.json" .kube.apiHost)"
+    assert_true "$s: kube-api-$c cert has IP:$kube_ip" grep -qx "IP:$kube_ip" <(sans -in "$RUN_ROOT/kube-api-$c/kube-api.crt")
+    assert_true "$s: kube-api-$c cert chains to $s/kube-ca.crt" \
+      openssl verify -CAfile "$RUN_ROOT/$s/kube-ca.crt" "$RUN_ROOT/kube-api-$c/kube-api.crt"
+  done
+}
+
+platform_leaf_sans() {
+  openssl pkcs12 -in "$RUN_ROOT/local-platform/platform.p12" -passin "file:$RUN_ROOT/local-platform/platform.pass" \
+    -nokeys -clcerts 2>/dev/null | sans
 }
 
 no_unresolved_placeholder_is_rendered() {
@@ -382,6 +442,9 @@ unresolved_placeholder_is_rejected() {
   assert_true "render refuses an unresolved value" test "$rc" -ne 0
   assert_true "refusal names the key" grep -q 'RENDER_REFUSED.*ISSUER' "$TMP/bad.out"
   assert_eq "$before" "$(rendered_digest)" "nothing was rewritten"
+  assert_false "a refused render leaves no .rendered marker" test -e "$RUN_ROOT/.rendered"
+  assert_true "a good render restores it" render --offline
+  assert_true ".rendered back" test -f "$RUN_ROOT/.rendered"
 }
 
 usage_errors() {
@@ -401,6 +464,31 @@ usage_errors() {
   rc=$?
   set -e
   assert_eq "64" "$rc" "--mount-prefix must be absolute"
+  local bad
+  for bad in "$TMP/a/../b" "$TMP//b" "$TMP/./b"; do
+    set +e
+    bash "$RENDER" render --offline --mount-prefix "$bad" >/dev/null 2>&1
+    rc=$?
+    set -e
+    assert_eq "64" "$rc" "--mount-prefix $bad is refused"
+  done
+}
+
+missing_stage1_file_fails_before_writing() {
+  local d="$TMP/missing" rc before
+  cp -a "$RUN_ROOT" "$d"
+  rm -f "$d/gateway-c001/db-ca.crt"
+  before="$(RUN_ROOT="$d" rendered_digest)"
+  set +e
+  RUN_ROOT="$d" bash "$RENDER" render --offline >"$TMP/missing.out" 2>&1
+  rc=$?
+  set -e
+  assert_true "render refuses a partial stage-1 tree" test "$rc" -ne 0
+  assert_eq "1" "$(grep -c 'RENDER_REFUSED' "$TMP/missing.out")" "one refusal line"
+  assert_true "it names the missing file" grep -q 'RENDER_REFUSED stage-1 files missing.*gateway-c001/db-ca.crt' "$TMP/missing.out"
+  assert_eq "$before" "$(RUN_ROOT="$d" rendered_digest)" "nothing was rewritten"
+  assert_false "no .rendered marker after a failed render" test -e "$d/.rendered"
+  assert_eq "" "$(find "$d" -name '*.render-tmp' -o -name .render-work | head -n 1)" "no temporary file left"
 }
 
 refuses_a_volume_without_stage1() {
@@ -453,10 +541,11 @@ setup_run
 for t in render_offline_succeeds every_plane_has_its_rendered_files json_is_valid_everywhere default_mount_prefix_is_run_signaling \
   contract_values_per_plane directory_credentials_per_plane control_transfers_to_the_other_cell process_profiles_have_every_key \
   actor_profiles gateway_profiles pod_uids_reach_each_service_dir snapshot_is_shared_and_pinned_by_digest env_list_matches_contract \
-  launch_scripts_export_only_what_they_must launch_script_runs_with_a_fake_java runtime_yaml_binds_identity platform_config_values \
-  pg_primary_leaf_has_the_url_ip_san leaf_with_a_second_uri_san_is_detected no_unresolved_placeholder_is_rendered \
+  one_cluster_fingerprint_across_all_planes launch_scripts_export_only_what_they_must launch_script_runs_with_a_fake_java runtime_yaml_binds_identity platform_config_values \
+  pg_primary_leaf_has_the_url_ip_san rendered_names_match_the_certificates leaf_with_a_second_uri_san_is_detected no_unresolved_placeholder_is_rendered \
   modes_are_0440_files_and_0750_dirs no_secret_appears_in_output render_is_deterministic_for_equal_inputs \
-  unresolved_placeholder_is_rejected usage_errors refuses_a_volume_without_stage1 mount_prefix_rewrites_every_path \
+  unresolved_placeholder_is_rejected missing_stage1_file_fails_before_writing \
+  usage_errors refuses_a_volume_without_stage1 mount_prefix_rewrites_every_path \
   online_render_needs_wal_facts_and_clears_the_offline_marker; do
   run_test "$t"
 done

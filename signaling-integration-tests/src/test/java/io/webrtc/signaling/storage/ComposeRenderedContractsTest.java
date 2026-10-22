@@ -30,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -58,6 +59,16 @@ class ComposeRenderedContractsTest {
   private static final Pattern LAUNCH_EXPORT =
       Pattern.compile("^export ([A-Z_]+)=([A-Za-z0-9.:-]+)$", Pattern.MULTILINE);
   private static final int BUCKETS = 16384;
+  private static final Set<String> INHERITED_OVERRIDES =
+      Set.of(
+          "TOPOLOGY_ENV",
+          "PRODUCTION_DEFAULTS",
+          "RUN_ROOT",
+          "IDENTITY_PUBLIC_KEY",
+          "LEAF_DAYS",
+          "CA_DAYS",
+          "CA_DIR",
+          "JVM_OPTS");
 
   @TempDir static Path temp;
   private static Path repo;
@@ -217,6 +228,10 @@ class ComposeRenderedContractsTest {
       assertThat(env.get("SPRING_PROFILES_ACTIVE").toUpperCase(Locale.ROOT))
           .isEqualTo(profile.path("plane").asText());
       assertThat(env.keySet()).noneMatch(name -> name.contains("PASSWORD"));
+      // One fingerprint for both cells: the compatibility gates compare it across cells.
+      assertThat(env.get("SIGNALING_CLUSTER_FINGERPRINT"))
+          .as(service)
+          .isEqualTo(topology.get("CLUSTER_FINGERPRINT"));
     }
   }
 
@@ -283,6 +298,48 @@ class ComposeRenderedContractsTest {
       assertThatThrownBy(() -> new LocalRuntimeInitializer().initialize(ctx))
           .isInstanceOf(LocalRuntimeFailure.class);
     }
+  }
+
+  @Test
+  void leafWithASecondSpiffeUriSanIsAnIdentityMismatch() throws Exception {
+    var tree = copyAndRender("negative-two-uri-sans");
+    var service = "actor-c001-2";
+    // Re-issued from the stage-1 workload CA of this tree with the same key and SANs plus a second
+    // SPIFFE URI: only the single-URI-SAN identity rule can refuse it.
+    exec(
+        Map.of(),
+        "bash",
+        "-c",
+        String.join(
+            "\n",
+            "set -euo pipefail",
+            "d=\"$1/$2\"; ca=\"$1/.ca\"; w=\"$(mktemp -d)\"",
+            "san=\"$(openssl x509 -in \"$d/leaf.crt\" -noout -ext subjectAltName | tail -n +2"
+                + " | sed 's/^ *//; s/IP Address:/IP:/g; s/, /,/g')\"",
+            "printf '%s\\n' basicConstraints=critical,CA:FALSE keyUsage=critical,digitalSignature"
+                + " extendedKeyUsage=serverAuth,clientAuth"
+                + " \"subjectAltName=$san,URI:spiffe://signaling/local-test-only/cell/c001/actor/$2-twin\""
+                + " >\"$w/ext\"",
+            "openssl req -new -config \"$ca/openssl.cnf\" -key \"$d/leaf.key\""
+                + " -subj \"/O=LOCAL_TEST_ONLY/CN=$2\" -out \"$w/csr\" 2>/dev/null",
+            "openssl x509 -req -in \"$w/csr\" -CA \"$ca/workload.crt\" -CAkey \"$ca/workload.key\""
+                + " -set_serial 0x7e57 -days 1 -sha256 -extfile \"$w/ext\" -out \"$w/leaf.crt\" 2>/dev/null",
+            "test \"$(openssl x509 -in \"$w/leaf.crt\" -noout -ext subjectAltName | grep -o 'URI:' | wc -l)\" -eq 2",
+            "rm -f \"$d/leaf.crt\"; mv \"$w/leaf.crt\" \"$d/leaf.crt\"; rm -rf \"$w\""),
+        "two-uri-sans",
+        tree.toString(),
+        service);
+    var env = environment(tree, service);
+    assertThat(LocalRuntimeContract.load(env)).isNotNull();
+    var process = new LinkedHashMap<String, String>(launchExports(tree, service));
+    assertThatThrownBy(() -> ComposeContractProbe.installActor(env, process::get))
+        .isInstanceOfSatisfying(
+            LocalRuntimeFailure.class,
+            failure -> {
+              assertThat(failure.role()).isEqualTo(LocalRuntimeFailure.Role.IDENTITY);
+              assertThat(failure.category())
+                  .isEqualTo(LocalRuntimeFailure.Category.IDENTITY_MISMATCH);
+            });
   }
 
   // ------------------------------------------------------------------------- loading
@@ -433,6 +490,16 @@ class ComposeRenderedContractsTest {
   /** Runs a command from the repository root; its output (file names only) is kept on failure. */
   private static void exec(Map<String, String> environment, String... command) throws Exception {
     var builder = new ProcessBuilder(command).directory(repo.toFile()).redirectErrorStream(true);
+    // The children see only what this test sets: no inherited override of the topology, the
+    // defaults, the volume, the identity key or the provisioner/renderer knobs.
+    builder
+        .environment()
+        .keySet()
+        .removeIf(
+            name ->
+                INHERITED_OVERRIDES.contains(name)
+                    || name.startsWith("PROVISION_")
+                    || name.startsWith("RENDER_"));
     builder.environment().putAll(environment);
     var log = Files.createTempFile(temp, "exec", ".log");
     builder.redirectOutput(log.toFile());
