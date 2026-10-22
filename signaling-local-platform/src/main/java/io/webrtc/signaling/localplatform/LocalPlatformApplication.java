@@ -186,6 +186,11 @@ public final class LocalPlatformApplication {
    * Starts the platform with injected clocks. The monotonic and wall suppliers feed the host clock
    * observer, and the wall supplier is also the clock of the reports and pages, so a test can step
    * the wall clock of a running platform. Production uses {@link #start(LocalPlatformConfig)}.
+   *
+   * <p>TEST seam, not a production hook: it exists so that an integration test in another module
+   * can step the clocks of an in-process platform. Nothing in the process or its configuration
+   * reaches it; the real entry point always passes {@code System::nanoTime} and {@code
+   * Instant::now}.
    */
   public static Running start(
       LocalPlatformConfig config, LongSupplier mono, Supplier<Instant> wall) {
