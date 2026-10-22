@@ -106,6 +106,24 @@ class SourceSignerTest {
   }
 
   @Test
+  void aFileFarAboveTheCapIsRefusedWithoutBeingReadWhole() throws Exception {
+    // Sparse 3 GiB file: reading it whole cannot succeed in a JVM array, so the cap must apply
+    // while reading, not after.
+    Path sparse = dir.resolve("sparse.pem");
+    try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(sparse.toFile(), "rw")) {
+      file.setLength(3L << 30);
+    }
+
+    assertThatThrownBy(() -> SourceSigner.load(sparse, "local-source"))
+        .isInstanceOfSatisfying(
+            LocalPlatformFailure.class,
+            failure -> {
+              assertThat(failure.category()).isEqualTo(LocalPlatformFailure.Category.KEY);
+              assertThat(failure.getCause()).isNull();
+            });
+  }
+
+  @Test
   void keyIdMustSatisfyBothClockAndRevocationPatterns() throws Exception {
     Path file = TestKeys.writePkcs8Pem(dir, "key.pem", TestKeys.generate("Ed25519"));
     // Valid for the clock pattern only (dot, colon) or too long for the revocation pattern.

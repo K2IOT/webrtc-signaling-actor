@@ -133,8 +133,6 @@ final class SourceHandler implements HttpHandler {
       return Outcome.json(Responses.OK, pages.body(peer.cell(), offset));
     } catch (RevocationLog.CursorAhead ahead) {
       throw new Refusal(Responses.CONFLICT);
-    } catch (IllegalArgumentException invalid) {
-      throw new Refusal(Responses.BAD_REQUEST);
     }
   }
 

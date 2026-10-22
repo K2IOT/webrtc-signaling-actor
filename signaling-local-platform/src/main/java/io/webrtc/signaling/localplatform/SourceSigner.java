@@ -2,7 +2,6 @@ package io.webrtc.signaling.localplatform;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
@@ -14,6 +13,7 @@ import java.security.interfaces.EdECPrivateKey;
 import java.security.interfaces.EdECPublicKey;
 import java.security.spec.NamedParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
@@ -60,13 +60,14 @@ public final class SourceSigner {
     if (keyId == null || !KEY_ID.matcher(keyId).matches() || pkcs8PemFile == null) {
       throw keyFailure();
     }
+    byte[] file = null;
+    byte[] body = null;
+    byte[] der = null;
     try {
-      byte[] file = Files.readAllBytes(pkcs8PemFile);
-      if (file.length == 0 || file.length > MAX_FILE_BYTES) {
-        throw keyFailure();
-      }
-      byte[] der =
-          Base64.getMimeDecoder().decode(pemBody(new String(file, StandardCharsets.US_ASCII)));
+      // The cap applies while reading: a huge file or a stream is never read to the end.
+      file = SecretFiles.readBounded(pkcs8PemFile, MAX_FILE_BYTES);
+      body = pemBody(file);
+      der = Base64.getMimeDecoder().decode(body);
       PrivateKey privateKey =
           KeyFactory.getInstance("Ed25519").generatePrivate(new PKCS8EncodedKeySpec(der));
       if (!(privateKey instanceof EdECPrivateKey edKey)
@@ -80,6 +81,10 @@ public final class SourceSigner {
       throw failure;
     } catch (IOException | GeneralSecurityException | RuntimeException invalid) {
       throw keyFailure();
+    } finally {
+      zero(file);
+      zero(body);
+      zero(der);
     }
   }
 
@@ -149,12 +154,37 @@ public final class SourceSigner {
     }
   }
 
-  private static String pemBody(String pem) {
-    String text = pem.strip();
-    if (!text.startsWith(BEGIN) || !text.endsWith(END)) {
+  /**
+   * The Base64 text between the PEM markers, as a new array the caller clears. The file must start
+   * and end with the markers once ASCII white space at both ends is ignored.
+   */
+  private static byte[] pemBody(byte[] file) {
+    int from = 0;
+    int to = file.length;
+    while (from < to && isWhitespace(file[from])) {
+      from++;
+    }
+    while (to > from && isWhitespace(file[to - 1])) {
+      to--;
+    }
+    byte[] begin = BEGIN.getBytes(StandardCharsets.US_ASCII);
+    byte[] end = END.getBytes(StandardCharsets.US_ASCII);
+    if (to - from < begin.length + end.length
+        || !Arrays.equals(file, from, from + begin.length, begin, 0, begin.length)
+        || !Arrays.equals(file, to - end.length, to, end, 0, end.length)) {
       throw keyFailure();
     }
-    return text.substring(BEGIN.length(), text.length() - END.length());
+    return Arrays.copyOfRange(file, from + begin.length, to - end.length);
+  }
+
+  private static boolean isWhitespace(byte b) {
+    return b == ' ' || b == '\n' || b == '\r' || b == '\t';
+  }
+
+  private static void zero(byte[] bytes) {
+    if (bytes != null) {
+      Arrays.fill(bytes, (byte) 0);
+    }
   }
 
   private static LocalPlatformFailure keyFailure() {

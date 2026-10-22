@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.webrtc.signaling.auth.ClockSafetyMonitor;
 import java.time.Clock;
 import java.time.Instant;
@@ -62,7 +63,7 @@ public final class ClockReportService {
 
   private static final ObjectMapper JSON =
       new ObjectMapper()
-          .findAndRegisterModules()
+          .registerModule(new JavaTimeModule())
           .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
   private final SourceSigner signer;

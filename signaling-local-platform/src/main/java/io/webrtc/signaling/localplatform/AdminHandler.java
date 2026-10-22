@@ -110,7 +110,8 @@ final class AdminHandler implements HttpHandler {
       return Outcome.json(Responses.CREATED, JSON.writeValueAsString(result));
     } catch (RevocationLog.EpochConflict conflict) {
       throw new Refusal(Responses.CONFLICT);
-    } catch (IllegalArgumentException | NullPointerException invalid) {
+    } catch (IllegalArgumentException invalid) {
+      // The log's own input validation (user id, jti, epoch bounds).
       throw new Refusal(Responses.BAD_REQUEST);
     } catch (JsonProcessingException unexpected) {
       throw new Refusal(Responses.UNAVAILABLE);

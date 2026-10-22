@@ -710,6 +710,70 @@ class SourceServerIT {
     }
   }
 
+  @Test
+  void serviceBugsAreServerFaultsButTheLogsOwnInputValidationIsStill400() throws Exception {
+    SourceHandler source =
+        new SourceHandler(
+            Set.of("cell-a"),
+            new BootRegistry(),
+            registration -> "{}",
+            (cell, from) -> {
+              throw new IllegalArgumentException("TEST_ONLY bug in the page service");
+            });
+    try (Served served = serve(source)) {
+      Reply page =
+          tls(
+              served.port(),
+              TestPki.context(actorA, serverCa),
+              get("/v1/revocations", ids(UUID.randomUUID()), offset("0")));
+      assertThat(page.status()).isEqualTo(503);
+      assertThat(page.body()).isEmpty();
+    }
+
+    RevocationLog nullPointer =
+        new RevocationLog() {
+          @Override
+          public Appended append(String userId, String jtiOrNull, java.util.OptionalLong epoch) {
+            throw new NullPointerException("TEST_ONLY bug in the log");
+          }
+
+          @Override
+          public Snapshot read(long from, int limit) {
+            throw new IllegalStateException();
+          }
+        };
+    RevocationLog invalidInput =
+        new RevocationLog() {
+          @Override
+          public Appended append(String userId, String jtiOrNull, java.util.OptionalLong epoch) {
+            throw new IllegalArgumentException();
+          }
+
+          @Override
+          public Snapshot read(long from, int limit) {
+            throw new IllegalStateException();
+          }
+        };
+    try (Served served = serveAdmin(new AdminHandler(nullPointer))) {
+      Reply reply =
+          tls(
+              served.port(),
+              TestPki.context(admin, serverCa),
+              adminRequest("{\"userId\":\"alice\"}"));
+      assertThat(reply.status()).isEqualTo(503);
+      assertThat(reply.body()).isEmpty();
+    }
+    try (Served served = serveAdmin(new AdminHandler(invalidInput))) {
+      Reply reply =
+          tls(
+              served.port(),
+              TestPki.context(admin, serverCa),
+              adminRequest("{\"userId\":\"alice\"}"));
+      assertThat(reply.status()).isEqualTo(400);
+      assertThat(reply.body()).isEmpty();
+    }
+  }
+
   // --- helpers --------------------------------------------------------------------------------
 
   private record Reply(int status, Map<String, List<String>> headers, byte[] body, int rawLength) {
