@@ -193,7 +193,7 @@ stage1() {
   cp "$CA_DIR/admin.crt" "$d/admin-ca.crt"
   cp "$CA_DIR/db.crt" "$d/db-ca.crt"
   write_secret "$d/platform.pass" "$(rand_hex 24)"
-  issue_leaf workload "local-platform" "DNS:local-platform.signaling.local,IP:$(ip_of local-platform shared)" \
+  issue_leaf workload "local-platform" "DNS:local-platform.${DOMAIN:?},IP:$(ip_of local-platform shared)" \
     "$tmp/platform.key" "$tmp/platform.crt"
   make_keystore "$tmp/platform.key" "$tmp/platform.crt" "$CA_DIR/workload.crt" platform "$d/platform.pass" "$d/platform.p12"
   rm -f "$tmp/platform.key" "$tmp/platform.crt"

@@ -99,6 +99,8 @@ other_fixed_values() {
   assert_eq "172.30.2.101" "$PG_C002_PRIMARY_IP" "PG_C002_PRIMARY_IP"
   assert_eq "172.30.2.102" "$PG_C002_STANDBY_IP" "PG_C002_STANDBY_IP"
   assert_eq "8443:9443:9443:9444:8559" "$RPC_PORT:$RELAY_PORT:$SOURCE_PORT:$ADMIN_PORT:$HEALTH_PORT" "ports"
+  assert_eq "5432:443" "$PG_PORT:$KUBE_API_PORT" "PostgreSQL and kube-API ports"
+  assert_eq "signaling.local" "$DOMAIN" "DOMAIN"
   assert_eq "8443:8444:8445:8081" "$GATEWAY_PUBLISH_C001:$GATEWAY_PUBLISH_C002:$CONTROL_PUBLISH:$IDENTITY_PUBLISH" "published ports"
   assert_eq "gw-c001-a:gw-c002-a" "$GATEWAY_ID_C001:$GATEWAY_ID_C002" "gateway ids"
   assert_eq "wsa-c001:wsa-c002" "$KUBE_C001_NAMESPACE:$KUBE_C002_NAMESPACE" "namespaces"
@@ -107,10 +109,13 @@ other_fixed_values() {
   assert_eq "http://identity.signaling.local:8081" "$ISSUER" "ISSUER"
   assert_eq "webrtc-signaling" "$AUDIENCE" "AUDIENCE"
   local v
-  for v in CLUSTER_FINGERPRINT_C001 CLUSTER_FINGERPRINT_C002 EXECUTABLE_ID; do
+  for v in CLUSTER_FINGERPRINT EXECUTABLE_ID; do
     assert_true "$v is 64 lower-case hex" bash -c '[[ "$1" =~ ^[0-9a-f]{64}$ ]]' _ "${!v}"
   done
-  assert_true "cluster fingerprints differ" test "$CLUSTER_FINGERPRINT_C001" != "$CLUSTER_FINGERPRINT_C002"
+  # One fingerprint for both cells (cross-cell compatibility gates compare it for equality).
+  assert_eq "$(printf 'TEST_ONLY_COMPOSE_CLUSTER_FINGERPRINT' | sha256sum | cut -d' ' -f1)" "$CLUSTER_FINGERPRINT" \
+    "CLUSTER_FINGERPRINT follows its documented derivation"
+  assert_eq "unset:unset" "${CLUSTER_FINGERPRINT_C001-unset}:${CLUSTER_FINGERPRINT_C002-unset}" "no per-cell fingerprints"
   # Task 6 fills the account ids; they must stay unset here
   assert_eq "unset" "${ACCOUNT_ADMIN_USER_ID-unset}" "ACCOUNT_ADMIN_USER_ID unset"
   assert_eq "unset" "${ACCOUNT_MOD_USER_ID-unset}" "ACCOUNT_MOD_USER_ID unset"

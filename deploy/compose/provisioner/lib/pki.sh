@@ -148,16 +148,16 @@ workload_san() {
   case "$svc" in
     actor-*)
       cell="$(cell_of_service "$svc")"
-      printf 'URI:%s/cell/%s/actor/%s,DNS:actor.%s.signaling.local,IP:%s,IP:%s' \
-        "$SPIFFE_PREFIX" "$cell" "$svc" "$cell" "$(ip_of "$svc" shared)" "$(ip_of "$svc" cell)"
+      printf 'URI:%s/cell/%s/actor/%s,DNS:actor.%s.%s,IP:%s,IP:%s' \
+        "$SPIFFE_PREFIX" "$cell" "$svc" "$cell" "${DOMAIN:?}" "$(ip_of "$svc" shared)" "$(ip_of "$svc" cell)"
       ;;
     gateway-*)
       cell="$(cell_of_service "$svc")"
       cu="$(upper "$cell")"
       gid_var="GATEWAY_ID_$cu"
       host_var="HOSTNAME_$cu"
-      printf 'URI:%s/cell/%s/gateway/%s,DNS:gateway.%s.signaling.local,DNS:%s,IP:%s' \
-        "$SPIFFE_PREFIX" "$cell" "${!gid_var}" "$cell" "${!host_var}" "$(ip_of "$svc" shared)"
+      printf 'URI:%s/cell/%s/gateway/%s,DNS:gateway.%s.%s,DNS:%s,IP:%s' \
+        "$SPIFFE_PREFIX" "$cell" "${!gid_var}" "$cell" "${DOMAIN:?}" "${!host_var}" "$(ip_of "$svc" shared)"
       ;;
     control)
       # control's home cell is c001 (its process profile names c001, spec 4.6)
