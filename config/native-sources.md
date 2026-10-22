@@ -701,7 +701,8 @@ host clock discipline, high availability, production readiness or capacity.
 ### Start and configuration
 
 - `SIGNALING_LOCAL_ACKNOWLEDGEMENT=LOCAL_TEST_ONLY` is required before anything else is read.
-  `SIGNALING_IDENTITY_ISSUER` (the issuer carried by signed events) and `SIGNALING_PLATFORM_CONFIG`
+  `SIGNALING_IDENTITY_ISSUER` (the issuer carried by signed events; it must satisfy the session key
+  rules: non-blank, no edge whitespace, no control characters, at most 512 bytes, otherwise `IDENTITY`) and `SIGNALING_PLATFORM_CONFIG`
   (absolute path of a strict JSON file, at most 64 KiB) follow. There is no default for any of them.
 - A refusal prints exactly one line to stderr, `LOCAL_PLATFORM_REJECTED <CATEGORY>`, and exits 1. The
   categories are `ACKNOWLEDGEMENT`, `CONFIG`, `IDENTITY`, `KEY`, `TLS` and `DATABASE`. No path, value,
@@ -710,15 +711,21 @@ host clock discipline, high availability, production readiness or capacity.
 - The configuration has exactly these keys; unknown, duplicate or missing keys, trailing content and
   relative paths are `CONFIG`:
   - `cells`: object of 1 to 8 cell names (`[a-z][a-z0-9-]{0,23}`) to a storage epoch (integer >= 1).
-  - `keyId`: key identifier of the proof signature (no whitespace, 1 to 128 characters).
+  - `keyId`: key identifier of the proof signature, `[A-Za-z0-9_-]{1,64}` (the signer's pattern, the
+    stricter of the two consumer patterns).
   - `signingKey`: absolute path of the Ed25519 private key (PKCS#8). The process only signs; it never
     needs or derives the public key. Provisioning publishes the public half to the consumers.
-  - `source`, `admin`: `bind` (an IP literal, not a wildcard address), `port` (1 to 65535),
+  - `source`, `admin`: `bind` (a strict dotted-quad IPv4 address, four decimal octets 0-255 without
+    leading zeros, or an IPv6 literal; never a name, a short form such as `127.1`, or a wildcard
+    address; no name lookup takes place), `port` (1 to 65535),
     `keystore` (PKCS12 with exactly one private-key entry), `keystorePasswordFile`, `clientTrust`
     (PEM bundle of 1 to 16 CA certificates).
   - `health`: `bind`, `port`.
-  - `database`: `jdbcUrl` (must start with `jdbc:postgresql://`), `user`, `passwordFile`. Passwords come
-    from files, never from the environment.
+  - `database`: `jdbcUrl` (must start with `jdbc:postgresql://`; its query may only carry `sslmode`,
+    `sslrootcert`, `sslcert`, `sslkey`, `connectTimeout`, `socketTimeout` and `ApplicationName`, each at
+    most once with a value, so no `password` and no driver parameter that instantiates a class such
+    as `socketFactory`), `user`, `passwordFile`. Passwords come from files, never from the
+    environment.
 - Conventional ports (compose chooses them): source 9443, admin 9444, health 8559.
 
 ### Listeners and caller identity

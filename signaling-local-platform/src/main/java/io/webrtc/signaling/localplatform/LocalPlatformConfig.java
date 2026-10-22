@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import io.webrtc.signaling.protocol.Identity.SessionKey;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -16,6 +17,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -35,8 +37,27 @@ public final class LocalPlatformConfig {
   private static final Duration CLOCK_VALIDITY = Duration.ofSeconds(2);
   private static final int MAX_CELLS = 8;
   private static final Pattern CELL_NAME = Pattern.compile("[a-z][a-z0-9-]{0,23}");
-  private static final Pattern KEY_ID = Pattern.compile("\\S{1,128}");
-  private static final Pattern IP_LITERAL = Pattern.compile("[0-9a-fA-F:.]{2,45}");
+  // Same pattern as the signer (SourceSigner), which also satisfies both consumer patterns.
+  private static final Pattern KEY_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+  private static final String OCTET = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])";
+  private static final Pattern IPV4 = Pattern.compile(OCTET + "(?:\\." + OCTET + "){3}");
+  private static final Pattern IPV6_CHARS = Pattern.compile("[0-9a-fA-F:.]{2,45}");
+  private static final String JDBC_PREFIX = "jdbc:postgresql://";
+
+  /**
+   * The only driver properties a URL may carry. Anything else (credentials, and the pgjdbc
+   * parameters that instantiate a configured class) is refused.
+   */
+  private static final Set<String> JDBC_PARAMETERS =
+      Set.of(
+          "sslmode",
+          "sslrootcert",
+          "sslcert",
+          "sslkey",
+          "connectTimeout",
+          "socketTimeout",
+          "ApplicationName");
+
   private static final long MAX_CONFIG_BYTES = 64 * 1024;
   private static final ObjectMapper MAPPER =
       JsonMapper.builder()
@@ -104,7 +125,7 @@ public final class LocalPlatformConfig {
       throw failure(LocalPlatformFailure.Category.ACKNOWLEDGEMENT);
     }
     String issuer = env.get(ENV_ISSUER);
-    if (issuer == null || issuer.isBlank() || issuer.contains("${")) {
+    if (issuer == null || issuer.isBlank() || issuer.contains("${") || !boundedIssuer(issuer)) {
       throw failure(LocalPlatformFailure.Category.IDENTITY);
     }
     try {
@@ -113,6 +134,16 @@ public final class LocalPlatformConfig {
       throw failure;
     } catch (IOException | RuntimeException invalid) {
       throw failure(LocalPlatformFailure.Category.CONFIG);
+    }
+  }
+
+  /** The issuer must be accepted by the session key rules the events and the verifier apply. */
+  private static boolean boundedIssuer(String issuer) {
+    try {
+      new SessionKey(issuer, "x");
+      return true;
+    } catch (RuntimeException invalid) {
+      return false;
     }
   }
 
@@ -255,10 +286,40 @@ public final class LocalPlatformConfig {
   private static Database database(JsonNode node) {
     requireKeys(node, Set.of("jdbcUrl", "user", "passwordFile"));
     String jdbcUrl = text(node, "jdbcUrl");
-    if (!jdbcUrl.startsWith("jdbc:postgresql://") || jdbcUrl.contains("${")) {
+    if (!jdbcUrl.startsWith(JDBC_PREFIX) || jdbcUrl.contains("${") || !allowedQuery(jdbcUrl)) {
       throw failure(LocalPlatformFailure.Category.CONFIG);
     }
     return new Database(jdbcUrl, text(node, "user"), absolutePath(text(node, "passwordFile")));
+  }
+
+  /**
+   * Checks the query part of a JDBC URL: each parameter is {@code name=value} with a non-empty
+   * value, appears once and is on the allow-list. This keeps credentials out of the URL and keeps
+   * the driver from instantiating a class named in it (the {@code password}, {@code *factory} and
+   * {@code *classname} parameters are not on the list).
+   */
+  private static boolean allowedQuery(String jdbcUrl) {
+    int mark = jdbcUrl.indexOf('?');
+    if (mark < 0) {
+      return true;
+    }
+    Set<String> seen = new HashSet<>();
+    for (String parameter : jdbcUrl.substring(mark + 1).split("&", -1)) {
+      int equals = parameter.indexOf('=');
+      if (equals < 1 || equals == parameter.length() - 1) {
+        return false;
+      }
+      String name = parameter.substring(0, equals);
+      String lower = name.toLowerCase(Locale.ROOT);
+      if (lower.equals("password")
+          || lower.contains("factory")
+          || lower.contains("classname")
+          || !JDBC_PARAMETERS.contains(name)
+          || !seen.add(name)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static JsonNode object(JsonNode parent, String key) {
@@ -300,13 +361,22 @@ public final class LocalPlatformConfig {
     return node.asInt();
   }
 
+  /**
+   * A strict dotted-quad IPv4 address (four decimal octets, no leading zeros, no short or hex
+   * forms) or an IPv6 literal. Neither path can reach a name lookup: IPv4 is turned into bytes
+   * here, and an IPv6 candidate is handed over in brackets, which the JDK only accepts as a
+   * literal.
+   */
   private static InetAddress bind(String literal) {
-    if (!IP_LITERAL.matcher(literal).matches()) {
-      throw failure(LocalPlatformFailure.Category.CONFIG);
-    }
     try {
-      // Only IP literals reach this point, so no name resolution takes place.
-      InetAddress address = InetAddress.getByName(literal);
+      InetAddress address;
+      if (IPV4.matcher(literal).matches()) {
+        address = InetAddress.getByAddress(ipv4Bytes(literal));
+      } else if (literal.indexOf(':') >= 0 && IPV6_CHARS.matcher(literal).matches()) {
+        address = InetAddress.getByName("[" + literal + "]");
+      } else {
+        throw failure(LocalPlatformFailure.Category.CONFIG);
+      }
       if (address.isAnyLocalAddress()) {
         throw failure(LocalPlatformFailure.Category.CONFIG);
       }
@@ -314,6 +384,15 @@ public final class LocalPlatformConfig {
     } catch (UnknownHostException invalid) {
       throw failure(LocalPlatformFailure.Category.CONFIG);
     }
+  }
+
+  private static byte[] ipv4Bytes(String dottedQuad) {
+    String[] octets = dottedQuad.split("\\.");
+    byte[] bytes = new byte[4];
+    for (int i = 0; i < 4; i++) {
+      bytes[i] = (byte) Integer.parseInt(octets[i]);
+    }
+    return bytes;
   }
 
   private static Path absolutePath(String value) {

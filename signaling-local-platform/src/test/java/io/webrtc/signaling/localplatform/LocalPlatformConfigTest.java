@@ -139,6 +139,46 @@ class LocalPlatformConfigTest {
   }
 
   @Test
+  void hexOnlyHostnamesAreRejectedWithoutNameResolution() throws IOException {
+    for (String hostname : new String[] {"face", "cafe", "dead", "beef", "abc", "ab:cd", "1:2:3"}) {
+      assertConfigRejected(VALID.replace("192.0.2.10", hostname));
+    }
+  }
+
+  @Test
+  void legacyAndMalformedIpv4FormsAreRejected() throws IOException {
+    for (String legacy :
+        new String[] {
+          "127.1",
+          "1.2.3",
+          "0x7f.0.0.1",
+          "2130706433",
+          "01.2.3.4",
+          "192.0.2.256",
+          "1.2.3.4.5",
+          "1.2.3.-4",
+          "1..3.4",
+          "1.2.3.4.",
+          ".1.2.3.4"
+        }) {
+      assertConfigRejected(VALID.replace("192.0.2.10", legacy));
+    }
+  }
+
+  @Test
+  void strictIpv4AndIpv6LiteralsAreAccepted() throws IOException {
+    LocalPlatformConfig v4 =
+        LocalPlatformConfig.load(env(VALID.replace("192.0.2.10", "255.0.0.1")));
+    assertThat(v4.source().bind()).isEqualTo(InetAddress.getByName("255.0.0.1"));
+    LocalPlatformConfig v6 =
+        LocalPlatformConfig.load(env(VALID.replace("192.0.2.10", "2001:db8::1")));
+    assertThat(v6.source().bind()).isEqualTo(InetAddress.getByName("2001:db8::1"));
+    LocalPlatformConfig loopback =
+        LocalPlatformConfig.load(env(VALID.replace("192.0.2.10", "::1")));
+    assertThat(loopback.source().bind().isLoopbackAddress()).isTrue();
+  }
+
+  @Test
   void unknownKeyIsRejected() throws IOException {
     assertConfigRejected(VALID.replace("\"keyId\"", "\"extra\": 1, \"keyId\""));
     assertConfigRejected(VALID.replace("\"port\": 9445", "\"port\": 9445, \"extra\": true"));
@@ -216,6 +256,71 @@ class LocalPlatformConfigTest {
     assertConfigRejected(VALID.replace("TEST_ONLY-key-1", " "));
     assertConfigRejected(VALID.replace("test_only_user", ""));
     assertConfigRejected(VALID.replace("jdbc:postgresql://192.0.2.20:5432/test_only", "mysql://x"));
+  }
+
+  @Test
+  void keyIdMustMatchTheSignersPattern() throws IOException {
+    for (String bad :
+        new String[] {"a.b", "a:b", "a b", "ké", "a/b", "x".repeat(65), "a\\u0001b"}) {
+      assertConfigRejected(VALID.replace("TEST_ONLY-key-1", bad));
+    }
+    String longest = "k".repeat(64);
+    assertThat(LocalPlatformConfig.load(env(VALID.replace("TEST_ONLY-key-1", longest))).keyId())
+        .isEqualTo(longest);
+    assertThat(LocalPlatformConfig.load(env(VALID.replace("TEST_ONLY-key-1", "A_z-9"))).keyId())
+        .isEqualTo("A_z-9");
+  }
+
+  @Test
+  void issuerRejectedByTheSessionKeyRulesIsAnIdentityFailure() throws IOException {
+    for (String bad :
+        new String[] {
+          " https://issuer.test-only.invalid",
+          "https://issuer.test-only.invalid ",
+          "https://issuer\u0007.test-only.invalid",
+          "https://" + "i".repeat(520)
+        }) {
+      Map<String, String> env = env(VALID);
+      env.put("SIGNALING_IDENTITY_ISSUER", bad);
+      assertRejected(env, LocalPlatformFailure.Category.IDENTITY);
+    }
+    Map<String, String> longestAllowed = env(VALID);
+    longestAllowed.put("SIGNALING_IDENTITY_ISSUER", "i".repeat(512));
+    assertThat(LocalPlatformConfig.load(longestAllowed).issuer()).hasSize(512);
+  }
+
+  @Test
+  void jdbcUrlAllowsOnlyTheListedQueryParameters() throws IOException {
+    String base = "jdbc:postgresql://192.0.2.20:5432/test_only";
+    for (String good :
+        new String[] {
+          "?sslmode=verify-full&sslrootcert=/run/test-only/ca.crt",
+          "?sslmode=disable",
+          "?sslcert=/c.crt&sslkey=/c.key&connectTimeout=5&socketTimeout=10&ApplicationName=x"
+        }) {
+      assertThat(
+              LocalPlatformConfig.load(env(VALID.replace(base, base + good))).database().jdbcUrl())
+          .isEqualTo(base + good);
+    }
+    for (String bad :
+        new String[] {
+          "?password=secret",
+          "?PassWord=secret",
+          "?sslmode=disable&password=x",
+          "?socketFactory=org.example.Evil&socketFactoryArg=x",
+          "?sslfactory=org.example.Evil",
+          "?authenticationPluginClassName=org.example.Evil",
+          "?sslpasswordcallback=org.example.Evil",
+          "?loggerLevel=TRACE",
+          "?user=other",
+          "?sslmode=disable&sslmode=require",
+          "?sslmode",
+          "?sslmode=",
+          "?&sslmode=disable",
+          "?"
+        }) {
+      assertConfigRejected(VALID.replace(base, base + bad));
+    }
   }
 
   @Test
