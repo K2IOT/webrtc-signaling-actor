@@ -241,10 +241,15 @@ describe('fake kube-API', { skip }, () => {
     await assert.rejects(health(hp));
   });
 
-  test('refuses_tls_below_1_3', () => withServer({}, async (_s, port) => {
-    await assert.rejects(call(port, { tls: { maxVersion: 'TLSv1.2' } }));
-    const ok = await call(port, { tls: { minVersion: 'TLSv1.3' } });
-    assert.equal(ok.status, 200);
+  // The Pekko Kubernetes discovery client of the actors offers TLS 1.2 only (pekko-discovery-
+  // kubernetes-api reference.conf: tls-version = "TLSv1.2"), as a real API server accepts; a
+  // 1.3-only fake refused every discovery with protocol_version (Task 10 acceptance run).
+  test('serves_tls_1_2_and_1_3_and_refuses_below_1_2', () => withServer({}, async (_s, port) => {
+    await assert.rejects(call(port, { tls: { minVersion: 'TLSv1', maxVersion: 'TLSv1.1' } }));
+    const tls12 = await call(port, { tls: { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' } });
+    assert.equal(tls12.status, 200);
+    const tls13 = await call(port, { tls: { minVersion: 'TLSv1.3' } });
+    assert.equal(tls13.status, 200);
   }));
 
   test('refuses_a_client_that_does_not_trust_the_kube_ca', () => withServer({}, async (_s, port) => {

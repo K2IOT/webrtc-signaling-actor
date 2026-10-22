@@ -136,8 +136,10 @@ export async function start(env, opts = {}) {
   let ready = false;
   let api;
   try {
+    // TLS 1.2 floor like a real API server: the actors' Pekko discovery client offers TLSv1.2 only
+    // (pekko-discovery-kubernetes-api tls-version default), so a 1.3-only server refuses it.
     api = bound(createHttps(
-      { cert: cfg.cert, key: cfg.key, minVersion: 'TLSv1.3', maxHeaderSize: 8192 },
+      { cert: cfg.cert, key: cfg.key, minVersion: 'TLSv1.2', maxHeaderSize: 8192 },
       apiHandler(cfg),
     ));
   } catch {
