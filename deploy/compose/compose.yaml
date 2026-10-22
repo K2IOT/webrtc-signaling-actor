@@ -1,0 +1,559 @@
+# deploy/compose/compose.yaml -- two cells of webrtc-signaling on one host.
+# LOCAL_TEST_ONLY / NOT_QUALIFIED: no claim of production readiness or capacity.
+#
+# Always used with both env files (interpolation only; nothing from them enters a container
+# unless named below):
+#   docker compose --env-file deploy/compose/topology.env --env-file deploy/compose/.env \
+#     -f deploy/compose/compose.yaml up -d
+# Every address, port, id and name comes from topology.env (`${KEY:?}` fails closed when a key is
+# missing); images and JVM options from .env (copied from .env.example). Spec:
+# docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md (sections 3, 4.2, 5, 6).
+#
+# Start order (spec 6): provision-1 (stage 1: PKI, passwords, pod ids, PG mounts) -> the five
+# PostgreSQL servers (healthy) -> provision-2 (stage 2: Flyway, seed, WAL facts, contracts) ->
+# kube-api-c001/c002, local-platform, identity (healthy) -> the twelve actors at once (none
+# depends on another: the 30 s start-up gate counts from process start) -> gateway-<cell> after
+# its cell's six actors are ready, control after all twelve.
+#
+# Secrets never appear here: services read them from their own read-only subpath of the `run`
+# volume (launch.sh exports the remoting store passwords on actors). The only literal passwords
+# are the two committed TEST_ONLY identity accounts. deploy/compose/lint/compose_lint.py checks
+# all of this; run it after every change.
+
+name: signaling-compose-local
+
+# --- shared fragments ------------------------------------------------------------------------
+
+# HTTP probe for healthchecks (JRE and node images have no curl): bash -c <this> probe IP PORT PATH
+# opens /dev/tcp/IP/PORT, sends GET PATH and succeeds only on a "HTTP/1.x 200" status line.
+x-http-probe: &http-probe |-
+  exec 3<>"/dev/tcp/$$1/$$2" || exit 1
+  printf 'GET %s HTTP/1.0\r\nHost: %s\r\n\r\n' "$$3" "$$1" >&3
+  IFS= read -r -t 4 status <&3 || exit 1
+  case "$$status" in "HTTP/1."[01]" 200"*) exit 0 ;; esac
+  exit 1
+
+x-health-timing: &health-timing
+  interval: 5s
+  timeout: 5s
+  retries: 24
+  start_period: 90s
+  start_interval: 2s
+
+# Every non-PostgreSQL, non-provisioner service: UID 10001, read-only root, no capabilities.
+x-hardened: &hardened
+  user: "10001:10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=128m,noexec,nosuid"]
+
+# Spec 4.2 environment of every plane; per service add SPRING_PROFILES_ACTIVE, SIGNALING_CELL_ID
+# (and SIGNALING_FORMATION_PROFILE on actors). SIGNALING_POD_UID, SIGNALING_KUBE_API_HOST/PORT and
+# the remoting passwords come from the rendered launch.sh, never from here.
+x-plane-env: &plane-env
+  SIGNALING_DEPLOYMENT_MODE: local-minikube
+  SIGNALING_LOCAL_ACKNOWLEDGEMENT: LOCAL_TEST_ONLY
+  SIGNALING_NATIVE_PROVIDER_CONTRACT: /run/signaling/provider.json
+  SIGNALING_LOCAL_PROCESS_PROFILE: /run/signaling/process.json
+  SIGNALING_RUNTIME_CONTRACT: /run/signaling/runtime.yaml
+  SIGNALING_CLUSTER_FINGERPRINT: ${CLUSTER_FINGERPRINT:?topology.env}
+  SIGNALING_IDENTITY_ISSUER: ${ISSUER:?topology.env}
+  SIGNALING_IDENTITY_AUDIENCE: ${AUDIENCE:?topology.env}
+  JVM_OPTS: ${JVM_OPTS:?.env}
+
+x-actor-c001-env: &actor-c001-env
+  <<: *plane-env
+  SPRING_PROFILES_ACTIVE: actor
+  SIGNALING_CELL_ID: c001
+  SIGNALING_FORMATION_PROFILE: initial-six
+
+x-actor-c002-env: &actor-c002-env
+  <<: *plane-env
+  SPRING_PROFILES_ACTIVE: actor
+  SIGNALING_CELL_ID: c002
+  SIGNALING_FORMATION_PROFILE: initial-six
+
+# The 15 planes run signaling-app through the rendered launch.sh of their mount.
+x-plane: &plane
+  <<: *hardened
+  image: ${APP_IMAGE:?.env}
+  entrypoint: ["bash", "/run/signaling/launch.sh"]
+  restart: on-failure:5
+  stop_grace_period: 90s
+
+x-actor-c001: &actor-c001
+  <<: *plane
+  environment: *actor-c001-env
+  depends_on: &actor-c001-deps
+    provision-2: {condition: service_completed_successfully}
+    kube-api-c001: {condition: service_healthy}
+    local-platform: {condition: service_healthy}
+
+x-actor-c002: &actor-c002
+  <<: *plane
+  environment: *actor-c002-env
+  depends_on:
+    provision-2: {condition: service_completed_successfully}
+    kube-api-c002: {condition: service_healthy}
+    local-platform: {condition: service_healthy}
+
+x-pg: &pg
+  image: ${POSTGRES_IMAGE:?.env}
+  # Mirrors start_pg() of provisioner/tests/test_db.sh (the lint compares them). Starts as root:
+  # start.sh installs the mount files for uid 999, then the image's entrypoint drops to postgres.
+  entrypoint: ["bash", "/run/signaling/start.sh"]
+  environment:
+    POSTGRES_USER: signaling_owner
+    POSTGRES_PASSWORD_FILE: /run/signaling/owner.pass
+  read_only: true
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+  security_opt: ["no-new-privileges:true"]
+  restart: on-failure:5
+  stop_grace_period: 30s
+  # primaries and pg-directory initialise a cluster: they also need the initdb.d tmpfs
+  tmpfs: &pg-init-tmpfs [/tmp, /var/run/postgresql, /run/pgtls, /docker-entrypoint-initdb.d]
+
+x-provisioner: &provisioner
+  image: ${PROVISIONER_IMAGE:?.env}
+  # Root only to chown the run volume root:10001; nothing else.
+  user: "0:0"
+  read_only: true
+  cap_drop: [ALL]
+  cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=128m,nosuid"]
+  restart: "no"
+  environment:
+    RUN_ROOT: /run/signaling-src
+  volumes:
+    - {type: volume, source: run, target: /run/signaling-src}
+
+services:
+  # --- provisioning ----------------------------------------------------------------------------
+
+  provision-1:
+    <<: *provisioner
+    # --if-needed: `up` starts the exited one-shot again; a completed stage is skipped.
+    command: [provision.sh, stage1, --if-needed]
+    network_mode: none
+
+  provision-2:
+    <<: *provisioner
+    command: [provision.sh, stage2, --if-needed]
+    networks: {net-c001: {}, net-c002: {}, net-shared: {}}
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+      pg-c001-primary: {condition: service_healthy}
+      pg-c001-standby: {condition: service_healthy}
+      pg-c002-primary: {condition: service_healthy}
+      pg-c002-standby: {condition: service_healthy}
+      pg-directory: {condition: service_healthy}
+
+  # --- PostgreSQL ------------------------------------------------------------------------------
+
+  pg-c001-primary:
+    <<: *pg
+    networks: {net-c001: {ipv4_address: "${PG_C001_PRIMARY_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: pg-c001-primary}}
+      - {type: volume, source: pgdata-pg-c001-primary, target: /var/lib/postgresql/data}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, pg_isready, -q, -h, "${PG_C001_PRIMARY_IP}", -p, "${PG_PORT:?topology.env}", -t, "4"]
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+
+  pg-c001-standby:
+    <<: *pg
+    tmpfs: [/tmp, /var/run/postgresql, /run/pgtls]
+    networks: {net-c001: {ipv4_address: "${PG_C001_STANDBY_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: pg-c001-standby}}
+      - {type: volume, source: pgdata-pg-c001-standby, target: /var/lib/postgresql/data}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, pg_isready, -q, -h, "${PG_C001_STANDBY_IP}", -p, "${PG_PORT}", -t, "4"]
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+      pg-c001-primary: {condition: service_healthy}
+
+  pg-c002-primary:
+    <<: *pg
+    networks: {net-c002: {ipv4_address: "${PG_C002_PRIMARY_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: pg-c002-primary}}
+      - {type: volume, source: pgdata-pg-c002-primary, target: /var/lib/postgresql/data}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, pg_isready, -q, -h, "${PG_C002_PRIMARY_IP}", -p, "${PG_PORT}", -t, "4"]
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+
+  pg-c002-standby:
+    <<: *pg
+    tmpfs: [/tmp, /var/run/postgresql, /run/pgtls]
+    networks: {net-c002: {ipv4_address: "${PG_C002_STANDBY_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: pg-c002-standby}}
+      - {type: volume, source: pgdata-pg-c002-standby, target: /var/lib/postgresql/data}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, pg_isready, -q, -h, "${PG_C002_STANDBY_IP}", -p, "${PG_PORT}", -t, "4"]
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+      pg-c002-primary: {condition: service_healthy}
+
+  pg-directory:
+    <<: *pg
+    networks: {net-shared: {ipv4_address: "${PG_DIRECTORY_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: pg-directory}}
+      - {type: volume, source: pgdata-pg-directory, target: /var/lib/postgresql/data}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, pg_isready, -q, -h, "${PG_DIRECTORY_IP}", -p, "${PG_PORT}", -t, "4"]
+    depends_on:
+      provision-1: {condition: service_completed_successfully}
+
+  # --- platform services -----------------------------------------------------------------------
+
+  kube-api-c001:
+    <<: *hardened
+    image: ${KUBE_API_IMAGE:?.env}
+    restart: on-failure:5
+    environment:
+      KUBE_CELL: c001
+      KUBE_NAMESPACE: ${KUBE_C001_NAMESPACE:?topology.env}
+      KUBE_POD_IPS: "${ACTOR_C001_1_CELL_IP},${ACTOR_C001_2_CELL_IP},${ACTOR_C001_3_CELL_IP},${ACTOR_C001_4_CELL_IP},${ACTOR_C001_5_CELL_IP},${ACTOR_C001_6_CELL_IP}"
+      KUBE_TOKEN_FILE: /run/signaling/kube-token
+      KUBE_TLS_CERT: /run/signaling/kube-api.crt
+      KUBE_TLS_KEY: /run/signaling/kube-api.key
+      KUBE_LISTEN: ${KUBE_C001_IP:?topology.env}
+      KUBE_HEALTH_LISTEN: ${KUBE_C001_IP}
+      KUBE_PORT: ${KUBE_API_PORT:?topology.env}
+      KUBE_HEALTH_PORT: ${HEALTH_PORT:?topology.env}
+    networks: {net-c001: {ipv4_address: "${KUBE_C001_IP}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: kube-api-c001}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${KUBE_C001_IP}", "${HEALTH_PORT}", /healthz]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+
+  kube-api-c002:
+    <<: *hardened
+    image: ${KUBE_API_IMAGE}
+    restart: on-failure:5
+    environment:
+      KUBE_CELL: c002
+      KUBE_NAMESPACE: ${KUBE_C002_NAMESPACE:?topology.env}
+      KUBE_POD_IPS: "${ACTOR_C002_1_CELL_IP},${ACTOR_C002_2_CELL_IP},${ACTOR_C002_3_CELL_IP},${ACTOR_C002_4_CELL_IP},${ACTOR_C002_5_CELL_IP},${ACTOR_C002_6_CELL_IP}"
+      KUBE_TOKEN_FILE: /run/signaling/kube-token
+      KUBE_TLS_CERT: /run/signaling/kube-api.crt
+      KUBE_TLS_KEY: /run/signaling/kube-api.key
+      KUBE_LISTEN: ${KUBE_C002_IP:?topology.env}
+      KUBE_HEALTH_LISTEN: ${KUBE_C002_IP}
+      KUBE_PORT: ${KUBE_API_PORT}
+      KUBE_HEALTH_PORT: ${HEALTH_PORT}
+    networks: {net-c002: {ipv4_address: "${KUBE_C002_IP}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: kube-api-c002}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${KUBE_C002_IP}", "${HEALTH_PORT}", /healthz]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+
+  local-platform:
+    <<: *hardened
+    image: ${PLATFORM_IMAGE:?.env}
+    restart: on-failure:5
+    environment:
+      SIGNALING_LOCAL_ACKNOWLEDGEMENT: LOCAL_TEST_ONLY
+      SIGNALING_IDENTITY_ISSUER: ${ISSUER}
+      SIGNALING_PLATFORM_CONFIG: /run/signaling/platform.json
+      JDK_JAVA_OPTIONS: ${JVM_OPTS}
+    networks: {net-shared: {ipv4_address: "${PLATFORM_IP:?topology.env}"}}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: local-platform}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${PLATFORM_IP}", "${HEALTH_PORT}", /ready]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+
+  identity:
+    <<: *hardened
+    image: ${IDENTITY_IMAGE:?.env}
+    restart: on-failure:5
+    environment:
+      SIGNALING_IDENTITY_ISSUER: ${ISSUER}
+      SIGNALING_IDENTITY_AUDIENCE: ${AUDIENCE}
+      # The committed TEST_ONLY accounts of signaling-identity. An env-supplied list replaces the
+      # whole yml list, so both accounts are repeated with the topology user ids (admin -> c001,
+      # mod -> c002; ComposeUserBucketsTest pins the mapping).
+      SIGNALING_IDENTITY_ACCOUNTS_0_USERNAME: admin
+      SIGNALING_IDENTITY_ACCOUNTS_0_PASSWORD: admin123
+      SIGNALING_IDENTITY_ACCOUNTS_0_USER_ID: ${ACCOUNT_ADMIN_USER_ID:?topology.env}
+      SIGNALING_IDENTITY_ACCOUNTS_1_USERNAME: mod
+      SIGNALING_IDENTITY_ACCOUNTS_1_PASSWORD: mod123
+      SIGNALING_IDENTITY_ACCOUNTS_1_USER_ID: ${ACCOUNT_MOD_USER_ID:?topology.env}
+      JDK_JAVA_OPTIONS: ${JVM_OPTS}
+    networks: {net-shared: {ipv4_address: "${IDENTITY_IP:?topology.env}"}}
+    ports: ["${PUBLISH_HOST:?topology.env}:${IDENTITY_PUBLISH:?topology.env}:8081"]
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${IDENTITY_IP}", "8081", /.well-known/jwks.json]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+
+  # --- cell c001 actors (net-c001 for Artery/management/DB/discovery, net-shared for RPC) ----
+
+  actor-c001-1:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_1_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_1_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-1}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_1_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c001-2:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_2_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_2_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-2}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_2_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c001-3:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_3_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_3_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-3}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_3_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c001-4:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_4_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_4_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-4}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_4_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c001-5:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_5_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_5_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-5}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_5_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c001-6:
+    <<: *actor-c001
+    networks:
+      net-c001: {ipv4_address: "${ACTOR_C001_6_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C001_6_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-6}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_6_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  # --- cell c002 actors ------------------------------------------------------------------------
+
+  actor-c002-1:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_1_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_1_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-1}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_1_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c002-2:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_2_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_2_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-2}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_2_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c002-3:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_3_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_3_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-3}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_3_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c002-4:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_4_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_4_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-4}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_4_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c002-5:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_5_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_5_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-5}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_5_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  actor-c002-6:
+    <<: *actor-c002
+    networks:
+      net-c002: {ipv4_address: "${ACTOR_C002_6_CELL_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${ACTOR_C002_6_SHARED_IP:?topology.env}"}
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-6}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_6_CELL_IP}", "${HEALTH_PORT}", /ready]
+
+  # --- gateways (pinned boot id per provision: never restarted) and control ------------------
+
+  gateway-c001:
+    <<: *plane
+    restart: "no"
+    environment:
+      <<: *plane-env
+      SPRING_PROFILES_ACTIVE: gateway
+      SIGNALING_CELL_ID: c001
+    networks: {net-shared: {ipv4_address: "${GATEWAY_C001_IP:?topology.env}"}}
+    ports: ["${PUBLISH_HOST}:${GATEWAY_PUBLISH_C001:?topology.env}:${RPC_PORT:?topology.env}"]
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: gateway-c001}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${GATEWAY_C001_IP}", "${HEALTH_PORT}", /ready]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+      local-platform: {condition: service_healthy}
+      actor-c001-1: {condition: service_healthy}
+      actor-c001-2: {condition: service_healthy}
+      actor-c001-3: {condition: service_healthy}
+      actor-c001-4: {condition: service_healthy}
+      actor-c001-5: {condition: service_healthy}
+      actor-c001-6: {condition: service_healthy}
+
+  gateway-c002:
+    <<: *plane
+    restart: "no"
+    environment:
+      <<: *plane-env
+      SPRING_PROFILES_ACTIVE: gateway
+      SIGNALING_CELL_ID: c002
+    networks: {net-shared: {ipv4_address: "${GATEWAY_C002_IP:?topology.env}"}}
+    ports: ["${PUBLISH_HOST}:${GATEWAY_PUBLISH_C002:?topology.env}:${RPC_PORT}"]
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: gateway-c002}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${GATEWAY_C002_IP}", "${HEALTH_PORT}", /ready]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+      local-platform: {condition: service_healthy}
+      actor-c002-1: {condition: service_healthy}
+      actor-c002-2: {condition: service_healthy}
+      actor-c002-3: {condition: service_healthy}
+      actor-c002-4: {condition: service_healthy}
+      actor-c002-5: {condition: service_healthy}
+      actor-c002-6: {condition: service_healthy}
+
+  control:
+    <<: *plane
+    environment:
+      <<: *plane-env
+      SPRING_PROFILES_ACTIVE: control
+      SIGNALING_CELL_ID: c001
+    # Both cell networks (the three PostgreSQL) and net-shared; pg-directory admits control only
+    # from CONTROL_IP.
+    networks:
+      net-c001: {ipv4_address: "${CONTROL_C001_IP:?topology.env}"}
+      net-c002: {ipv4_address: "${CONTROL_C002_IP:?topology.env}"}
+      net-shared: {ipv4_address: "${CONTROL_IP:?topology.env}"}
+    ports: ["${PUBLISH_HOST}:${CONTROL_PUBLISH:?topology.env}:${RPC_PORT}"]
+    volumes:
+      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: control}}
+    healthcheck:
+      <<: *health-timing
+      test: [CMD, bash, -c, *http-probe, probe, "${CONTROL_IP}", "${HEALTH_PORT}", /ready]
+    depends_on:
+      provision-2: {condition: service_completed_successfully}
+      local-platform: {condition: service_healthy}
+      actor-c001-1: {condition: service_healthy}
+      actor-c001-2: {condition: service_healthy}
+      actor-c001-3: {condition: service_healthy}
+      actor-c001-4: {condition: service_healthy}
+      actor-c001-5: {condition: service_healthy}
+      actor-c001-6: {condition: service_healthy}
+      actor-c002-1: {condition: service_healthy}
+      actor-c002-2: {condition: service_healthy}
+      actor-c002-3: {condition: service_healthy}
+      actor-c002-4: {condition: service_healthy}
+      actor-c002-5: {condition: service_healthy}
+      actor-c002-6: {condition: service_healthy}
+
+# --- networks and volumes ------------------------------------------------------------------------
+
+networks:
+  # Cell networks: Artery, management, cell PostgreSQL, discovery. Internal (no egress).
+  net-c001:
+    internal: true
+    ipam:
+      config: [{subnet: "${NET_C001:?topology.env}", ip_range: "${NET_C001_DYNAMIC:?topology.env}"}]
+  net-c002:
+    internal: true
+    ipam:
+      config: [{subnet: "${NET_C002:?topology.env}", ip_range: "${NET_C002_DYNAMIC:?topology.env}"}]
+  # RPC, relay, bootstrap, source, identity, pg-directory; a normal bridge because the published
+  # ports need it.
+  net-shared:
+    ipam:
+      config: [{subnet: "${NET_SHARED:?topology.env}", ip_range: "${NET_SHARED_DYNAMIC:?topology.env}"}]
+
+volumes:
+  # Stage-1/2 output; every service mounts only its own subpath, read-only. `docker compose down -v`
+  # (make reset) drops it together with the PostgreSQL data, which must go with it (passwords).
+  run: {}
+  pgdata-pg-c001-primary: {}
+  pgdata-pg-c001-standby: {}
+  pgdata-pg-c002-primary: {}
+  pgdata-pg-c002-standby: {}
+  pgdata-pg-directory: {}

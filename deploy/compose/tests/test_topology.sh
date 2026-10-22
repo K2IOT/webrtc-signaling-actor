@@ -123,6 +123,24 @@ other_fixed_values() {
   assert_true "account user ids are distinct" test "${ACCOUNT_ADMIN_USER_ID-}" != "${ACCOUNT_MOD_USER_ID-}"
 }
 
+dynamic_ranges_hold_no_static_address() {
+  assert_eq "127.0.0.1" "$PUBLISH_HOST" "PUBLISH_HOST is loopback"
+  local net key ip range
+  for net in C001 C002 SHARED; do
+    local subnet="NET_$net" dyn="NET_${net}_DYNAMIC"
+    range="${!dyn-}"
+    assert_true "$dyn is set" test -n "$range"
+    assert_true "$dyn=$range lies inside ${!subnet}" python3 -c \
+      'import ipaddress,sys; sys.exit(0 if ipaddress.ip_network(sys.argv[1]).subnet_of(ipaddress.ip_network(sys.argv[2])) else 1)' \
+      "$range" "${!subnet}"
+    while read -r key ip; do
+      assert_false "$key=$ip must lie outside the dynamic range $dyn" ip_in_cidr "$ip" "$range"
+    done < <(all_addresses)
+  done
+  # negative control: an address inside the range is detected
+  assert_true "172.30.0.200 is inside NET_SHARED_DYNAMIC" ip_in_cidr 172.30.0.200 "$NET_SHARED_DYNAMIC"
+}
+
 service_list_has_17_names() {
   local names n
   names="$(service_list)"
@@ -159,7 +177,7 @@ hosts_sh_prints_four_lines_and_writes_nothing() {
 }
 
 for t in all_addresses_unique every_address_inside_its_subnet kube_api_has_one_ip_per_cell_network \
-  actors_have_cell_and_shared_ips control_has_an_address_on_each_cell_network other_fixed_values service_list_has_17_names \
+  actors_have_cell_and_shared_ips control_has_an_address_on_each_cell_network other_fixed_values dynamic_ranges_hold_no_static_address service_list_has_17_names \
   hosts_sh_prints_four_lines_and_writes_nothing; do
   run_test "$t"
 done

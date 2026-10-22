@@ -7,3 +7,6 @@
 !signaling-storage/src/main/resources/db/migration
 !signaling-control-api/src/main/resources/db/directory/migration
 !config/production-defaults.yaml
+# The operator's local compose settings and lint caches never enter the image.
+deploy/compose/.env
+**/__pycache__

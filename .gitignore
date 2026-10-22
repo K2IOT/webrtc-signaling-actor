@@ -9,3 +9,6 @@
 
 # Python qualification tooling cache
 **/__pycache__/
+
+# Local compose settings (copied from deploy/compose/.env.example)
+deploy/compose/.env
