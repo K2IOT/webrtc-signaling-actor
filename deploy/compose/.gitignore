@@ -1,0 +1,4 @@
+# Local settings copied from .env.example by `make up` (never overwritten).
+.env
+# Host-side CA and admin client material exported for the smoke client (`make smoke-ca`).
+.smoke/
