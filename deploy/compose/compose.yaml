@@ -41,12 +41,15 @@ x-health-timing: &health-timing
   start_interval: 2s
 
 # Every non-PostgreSQL, non-provisioner service: UID 10001, read-only root, no capabilities.
+# /tmp is NOT noexec: the app extracts native libraries (netty epoll, lz4, lmdbjava/jnr-ffi,
+# agrona) into java.io.tmpdir; on a noexec mount they silently fall back to NIO/pure Java and
+# compose would exercise a different transport than the ITs and Kubernetes.
 x-hardened: &hardened
   user: "10001:10001"
   read_only: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  tmpfs: ["/tmp:size=128m,noexec,nosuid"]
+  tmpfs: ["/tmp:size=128m,nosuid"]
 
 # Spec 4.2 environment of every plane; per service add SPRING_PROFILES_ACTIVE, SIGNALING_CELL_ID
 # (and SIGNALING_FORMATION_PROFILE on actors). SIGNALING_POD_UID, SIGNALING_KUBE_API_HOST/PORT and

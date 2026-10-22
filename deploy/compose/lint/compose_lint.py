@@ -67,7 +67,9 @@ ROOT_SERVICES = {
     # Stage 1 sets root:10001 ownership on the files it writes into the run volume.
     **{s: {"CHOWN", "FOWNER", "DAC_OVERRIDE"} for s in PROVISIONERS},
 }
-JVM_TMPFS = "/tmp:size=128m,noexec,nosuid"
+# Not noexec: the JVMs extract native libraries (netty epoll, lz4, lmdbjava/jnr-ffi, agrona) to
+# java.io.tmpdir; noexec would make them fall back silently to a different transport.
+JVM_TMPFS = "/tmp:size=128m,nosuid"
 RUN_TARGET = "/run/signaling"
 PROVISIONER_RUN_ROOT = "/run/signaling-src"
 PG_DATA_TARGET = "/var/lib/postgresql/data"
@@ -289,7 +291,7 @@ def check_hardening(model: dict) -> list[str]:
         tmpfs = svc.get("tmpfs") or []
         if not any(t == "/tmp" or t.startswith("/tmp:") for t in tmpfs):
             p.append(f"{name}: needs a tmpfs at /tmp")
-        for key in ("privileged", "pid", "ipc", "userns_mode", "devices", "cap_add_all"):
+        for key in ("privileged", "pid", "ipc", "userns_mode", "devices"):
             if svc.get(key):
                 p.append(f"{name}: {key} is not allowed")
         if svc.get("network_mode") not in (None, "none"):
@@ -499,6 +501,8 @@ def check_start_order(model: dict) -> list[str]:
     want["provision-2"] = {"provision-1": done, **{s: healthy for s in PG_SERVICES}}
     for s in KUBE_APIS + ("local-platform", "identity"):
         want[s] = {"provision-2": done}
+    # Actors deliberately do NOT depend on identity: they never call it (the JWT public keys are
+    # static in the contract mount). Deviation from the Task 7 ruling, accepted in review.
     for a in ACTORS:
         want[a] = {"provision-2": done, f"kube-api-{_cell(a)}": healthy, "local-platform": healthy}
     for c in CELLS:
@@ -695,7 +699,13 @@ def expected_env(service: str, t: dict[str, str]) -> dict[str, str]:
 JVM_OPTION_KEY = {**{s: "JVM_OPTS" for s in PLANES}, "identity": "JDK_JAVA_OPTIONS", "local-platform": "JDK_JAVA_OPTIONS"}
 
 
-def check_environment(model: dict, t: dict[str, str]) -> list[str]:
+def env_example_jvm_opts(path: Path = ENV_EXAMPLE) -> str:
+    return parse_topology(path)["JVM_OPTS"]
+
+
+def check_environment(model: dict, t: dict[str, str], jvm_opts: str | None = None) -> list[str]:
+    """jvm_opts: the JVM_OPTS of .env.example (read from it when None)."""
+    jvm_opts = env_example_jvm_opts() if jvm_opts is None else jvm_opts
     p = []
     svcs = _services(model)
     for name in JVM_SERVICES:
@@ -704,8 +714,8 @@ def check_environment(model: dict, t: dict[str, str]) -> list[str]:
         env = {k: ("" if v is None else str(v)) for k, v in (svcs[name].get("environment") or {}).items()}
         want = expected_env(name, t)
         opt = JVM_OPTION_KEY[name]
-        if not env.get(opt):
-            p.append(f"{name}: {opt} must carry JVM_OPTS from .env")
+        if env.get(opt) != jvm_opts:
+            p.append(f"{name}: {opt} must be JVM_OPTS of .env.example ({jvm_opts!r}), got {env.get(opt)!r}")
         rest = {k: v for k, v in env.items() if k != opt}
         if rest != want:
             diff = sorted(set(rest.items()) ^ set(want.items()))
@@ -720,6 +730,33 @@ def _launch_exports(text: str) -> set[str]:
         if m:
             out.add(m.group(1))
     return out
+
+
+def check_kube_api_env(model: dict, t: dict[str, str]) -> list[str]:
+    """kube-api-<cell> serves exactly its own cell: a c001/c002 swap of any value fails."""
+    p = []
+    svcs = _services(model)
+    for c in CELLS:
+        name, C = f"kube-api-{c}", _upper(c)
+        if name not in svcs:
+            continue
+        want = {
+            "KUBE_CELL": c,
+            "KUBE_NAMESPACE": t[f"KUBE_{C}_NAMESPACE"],
+            "KUBE_POD_IPS": ",".join(t[f"ACTOR_{C}_{n}_CELL_IP"] for n in range(1, 7)),
+            "KUBE_TOKEN_FILE": f"{RUN_TARGET}/kube-token",
+            "KUBE_TLS_CERT": f"{RUN_TARGET}/kube-api.crt",
+            "KUBE_TLS_KEY": f"{RUN_TARGET}/kube-api.key",
+            "KUBE_LISTEN": t[f"KUBE_{C}_IP"],
+            "KUBE_HEALTH_LISTEN": t[f"KUBE_{C}_IP"],
+            "KUBE_PORT": t["KUBE_API_PORT"],
+            "KUBE_HEALTH_PORT": t["HEALTH_PORT"],
+        }
+        env = {k: ("" if v is None else str(v)) for k, v in (svcs[name].get("environment") or {}).items()}
+        if env != want:
+            diff = sorted(set(env.items()) ^ set(want.items()))
+            p.append(f"{name}: environment differs from the cell's topology values: {diff}")
+    return p
 
 
 def check_rendered_env(model: dict, rendered: Path) -> list[str]:
@@ -820,6 +857,7 @@ TOPOLOGY_CHECKS = (
     check_ports,
     check_healthchecks,
     check_environment,
+    check_kube_api_env,
 )
 
 
@@ -848,7 +886,13 @@ def main(argv: list[str]) -> int:
         if "--no-render" not in argv:
             missing = render_tools_missing()
             if missing:
-                print(f"compose_lint: env.list comparison skipped ({', '.join(missing)} missing)", file=sys.stderr)
+                if os.environ.get("CI"):
+                    print(f"compose_lint: FAIL {', '.join(missing)} missing and CI is set (env.list comparison)", file=sys.stderr)
+                    return 1
+                print(
+                    f"compose_lint: SKIP env.list comparison ({', '.join(missing)} missing); every other check runs",
+                    file=sys.stderr,
+                )
             else:
                 rendered = render_offline(Path(tmp))
         problems = lint(model, topology, rendered=rendered, test_db_text=TEST_DB.read_text())

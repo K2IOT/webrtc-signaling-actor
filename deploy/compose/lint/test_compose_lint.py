@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,6 +72,10 @@ class ComposeModel(unittest.TestCase):
         self.assertCaught(cl.check_hardening(m), "pg-directory: cap_add ['SYS_ADMIN']")
         m = mutated(lambda m: m["services"]["identity"].update(security_opt=[]))
         self.assertCaught(cl.check_hardening(m), "identity: security_opt")
+        # /tmp must stay exec-able for the JVMs' native libraries (netty epoll, lz4, ...)
+        self.assertNotIn("noexec", cl.JVM_TMPFS)
+        m = mutated(lambda m: m["services"]["actor-c001-1"].update(tmpfs=["/tmp:size=128m,noexec,nosuid"]))
+        self.assertCaught(cl.check_hardening(m), "actor-c001-1: tmpfs must be /tmp:size=128m,nosuid")
 
     def test_no_image_uses_latest_or_lacks_digest(self):
         self.assertClean(cl.check_images(MODEL))
@@ -171,6 +176,42 @@ class ComposeModel(unittest.TestCase):
         self.assertCaught(cl.check_rendered_env(m, RENDERED), "SIGNALING_KUBE_API_HOST is exported by launch.sh")
         m = mutated(lambda m: m["services"]["gateway-c001"]["environment"].pop("SIGNALING_CLUSTER_FINGERPRINT"))
         self.assertCaught(cl.check_rendered_env(m, RENDERED), "gateway-c001: SIGNALING_CLUSTER_FINGERPRINT=None")
+
+    def test_jvm_opts_come_from_env_example(self):
+        jvm_opts = cl.env_example_jvm_opts()
+        self.assertIn("-XX:+ExitOnOutOfMemoryError", jvm_opts)
+        self.assertEqual(jvm_opts, MODEL["services"]["actor-c001-1"]["environment"]["JVM_OPTS"])
+        self.assertEqual(jvm_opts, MODEL["services"]["identity"]["environment"]["JDK_JAVA_OPTIONS"])
+        m = mutated(lambda m: m["services"]["control"]["environment"].update(JVM_OPTS="-Xmx64m"))
+        self.assertCaught(cl.check_environment(m, TOPOLOGY), "control: JVM_OPTS must be JVM_OPTS of .env.example")
+        m = mutated(lambda m: m["services"]["local-platform"]["environment"].update(JDK_JAVA_OPTIONS="-Xmx2g"))
+        self.assertCaught(cl.check_environment(m, TOPOLOGY), "local-platform: JDK_JAVA_OPTIONS must be JVM_OPTS")
+
+    def test_kube_api_env_is_per_cell(self):
+        self.assertClean(cl.check_kube_api_env(MODEL, TOPOLOGY))
+        env1 = MODEL["services"]["kube-api-c001"]["environment"]
+        self.assertEqual("172.30.1.11,172.30.1.12,172.30.1.13,172.30.1.14,172.30.1.15,172.30.1.16", env1["KUBE_POD_IPS"])
+
+        def swap(key):
+            def fn(m):
+                a, b = m["services"]["kube-api-c001"]["environment"], m["services"]["kube-api-c002"]["environment"]
+                a[key], b[key] = b[key], a[key]
+            return fn
+
+        for key in ("KUBE_POD_IPS", "KUBE_LISTEN", "KUBE_HEALTH_LISTEN", "KUBE_NAMESPACE", "KUBE_CELL"):
+            problems = cl.check_kube_api_env(mutated(swap(key)), TOPOLOGY)
+            self.assertCaught(problems, "kube-api-c001: environment differs")
+            self.assertCaught(problems, "kube-api-c002: environment differs")
+        m = mutated(lambda m: m["services"]["kube-api-c002"]["environment"].update(KUBE_TOKEN_FILE="/run/signaling/kube-ca.crt"))
+        self.assertCaught(cl.check_kube_api_env(m, TOPOLOGY), "kube-api-c002: environment differs")
+
+    def test_cli_fails_under_ci_without_render_tools(self):
+        with mock.patch.object(cl, "render_tools_missing", return_value=["keytool"]):
+            with mock.patch.dict(os.environ, {"CI": "1"}):
+                self.assertEqual(1, cl.main([]))
+            env = {k: v for k, v in os.environ.items() if k != "CI"}
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(0, cl.main([]))
 
     def test_no_service_mounts_shared_or_ca(self):
         self.assertClean(cl.check_no_shared_or_ca(MODEL))
