@@ -1,0 +1,9 @@
+# Allow-list build context for deploy/compose/provisioner/Dockerfile (BuildKit picks this file up
+# automatically because it is named <Dockerfile>.dockerignore next to the Dockerfile). The
+# repository root .dockerignore belongs to the other images and is not used for this build.
+*
+!deploy/compose
+!signaling-identity/src/main/resources/keys/public.pem
+!signaling-storage/src/main/resources/db/migration
+!signaling-control-api/src/main/resources/db/directory/migration
+!config/production-defaults.yaml

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Runs every tests/test_*.sh; exits non-zero when any of them fails.
+# Runs every tests/test_*.sh and every <component>/tests/test_*.sh (for example
+# provisioner/tests); exits non-zero when any of them fails.
 # LOCAL_TEST_ONLY / NOT_QUALIFIED.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+compose="$(cd "$here/.." && pwd)"
 failed=0
 ran=0
-for t in "$here"/test_*.sh; do
+for t in "$compose"/tests/test_*.sh "$compose"/*/tests/test_*.sh; do
   [ -e "$t" ] || continue
   ran=$((ran + 1))
-  printf '== %s\n' "$(basename "$t")"
+  printf '== %s\n' "${t#"$compose"/}"
   if ! bash "$t"; then
     failed=$((failed + 1))
   fi
