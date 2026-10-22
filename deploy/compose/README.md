@@ -12,8 +12,8 @@ is not `LOCAL_QUALIFIED`. Spec: `docs/superpowers/specs/2026-10-21-docker-compos
 
 ## Requirements
 
-- Linux, Docker >= 29 with Compose >= 2.26, Java 21 and Node >= 20 on the host (Maven wrapper and
-  smoke client).
+- Linux, Docker Compose >= 2.26 (checked by `make up`), Java 21 and Node >= 20 on the host (Maven
+  wrapper and smoke client). Developed and tried only with Docker 29 and Compose 5.6.
 - At least 12 GiB of free RAM (an estimate; `PREFLIGHT_MIN_MEM_GIB` adjusts the floor) and a quiet
   CPU: the database deadlines are 500 ms to 2 s, so a busy host makes checkouts and commits fail.
   `make up` refuses at more than 0.7 load per core.
@@ -101,6 +101,8 @@ PostgreSQL containers, minutes). The smoke client's own tests need `npm ci` in `
 - `preflight: FAIL compose|memory|load|subnets|images ...`: one line each, naming the cause.
   `PREFLIGHT_SKIP=name1,name2` skips checks; `images` means run `make build`.
 - `guard: REFUSED ...`: run `make reset`, then `make up`.
+- A re-run `make up` on a stack whose 17 JVM services all run skips the memory and load checks (the
+  stack itself uses that RAM and CPU) and prints `PREFLIGHT_NOTE`; the other checks still run.
 - A service is unhealthy: `make up` prints its last log lines. Later:
   `docker compose -p signaling-compose-local logs <service>`.
 - Ports 8443 to 8445 or 8081 taken on the host: free them; the values live in `topology.env`.
