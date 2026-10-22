@@ -707,7 +707,8 @@ host clock discipline, high availability, production readiness or capacity.
 - A refusal prints exactly one line to stderr, `LOCAL_PLATFORM_REJECTED <CATEGORY>`, and exits 1. The
   categories are `ACKNOWLEDGEMENT`, `CONFIG`, `IDENTITY`, `KEY`, `TLS` and `DATABASE`. No path, value,
   message or stack trace is printed. A bind failure is `CONFIG`; an unreadable DB password or a
-  failed migration is `DATABASE`. The process prints nothing else on a successful start.
+  failed migration is `DATABASE`. The process prints nothing else on a successful start (the Flyway log, which would carry the JDBC URL, is
+  switched off explicitly).
 - The configuration has exactly these keys; unknown, duplicate or missing keys, trailing content and
   relative paths are `CONFIG`:
   - `cells`: object of 1 to 8 cell names (`[a-z][a-z0-9-]{0,23}`) to a storage epoch (integer >= 1).
@@ -839,6 +840,16 @@ The two source-plane requests are `GET` with no query and no body.
 - The boot replay window is bounded: only the last 8 replaced boots per pod are remembered, so an
   older boot is forgotten and can be replayed by the holder of the same identity. The pod table
   holds at most 4096 pods and is never reclaimed; a new pod beyond it gets 403.
+- All six actors of a cell may present one SPIFFE id (`.../cell/<cell>/actor`, no instance segment).
+  The boot registry keys on (identity, pod UID), so any actor of the cell can register a new boot for
+  a sibling's pod UID, after which the sibling's own boot is refused (403): an availability effect
+  only, since reports and pages stay signed per caller. For the same reason any enrolled peer can
+  fill the 4096-pod table with made-up pod UIDs and starve later pods. SP3 should issue per-pod
+  instance ids (`.../actor/<name>`) so that the instance segment separates the pods.
+- Recreating the `source` database while the cell databases keep their revocation cursors makes
+  every revocation page a 409 (the cell's cursor is above the new, empty log's high-water mark).
+  That is the intended fail-closed outcome; the cells must be reprovisioned (cursors reset) before
+  the sources are usable again.
 - One new database connection (with TLS and SCRAM when the JDBC URL and database require them) is
   opened per revocation page, per admin append and per readiness probe. There is no pool, and host
   load can exceed a consumer's connection deadline.
