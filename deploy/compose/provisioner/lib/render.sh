@@ -36,6 +36,12 @@ CONTAINER_MOUNT="/run/signaling"
 MARKER=".rendered"
 CELL_AZ_ROLES='["az-a","az-b"]'
 APP_JAR="/opt/signaling/app.jar"
+# Compose-level workaround (deploy/compose/ACCEPTANCE.md, iteration log): with no dialect configured,
+# Hibernate's dialect detection makes the JVM's first PostgreSQL connection (cold TLS + SCRAM,
+# 0.4-0.7 s measured on an idle host) a fatal startup step bounded by DbPools' fixed 500 ms
+# connectionTimeout. Naming the dialect Hibernate would detect for PostgreSQL turns a missed
+# metadata read into a warning; no deadline changes.
+HIBERNATE_DIALECT="hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect"
 
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 IP_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
@@ -370,8 +376,10 @@ launch_doc() {
         ;;
     esac
     printf '# JVM_OPTS is split into words on purpose; set -f keeps those words from globbing.\n'
+    printf '# hibernate.dialect (compose workaround, ACCEPTANCE.md): Hibernate otherwise needs the\n'
+    printf "# first, cold PostgreSQL TLS connection to pick the dialect, and DbPools bounds it by 500 ms.\n"
     printf 'set -f\n'
-    printf 'exec java $JVM_OPTS -jar %s\n' "$APP_JAR"
+    printf 'exec java $JVM_OPTS -D%s -jar %s\n' "$HIBERNATE_DIALECT" "$APP_JAR"
 }
 
 render_plane() {

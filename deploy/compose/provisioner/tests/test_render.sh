@@ -262,7 +262,8 @@ launch_scripts_export_only_what_they_must() {
   local s f
   for s in $(planes); do
     f="$RUN_ROOT/$s/launch.sh"
-    assert_eq "exec java \$JVM_OPTS -jar /opt/signaling/app.jar" "$(tail -n 1 "$f")" "$s launch.sh execs the app"
+    assert_eq "exec java \$JVM_OPTS -Dhibernate.dialect=org.hibernate.dialect.PostgreSQLDialect -jar /opt/signaling/app.jar" \
+      "$(tail -n 1 "$f")" "$s launch.sh execs the app with the fixed Hibernate dialect"
     assert_eq "set -f" "$(tail -n 2 "$f" | head -n 1)" "$s disables globbing right before the unquoted JVM_OPTS"
     assert_true "$s launch.sh is valid bash" bash -n "$f"
     case "$s" in
@@ -292,6 +293,10 @@ launch_script_runs_with_a_fake_java() {
   assert_true "jvm options are split into words" grep -qx -- '-Xmx1m' <<<"$out"
   assert_true "a glob in JVM_OPTS stays literal (set -f)" grep -qx -- '-Xglob\*' <<<"$out"
   assert_true "jar is passed" grep -qx -- '/opt/signaling/app.jar' <<<"$out"
+  # The dialect follows JVM_OPTS and precedes -jar, so it is a JVM system property, not an app arg.
+  assert_eq "-Dhibernate.dialect=org.hibernate.dialect.PostgreSQLDialect -jar" \
+    "$(grep -x -A1 -- '-Dhibernate.dialect=org.hibernate.dialect.PostgreSQLDialect' <<<"$out" | tr '\n' ' ' | sed 's/ $//')" \
+    "the Hibernate dialect is a system property before -jar"
   assert_true "keystore password exported" grep -qx "SIGNALING_REMOTING_KEYSTORE_PASSWORD=$(cat "$RUN_ROOT/$s/remoting.pass")" <<<"$out"
   assert_true "truststore password exported" grep -qx "SIGNALING_REMOTING_TRUSTSTORE_PASSWORD=$(cat "$RUN_ROOT/$s/remoting.pass")" <<<"$out"
   assert_true "kube port exported" grep -qx "SIGNALING_KUBE_API_PORT=443" <<<"$out"
