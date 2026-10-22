@@ -1,0 +1,72 @@
+{
+  "status": "TEST_ONLY / LOCAL_TEST_ONLY / NOT_QUALIFIED. Wire frames copied or derived from the Java sources named in each entry; never deployable values.",
+  "constants": {
+    "requestId": "ProtocolContractTest.request = 00000000-0000-4000-8000-000000000001",
+    "callId": "ProtocolContractTest.call = c017.e3.00000000-0000-4000-8000-000000000002"
+  },
+  "frames": [
+    {
+      "name": "auth",
+      "builder": "authFrame",
+      "args": ["abc"],
+      "source": "signaling-protocol ProtocolContractTest.invalidUtf8Frames (valid frame); same shape as LocalRuntimeCompositionIT.Wss AUTH and loadgen VirtualClient.authenticate",
+      "frame": {"v": 1, "type": "AUTH", "payload": {"token": "abc"}}
+    },
+    {
+      "name": "invite",
+      "builder": "inviteFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "targetUserId": "bob"}],
+      "source": "signaling-protocol ProtocolContractTest.frame(\"INVITE\", {\"targetUserId\":\"bob\"}); same shape as LocalRuntimeCompositionIT invite literal and loadgen ScenarioRunner.invite",
+      "frame": {"v": 1, "type": "INVITE", "requestId": "00000000-0000-4000-8000-000000000001", "payload": {"targetUserId": "bob"}}
+    },
+    {
+      "name": "accept",
+      "builder": "acceptFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002"}],
+      "source": "loadgen ScenarioRunner.frame RINGING -> send(\"ACCEPT\", null, null, {}) via sendForCall; ProtocolValidator default branch (empty payload, callId required)",
+      "frame": {"v": 1, "type": "ACCEPT", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "payload": {}}
+    },
+    {
+      "name": "negotiate",
+      "builder": "negotiateFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "iceRestart": false}],
+      "source": "loadgen ScenarioRunner.frame CALL_READY -> NEGOTIATE_REQUEST {\"iceRestart\":false}; ProtocolValidator NEGOTIATE_REQUEST branch",
+      "frame": {"v": 1, "type": "NEGOTIATE_REQUEST", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "payload": {"iceRestart": false}}
+    },
+    {
+      "name": "offer",
+      "builder": "offerFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "sdp": "v=0"}],
+      "source": "signaling-protocol ProtocolContractTest.preservesFullCounterPrecisionAndRejectsNumericWireCounters frame(\"OFFER\", {\"sdp\":\"v=0\"}) (counters are decimal strings; numeric counters are rejected)",
+      "frame": {"v": 1, "type": "OFFER", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "payload": {"sdp": "v=0"}}
+    },
+    {
+      "name": "answer",
+      "builder": "answerFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "sdp": "v=0"}],
+      "source": "derived from the OFFER frame: ProtocolValidator validates OFFER and ANSWER in one branch (case OFFER, ANSWER -> {sdp})",
+      "frame": {"v": 1, "type": "ANSWER", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "payload": {"sdp": "v=0"}}
+    },
+    {
+      "name": "ice",
+      "builder": "iceFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "startSequence": "1", "candidates": [{"candidate": "candidate", "sdpMid": "0", "sdpMLineIndex": 0, "usernameFragment": "ufrag"}]}],
+      "source": "signaling-protocol ProtocolContractTest.frame(\"ICE_CANDIDATES\", ice(1, \"candidate\"))",
+      "frame": {"v": 1, "type": "ICE_CANDIDATES", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "negotiationId": "1", "iceGeneration": "1", "payload": {"startSequence": "1", "candidates": [{"candidate": "candidate", "sdpMid": "0", "sdpMLineIndex": 0, "usernameFragment": "ufrag"}]}}
+    },
+    {
+      "name": "hangup",
+      "builder": "hangupFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002"}],
+      "source": "signaling-protocol ProtocolContractTest.derivesCallScopeFromImmutableRoutedCallId frame(\"HANGUP\", {}) without the optional negotiationId/iceGeneration, which native-client command() and loadgen ScenarioRunner HANGUP never send",
+      "frame": {"v": 1, "type": "HANGUP", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "payload": {}}
+    },
+    {
+      "name": "event-received",
+      "builder": "eventReceivedFrame",
+      "args": [{"requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "eventId": "00000000-0000-4000-8000-000000000003"}],
+      "source": "loadgen ScenarioRunner.ackEvent (EVENT_RECEIVED {eventId} with callId); ProtocolValidator EVENT_RECEIVED branch",
+      "frame": {"v": 1, "type": "EVENT_RECEIVED", "requestId": "00000000-0000-4000-8000-000000000001", "callId": "c017.e3.00000000-0000-4000-8000-000000000002", "payload": {"eventId": "00000000-0000-4000-8000-000000000003"}}
+    }
+  ]
+}

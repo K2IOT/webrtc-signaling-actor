@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs every tests/test_*.sh and every <component>/tests/test_*.sh (for example
 # provisioner/tests), plus the Node tests of kube-api when `node` is installed (built-ins only,
-# run as a file because `node --test <dir>` is not portable across Node majors), and the compose
-# lint tests (lint/test_*.py) when python3 and docker compose are installed; exits non-zero when
-# any of them fails.
+# run as a file because `node --test <dir>` is not portable across Node majors), the smoke client
+# tests (smoke/*.test.mjs, see below), and the compose lint tests (lint/test_*.py) when python3
+# and docker compose are installed; exits non-zero when any of them fails.
 # LOCAL_TEST_ONLY / NOT_QUALIFIED.
 set -euo pipefail
 
@@ -32,6 +32,31 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   printf '== kube-api/server.test.mjs\nSKIP (node not installed)\n'
+fi
+# Smoke client (smoke/): the wire builders need node only; the behaviour tests against the
+# in-process fakes also need the pinned `ws` from smoke/package-lock.json (npm ci, needs the
+# registry once) and openssl. Without node_modules and a working `npm ci`, they are skipped.
+smoke="$compose/smoke"
+if command -v node >/dev/null 2>&1; then
+  ran=$((ran + 1))
+  printf '== smoke/payloads.test.mjs\n'
+  if ! node --test "$smoke/payloads.test.mjs"; then
+    failed=$((failed + 1))
+  fi
+  if [ ! -d "$smoke/node_modules/ws" ] && command -v npm >/dev/null 2>&1; then
+    (cd "$smoke" && npm ci --ignore-scripts --no-audit --no-fund --prefer-offline >/dev/null 2>&1) || true
+  fi
+  if [ -d "$smoke/node_modules/ws" ]; then
+    ran=$((ran + 1))
+    printf '== smoke/smoke.test.mjs\n'
+    if ! node --test "$smoke/smoke.test.mjs"; then
+      failed=$((failed + 1))
+    fi
+  else
+    printf '== smoke/smoke.test.mjs\nSKIP (smoke/node_modules absent and npm ci failed; run npm ci in deploy/compose/smoke)\n'
+  fi
+else
+  printf '== smoke/*.test.mjs\nSKIP (node not installed)\n'
 fi
 # Compose model lint (python3 stdlib unittest over `docker compose config`; also renders an offline
 # tree into a temp dir to compare env.list). Needs python3 and docker compose; the module itself

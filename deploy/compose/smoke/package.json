@@ -1,0 +1,17 @@
+{
+  "name": "signaling-compose-smoke",
+  "private": true,
+  "version": "0.0.0",
+  "description": "LOCAL_TEST_ONLY / NOT_QUALIFIED cross-cell smoke test of the two-cell compose environment.",
+  "type": "module",
+  "main": "smoke.mjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "smoke": "node smoke.mjs",
+    "test": "node --test payloads.test.mjs smoke.test.mjs",
+    "emit-fixtures": "node payloads.mjs --emit-fixtures"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
+}
