@@ -3,6 +3,7 @@ package io.webrtc.signaling.localplatform;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsServer;
+import com.zaxxer.hikari.HikariDataSource;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
@@ -26,7 +27,6 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
-import javax.sql.DataSource;
 import org.postgresql.ds.PGSimpleDataSource;
 
 /**
@@ -99,7 +99,7 @@ public final class LocalPlatformApplication {
 
     /**
      * Stops the listeners (delay 0) and their executors, then the clock observer. The data source
-     * holds no pooled connection, so nothing remains open. Calling it again does nothing.
+     * closes the database pool last, so no connection remains open. Calling it again does nothing.
      */
     @Override
     public void close() {
@@ -208,14 +208,17 @@ public final class LocalPlatformApplication {
     SourceSigner signer = SourceSigner.load(config.signingKeyFile(), config.keyId());
     SSLContext sourceTls = TlsContexts.server(config.source());
     SSLContext adminTls = TlsContexts.server(config.admin());
-    DataSource dataSource = dataSource(config.database());
+    HikariDataSource dataSource = dataSource(config.database());
     try {
       JdbcRevocationLog.migrate(dataSource);
     } catch (RuntimeException unavailable) {
+      dataSource.close();
       throw new LocalPlatformFailure(LocalPlatformFailure.Category.DATABASE);
     }
 
     Deque<AutoCloseable> opened = new ArrayDeque<>();
+    // First pushed, so closed last: after the listeners that use it have stopped.
+    opened.push(dataSource);
     try {
       Clock clock = new SupplierClock(wall);
       HostClockObserver observer = new HostClockObserver(mono, wall, OBSERVER_INTERVAL);
@@ -298,9 +301,10 @@ public final class LocalPlatformApplication {
   }
 
   /**
-   * A non-pooling data source; the password is read from its file and only handed to the driver.
+   * The pooled data source; the password is read from its file and only handed to the driver.
+   * Closing the result closes every physical connection.
    */
-  private static DataSource dataSource(LocalPlatformConfig.Database database) {
+  private static HikariDataSource dataSource(LocalPlatformConfig.Database database) {
     char[] password = null;
     try {
       password = SecretFiles.readPassword(database.passwordFile());
@@ -312,7 +316,7 @@ public final class LocalPlatformApplication {
       dataSource.setLoginTimeout(DB_CONNECT_TIMEOUT_SECONDS);
       dataSource.setSocketTimeout(DB_SOCKET_TIMEOUT_SECONDS);
       dataSource.setApplicationName("signaling-local-platform");
-      return dataSource;
+      return SourcePool.wrap(dataSource, SourcePool.MAX_CONNECTIONS);
     } catch (IOException | RuntimeException invalid) {
       throw new LocalPlatformFailure(LocalPlatformFailure.Category.DATABASE);
     } finally {

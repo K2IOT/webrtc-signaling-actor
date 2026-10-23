@@ -863,7 +863,12 @@ The two source-plane requests are `GET` with no query and no body.
   every revocation page a 409 (the cell's cursor is above the new, empty log's high-water mark).
   That is the intended fail-closed outcome; the cells must be reprovisioned (cursors reset) before
   the sources are usable again.
-- One new database connection (with TLS and SCRAM when the JDBC URL and database require them) is
-  opened per revocation page, per admin append and per readiness probe. There is no pool, and host
-  load can exceed a consumer's connection deadline.
+- The source's database access goes through a bounded pool of at most 7 connections (one per
+  listener thread: 4 source, 2 admin, 1 health), so a revocation page, an admin append and a
+  readiness probe reuse connections instead of opening one each. Measured before the pool: 33.6 new
+  sessions per second and about 2.5 cores of local-platform and `pg-directory` at idle in the
+  compose stack. A connection used within the last 500 ms is not liveness-checked, so after a
+  PostgreSQL restart a few requests can fail once before the dead connection is evicted, and
+  `/ready` proves that a query answers on an open connection, not that a fresh login would work.
+  Host load can still exceed a consumer's connection deadline.
 - `retiredKeys` is always empty: no key retirement is modelled.
