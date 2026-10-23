@@ -7,18 +7,21 @@ directory PostgreSQL, identity service and local platform (clock and revocation 
 
 **Status: `LOCAL_TEST_ONLY`, release `NOT_QUALIFIED`.** Nothing here is evidence of production
 readiness, high availability, host clock discipline, N-1 upgrade behaviour or any capacity figure.
-The acceptance run of this environment (spec section 9, `acceptance.sh`) FAILED on a 16-core host:
-the actors' idle CPU saturates it (see [ACCEPTANCE.md](ACCEPTANCE.md)); the environment is not
-`LOCAL_QUALIFIED`. Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
+The acceptance run of this environment (spec section 9, `acceptance.sh`) still FAILED on a shared
+16-core host after the idle-CPU defect in the recovery sweep was fixed: an idle actor now costs
+about 0.5 to 0.7 core (it was 0.7 to 1.4), the stack about 10 cores, and that is still too much
+next to a busy desktop (see [ACCEPTANCE.md](ACCEPTANCE.md)); the environment is not `LOCAL_QUALIFIED`.
+Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
 
 ## Requirements
 
 - Linux, Docker Compose >= 2.26 (checked by `make up`), Java 21 and Node >= 20 on the host (Maven
   wrapper and smoke client). Developed and tried only with Docker 29 and Compose 5.6.
-- At least 12 GiB of free RAM (measured 7.3-8.7 GiB in use; `PREFLIGHT_MIN_MEM_GIB` adjusts the
-  floor) and far more free CPU than the preflight checks: the idle stack used about 13 cores of a
-  16-core host (ACCEPTANCE.md), and the database and source deadlines (500 ms to 2 s) then fail.
-  `make up` refuses at more than 0.7 load per core.
+- At least 12 GiB of free RAM (measured 7.3 to 8.7 GiB in use; `PREFLIGHT_MIN_MEM_GIB` adjusts the
+  floor) and far more free CPU than the preflight checks: the idle stack used about 10 cores of a
+  16-core host (ACCEPTANCE.md; 12.9 before the recovery-sweep fix), and with about 5 cores taken by
+  other work the source and database deadlines (500 ms to 2 s) were missed and readiness failed. Plan
+  for about 12 free cores. `make up` refuses at more than 0.7 load per core.
 - Free Docker subnets `172.30.0.0/24`, `172.30.1.0/24`, `172.30.2.0/24`.
 - 26 containers: 17 JVM (15 plane JVMs: 12 actors, 2 gateways, control; plus identity and
   local-platform), 5 PostgreSQL (`pg-<cell>-primary`, `pg-<cell>-standby`, `pg-directory`), 2 fake

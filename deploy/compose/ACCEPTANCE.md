@@ -1,17 +1,24 @@
 # Acceptance run of the two-cell compose environment
 
-**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance FAILED, BLOCKED by a product CPU defect on
-this host.** The environment is **not** `LOCAL_QUALIFIED`. Nothing here says anything about
-production, HA, fencing, N-1 or any capacity figure.
+**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED** after the product CPU
+defect was fixed in `fb249e7`. The fix roughly halves the idle cost of an actor, but on this shared
+16-core host the stack still leaves too little CPU for the safety sources to stay fresh. The
+environment is **not** `LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing,
+N-1 or any capacity figure.
 
-- Date: 2026-10-22/23 (UTC). Commits run: `6ab9a40` (first run) to `05bf35d` (last runs); the
+- Dates: 2026-10-22/23 (UTC). First run (before the fix): commits `6ab9a40` to `05bf35d`. Run after
+  the fix: commit `fb249e7` (`fix(rpc): read the recovery safety gate once per sweep`); the
   automation is `deploy/compose/acceptance.sh`.
-- Host: Linux x86_64, 16 cores, 32 GiB RAM (about 24 GiB available), Docker 29.9.2, Compose
-  v5.6.0, Java 21, Node 24. The host was shared: other containers and desktop/agent processes kept a
-  baseline load average of about 4 (2 to 3 busy cores) before every run.
+- Host: Linux x86_64, 16 cores, 32 GiB RAM, Docker 29.9.2, Compose v5.6.0, Java 21, Node 24. The
+  host was shared and busy: the desktop session alone (gnome-shell, IDE, agent processes) took
+  about 5 to 6 cores, and the baseline load average was 8 to 12 before every run. Another attempt
+  was refused by `make up`'s own load guard (load 12 against the limit of 11.2: not skipped), and a
+  host reboot killed one run mid-way; both were discarded and the stack was torn down and re-run
+  from scratch.
 - Images (`make build`, Maven offline, `SOURCE_COMMIT` label): `signaling-app:local` 623 MB,
   `signaling-identity:local` 445 MB, `signaling-local-platform:local` 513 MB,
-  `signaling-kube-api:local` 326 MB, `signaling-provisioner:local` 1.15 GB.
+  `signaling-kube-api:local` 326 MB, `signaling-provisioner:local` 1.15 GB. Only `signaling-app`
+  changed for the fix; the other images came from the Docker layer cache.
 
 ## Commands
 
@@ -26,7 +33,90 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
-## Results per criterion (spec section 9)
+## Run after the fix (`fb249e7`): 31 PASS, 8 FAIL
+
+One full run, `ACCEPTANCE_KEEP_UP=1 bash deploy/compose/acceptance.sh`, from a fresh
+`make down; make up`. `make up` reached all-healthy in 302 s (24 of 24 services, 12 of 12 actors;
+before the fix 1 of 4 attempts did). Then:
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **FAIL** | `make up` PASS, all-healthy PASS, twelve actors PASS, but `/ready` 200 on **0 of 15** planes (503 on all), `local-platform` 200. |
+| 2 | **FAIL** | smoke: step 1 login passed, step 2 `bootstrap admin: HTTP 401`. |
+| 3a | **PARTIAL** | PASS: `docker stop actor-c001-6`, the five other actors, gateway and control `/ready` 200 (86 s after the 10 s settle), restart healthy in 108 s, `/ready` 200 on 3 of 3. FAIL: smoke with one actor down (`AUTH_FRESHNESS_UNKNOWN`), smoke after restart (`HTTP 401`). |
+| 3b | **PARTIAL** | PASS: with `pg-c001-standby` stopped the smoke does not commit an INVITE, `synchronous_standby_names` unchanged (`ANY 1 ("standby-c001")`), 2 backends waiting on `SyncRep`, `call_state` rows 0; standby healthy 5 s after start, `sync_state=quorum` 2 s later. FAIL: c001 planes `/ready` 200 not reached within 120 s after quorum; smoke after (`HTTP 401`). The smoke failed at step 3 (before the INVITE), so "the INVITE fails closed" is still not isolated from the general overload. |
+| 4 | **PARTIAL** | PASS (exit 1, no stack frames, no secret-looking line): missing contract 23 s (`LOCAL_RUNTIME_REJECTED` `contract` / `MISSING`), foreign SPIFFE id 29 s (`IDENTITY_MISMATCH`), malformed fingerprint 17 s (`INVALID`); empty mount 14 s (`CONFIGURATION_REJECTED`, 22 stack frames without values). **FAIL, unchanged:** a well-formed wrong fingerprint is not refused at startup; the container exits 1 after 67 s with the generic `STARTUP_FAILED`. INFO: a sibling's leaf, 55 s, `STARTUP_FAILED`. |
+| 5 | not run here | The SP1/SP2 ITs. Separately, after the fix: `LocalRuntimeCompositionIT` 5 of 5 on the second run (the first run failed 4 of 5 with `actor exited 1` / `STARTUP_FAILED` at host load about 9: a load-sensitive start-up, not reproduced) and unit suites green except the known flaky `CallActorStateMachineTest.restoresDurableTimerWithoutClientTraffic`. Network isolation probe: **PASS** (c001 reaches its own PostgreSQL, not the c002 Artery, management, PostgreSQL or kube-API addresses or the shared Artery address; only `control` reaches both cell primaries). |
+| 6 | **PASS** | No private-key body added since `c6370f8` (16 at HEAD, pre-existing TEST_ONLY fixtures), 0 long secret literals added, no stray key files; 44 secret values of the run found 0 times in `docker inspect` env; 3,086,768 log lines: 0 secret values, 0 JWTs, 0 test-account passwords; app, identity and local-platform images labelled `NOT_QUALIFIED`. |
+
+**Passed twice in a row: no** (not once). A second run was not made: the first failed for a
+reason (host CPU contention, below) that a repeat on this host does not change.
+
+### Root cause of the CPU defect, with numbers
+
+`CallRecoveryService.sweepTracked` calls the `groups` supplier `NativeActorComposition
+.recoveryGroups()` every 100 ms. That method called `local(group)` for each of the 1024 recovery
+groups outside the host's static share, and `local()` re-reads the whole safety gate
+(`readiness.safetyReady()` -> `NativeActorSafetySources.liveSafety()` ->
+`NativeCompatibility.actorReady()`: six `permits()` calls, each rebuilding the cluster membership
+and re-parsing every peer's roles). Measured in isolation with a real 6-member cluster:
+`permits()` 131 µs, `actorReady()` about 0.79 ms, so about 1000 gate reads cost about **0.79 s of
+CPU per sweep**, repeating 100 ms after the previous sweep ends: about 0.9 core per idle actor,
+which matches the 0.7 to 1.4 cores observed. The cost grows with groups x cluster members.
+
+Fix (`fb249e7`): `RecoveryGroupSelector` reads the gate once per selection (closed gate, self not
+Up, or no members still give an empty set) and then only asks whether a lease grant is held, which
+still checks the trusted clock and lease expiry. The selection is a scheduling hint; every wake
+still re-checks the full gate and group grant at the actor and in the database. `local(int)`
+(209 dependents) is unchanged. Cadence, deadlines and compatibility checks are unchanged.
+
+### CPU before and after
+
+Per-container CPU in cores (cgroup `usage_usec`), stack idle:
+
+| Setting | Actors (each) | Compose total | Note |
+|---|---|---|---|
+| before, 12 actors | 0.69 to 0.87 | 12.85 to 12.90 | host busy 15.4 to 15.6 of 16 |
+| before, one cell (6 actors) | **1.32 to 1.41** | not measured | |
+| **after, 12 actors, 20 s window** | 0.53 to 0.95 (mean 0.64) | 11.55 | host load 78 to 100 |
+| **after, 12 actors, harness 30 s window** | mean 0.51, max 0.63 | **10.03** | host busy 15.37 of 16; PSI some avg10 80 % |
+| **after, one cell (c002 side stopped)** | **0.66 to 0.71** | not measured | pg-c001-primary 1.50, local-platform 1.34, pg-directory 0.73 |
+
+The like-for-like figure is the one-cell row: 1.32 to 1.41 before, 0.66 to 0.71 after, about half.
+The 12-actor figures are limited by CPU availability, not just by demand.
+
+**The targets (well under 0.3 core per idle actor, compose total under about 8 cores) are not
+met.** What remains per actor (a per-thread breakdown of one actor, 15 s): about 0.28 core in the
+virtual-thread carrier pool (`ForkJoinPool-N-worker`, the JDBC work of the periodic jobs), 0.11 in
+the C2 JIT compiler, and the rest spread thinly (logging, Pekko, gRPC). At the database, per
+second on the c002 primary for six actors: `cell_authority` 294 scans, `call_state` 178 (the
+recovery scan), `control_outbox` 70, and each `command_result_p*` partition 46 (retention prune);
+about 100 transactions per second per actor from the 100 ms safety and maintenance jobs. These are
+the design's periodic jobs; lowering their cadence would change freshness and recovery bounds, so
+it was **not** done here.
+
+### Why the run still fails
+
+With 12 actors the stack uses about 10 cores and the desktop session another 5 to 6, so the host is
+saturated (busy 15.4 of 16, CPU pressure 80 %). Under that load the safety sources answer slowly:
+in an actor's log (60 s) `CLOCK_SOURCE` read p50 738 ms, `REVOCATION` read p50 1015 ms, `WAKE`
+read p50 550 ms, against 100 ms job periods. Clock and revocation freshness are then unknown,
+the gate stays closed (`/ready` 503, `AUTH_FRESHNESS_UNKNOWN`, `HTTP 401`). Stopping the c002 side
+(freeing about 5 cores) made the c001 actors report ready within 10 to 30 s (5 to 6 of 6, still
+flapping at times), which supports this reading. A pass needs a host with clearly more free cores
+(about 12 free, judging by this run); neither threshold nor deadline was lowered to force one.
+Before the fix the same positive feedback applied more strongly: a ready gate made the sweep
+expensive, which saturated the CPU, which closed the gate.
+
+### JVM sizing
+
+`-XX:ActiveProcessorCount=2 -XX:+UseSerialGC` is kept: the per-thread breakdown shows no GC thread
+among the top consumers, and with the host saturated no measurement could tell it apart from the
+default. It stays a workaround that was not re-validated on a quiet host. RSS is unchanged (below).
+
+## Earlier run, before the fix (`6ab9a40` to `05bf35d`)
+
+### Results per criterion (spec section 9)
 
 The last full runs: `final-1` (fresh `make down; make up`) and `final-2` (all other phases on a
 stack brought up the same way, completed with `docker compose up -d --wait` after `make up`
@@ -50,7 +140,7 @@ host); isolation is between containers only.
 
 **Passed twice in a row: no** (not once).
 
-## Why: the actors burn CPU at idle
+### Why: the actors burn CPU at idle (earlier run; the sweep was fixed afterwards in `fb249e7`, see above)
 
 Per-container CPU over 30-60 s windows (cgroup `usage_usec`), stack idle (no calls):
 
@@ -70,7 +160,7 @@ the idle cost is not the periodic work itself. A 40 s JFR profile of one actor (
 `NativeActorComposition.recoveryGroups` -> `local(group)` for each of the 1024 recovery groups ->
 `readiness.safetyReady()` -> `NativeCompatibility.actorReady/permits/peers` (rebuilding the peer
 list from cluster membership and Typesafe config paths). The sweep runs every 100 ms. This is
-product code (`signaling-cell-rpc`, `signaling-app`); it was not changed here.
+product code (`signaling-cell-rpc`, `signaling-app`); it was not changed in that run.
 
 Consequence on this 16-core shared host: the stack saturates the CPU, the clock and revocation
 source reads miss their bounds (`CLOCK_SOURCE` `OUTCOME_UNKNOWN` on about 15 % of reads,
@@ -79,7 +169,7 @@ source reads miss their bounds (`CLOCK_SOURCE` `OUTCOME_UNKNOWN` on about 15 % o
 at 0.4 INVITE got no reply. An honest pass needs either the product defect fixed or a host with
 clearly more free cores; neither threshold nor deadline was lowered to force one.
 
-## Measurements
+### Measurements (earlier run; RSS, memory floor and time to healthy hold after the fix: RSS total 7288 MiB over 17 JVMs, max 497 MiB, `docker stats` 7720 MiB over 24 containers, time to healthy 302 s)
 
 - RSS with the final `JVM_OPTS` (`-Xms256m -Xmx384m -XX:+ExitOnOutOfMemoryError
   -XX:ActiveProcessorCount=2 -XX:+UseSerialGC`): 17 JVMs 7445-8652 MiB in total, max 517-630 MiB
@@ -93,12 +183,15 @@ clearly more free cores; neither threshold nor deadline was lowered to force one
   272, gateway-c002 296. The twelve actors start within about 15 s of each other (compose starts
   them one by one); all formed their cells.
 
-## Iteration log
+### Iteration log
 
 1. **Run 1, `6ab9a40`.** Every actor exited `{"component":"PLATFORM","level":"ERROR","errorCode":"STARTUP_FAILED"}` and crash-looped. A verbose diagnostic copy showed `signaling-safety - Connection is not available, request timed out after 526ms (total=0, ...)` -> `Unable to determine Dialect without JDBC metadata`. Cause: Hibernate's dialect detection needs the JVM's first, cold PostgreSQL connection (TLS verify-full + SCRAM) and `DbPools` bounds it by a fixed 500 ms (`minimumIdle 0`). Measured alone on an idle host: 0.40-0.68 s; about 1 s under concurrent start; SCRAM iterations 1 vs 4096 made no difference. Fix `bb54bf6`: `launch.sh` passes `-Dhibernate.dialect=org.hibernate.dialect.PostgreSQLDialect` (the dialect Hibernate detects for PostgreSQL), so a missed metadata read is a warning and the connection being opened joins the pool. No deadline changed; the product defect (a fixed 500 ms bound on the first cold connection during startup) remains.
 2. **Same run, after a diagnostic start.** `BootstrapCoordinator - Resolve attempt failed! Cause: javax.net.ssl.SSLHandshakeException: Received fatal alert: protocol_version`. Cause: the Pekko Kubernetes discovery client offers TLS 1.2 only (`tls-version = "TLSv1.2"` default), the fake kube-API required 1.3. Fix `b391884`: kube-API floor TLS 1.2 like a real API server (test RED then GREEN).
 3. **Run 2, `b391884`+dialect.** Actors started and formed; `make up` failed at 269 s (`actor-c002-3 is unhealthy`), load 70-100, actors 0.7-0.9 GiB RSS. Fix `05bf35d`: `JVM_OPTS` add `-XX:ActiveProcessorCount=2 -XX:+UseSerialGC`. Run 3: `make up` passed (339 s), RSS total 7.4 GiB; smoke failed (`AUTH_FRESHNESS_UNKNOWN`).
 4. **Runs 3-4 and experiments.** CPU saturation identified and profiled (section above); CPU caps tried and rejected; no further compose fix found. `acceptance.sh` corrected along the way (exit status capture, refusal cases that run through `launch.sh`, PEM-body key check against the SP3 base, binary key handling, log dump removal).
+5. **CPU defect fixed, `fb249e7`.** Reproduced and measured first (`permits()` 131 µs, `actorReady()` 0.79 ms with 6 members, about 1000 reads per sweep), then fixed test-first (`RecoveryGroupSelectorTest`: equivalence with the old per-group selection on a table of ten states, the gate read exactly once however many groups are owned, closed gate reads nothing else, gate closing after the read, fail-closed on the next selection). GitNexus `impact`: `recoveryGroups` LOW (1 direct caller), `local` CRITICAL (209 dependents, 56 flows) and therefore not edited. `detect_changes()`: only `recoveryGroups`, `recoveryService`, `NativeActorComposition`. java-reviewer: approve (LOW test findings applied); security-reviewer: no findings.
+6. **Run after the fix.** First attempt refused by the load guard (load 12); a second was killed by a host reboot; the third ran to the end: 31 PASS, 8 FAIL (table above). Idle CPU about half of before in a like-for-like one-cell setting, not under the target; host contention keeps the gate closed with 12 actors.
+7. **Not done / open.** (a) A second full run, for the reason given above. (b) A run on a quiet host (about 12 free cores). (c) Lowering the cadence of the periodic jobs would reduce the idle cost further but changes freshness and recovery bounds: a design decision, not taken. (d) The well-formed wrong fingerprint is still refused only after about 67 s with the generic `STARTUP_FAILED` (spec 9.4). (e) `LocalRuntimeCompositionIT` failed once at load 9 (`actor exited 1`) and passed on the repeat: its start-up is load-sensitive.
 
 ## UNVERIFIED LIVE items from earlier tasks
 
@@ -125,4 +218,4 @@ admin listener; the guard's refusal path on a real leftover volume.
 - The empty-mount refusal prints a Spring stack trace (no values) after the fixed line.
 - Every PostgreSQL healthcheck (`pg_isready -h <ip>`, user `root`) logs `FATAL: no pg_hba.conf entry ... user "root"` every 5 s; harmless log noise, not changed.
 - The product logs every operation at INFO (about 180 lines/s per actor): 21 M lines in 3 h.
-- This run establishes **no** `LOCAL_QUALIFIED` status: criteria 1-3 failed, 4 partially.
+- Neither run establishes `LOCAL_QUALIFIED`: criteria 1 and 2 failed, 3 and 4 partially. A pass would establish `LOCAL_QUALIFIED` only, and nothing about production, HA, fencing, N-1 or 10M.
