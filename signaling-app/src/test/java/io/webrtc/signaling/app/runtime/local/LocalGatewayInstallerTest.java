@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
@@ -76,6 +77,7 @@ class LocalGatewayInstallerTest {
     static final List<Class<?>> REGISTERED =
             List.of(
                     NativeGatewayIngressEnrollment.class,
+                    ClusterShape.class,
                     NativeCellRpcEnrollment.class,
                     NativeCompatibilityObservationEnrollment.class,
                     ClockSafetyMonitor.class,
@@ -328,6 +330,28 @@ class LocalGatewayInstallerTest {
                 () -> contract(p -> p.put("transferCells", List.of(LocalRuntimeFixtures.transferCell("c002", 1)))),
                 Role.PROFILE,
                 Category.INVALID);
+    }
+
+    @Test
+    void aDeclaredCellSizeIsRegisteredAsTheClusterShape() throws Exception {
+        var c = contract();
+        var ctx = context(environment().withProperty("SIGNALING_LOCAL_CELL_ACTORS", "3"));
+        LocalGatewayInstaller.install(ctx, c);
+
+        assertThat(LocalActorInstallerTest.instance(ctx, ClusterShape.class))
+                .isEqualTo(ClusterShape.localMajority(3));
+        assertThat(LocalActorInstallerTest.instance(install(c), ClusterShape.class))
+                .isEqualTo(ClusterShape.PRODUCTION);
+    }
+
+    @Test
+    void anInvalidDeclaredCellSizeRegistersNothingOnTheGateway() throws Exception {
+        var c = contract();
+        for (var bad : new String[]{"", "1", "7", "03", "three"}) {
+            var ctx = context(environment().withProperty("SIGNALING_LOCAL_CELL_ACTORS", bad));
+            assertFailure(() -> LocalGatewayInstaller.install(ctx, c), Role.PROFILE, Category.INVALID);
+            assertThat(ctx.getBeanDefinitionCount()).as(bad).isZero();
+        }
     }
 
     @Test

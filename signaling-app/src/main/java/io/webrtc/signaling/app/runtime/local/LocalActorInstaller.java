@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime.local;
 
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.actors.cluster.NativeClusterMembership;
 import io.webrtc.signaling.actors.relay.RelayBufferBudget;
 import io.webrtc.signaling.app.CompatibilityWindow;
@@ -124,7 +125,8 @@ public final class LocalActorInstaller {
                         config.getString(KEYSTORE_PASSWORD).toCharArray(),
                         config.getString(KEY_PASSWORD).toCharArray(),
                         config.getString(TRUSTSTORE_PASSWORD).toCharArray());
-        var process = LocalPekkoConfig.process(c, config, management, management);
+        var shape = LocalPekkoConfig.shape(ctx.getEnvironment());
+        var process = LocalPekkoConfig.process(c, config, shape, management, management);
         var fingerprint = config.getString("signaling.cluster-fingerprint");
         var snapshot = LocalDirectorySnapshot.load(c);
         var wal = wal(c);
@@ -141,6 +143,8 @@ public final class LocalActorInstaller {
         var workloads = workloads(contract);
         var relayDestinations = relayDestinations(snapshot);
 
+        // The size every cell is expected to have: read by the compatibility gate and collectors.
+        ctx.registerBean(ClusterShape.class, () -> shape);
         ctx.registerBean(NativeActorProcessEnrollment.class, () -> process);
         ctx.registerBean(NativeActorSourceEnrollment.class, () -> source);
         ctx.registerBean(NativeWalEnrollment.class, () -> wal);
@@ -148,7 +152,8 @@ public final class LocalActorInstaller {
         ctx.registerBean(NativeCompatibilityObservationEnrollment.class, () -> observation);
         ctx.registerBean(NativeCellRpcEnrollment.class, () -> cells);
         // Replaces the composition's @ConditionalOnMissingBean default.
-        ctx.registerBean(ClusterReadiness.class, () -> ClusterReadiness.localMinikube("LOCAL_TEST_ONLY"));
+        ctx.registerBean(
+                ClusterReadiness.class, () -> ClusterReadiness.localMinikube("LOCAL_TEST_ONLY", shape));
 
         // Only the cell database: the directory credentials are never opened by an actor.
         ctx.registerBean(SqlTransactions.class, () -> opener.apply(contract.cellDatabase()));

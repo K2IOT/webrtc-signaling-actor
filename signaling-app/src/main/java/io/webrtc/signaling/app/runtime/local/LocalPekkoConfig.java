@@ -3,6 +3,7 @@ package io.webrtc.signaling.app.runtime.local;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import com.typesafe.config.ConfigValueFactory;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
 import io.webrtc.signaling.app.runtime.NativeActorProcessEnrollment;
@@ -33,6 +34,12 @@ public final class LocalPekkoConfig {
     static final String FINGERPRINT_VARIABLE = "SIGNALING_CLUSTER_FINGERPRINT";
     static final String FORMATION_VARIABLE = "SIGNALING_FORMATION_PROFILE";
     static final String INITIAL_FORMATION = "initial-six";
+    /**
+     * Declares a LOCAL_TEST_ONLY cell of two to six actors whose quorum is a strict majority. Unset,
+     * the cell is production's six with a quorum of four. This variable is read only by this local
+     * runtime; the production entry points never see it.
+     */
+    static final String CELL_SIZE_VARIABLE = "SIGNALING_LOCAL_CELL_ACTORS";
     static final String KEYSTORE_PASSWORD_VARIABLE = "SIGNALING_REMOTING_KEYSTORE_PASSWORD";
     static final String KEY_PASSWORD_VARIABLE = "SIGNALING_REMOTING_KEY_PASSWORD";
     static final String TRUSTSTORE_PASSWORD_VARIABLE = "SIGNALING_REMOTING_TRUSTSTORE_PASSWORD";
@@ -47,6 +54,18 @@ public final class LocalPekkoConfig {
     private static final String COMPATIBILITY = "signaling.compatibility.";
 
     private LocalPekkoConfig() {
+    }
+
+    /**
+     * The declared cell shape: production's when {@link #CELL_SIZE_VARIABLE} is unset, otherwise a
+     * majority-quorum cell of exactly the declared single digit, two to six. Anything else is
+     * refused without echoing it.
+     */
+    static ClusterShape shape(Environment env) {
+        var declared = env.getProperty(CELL_SIZE_VARIABLE);
+        if (declared == null) return ClusterShape.PRODUCTION;
+        if (!declared.matches("[2-6]")) throw profileInvalid();
+        return ClusterShape.localMajority(Integer.parseInt(declared));
     }
 
     /**
@@ -71,6 +90,7 @@ public final class LocalPekkoConfig {
         var compatibility = profile.compatibility();
         if (kube == null || compatibility == null || !validAzRole(profile.azRole())) throw profileInvalid();
         var tls = c.contract().tls();
+        var shape = shape(env);
 
         var values = new HashMap<String, Object>();
         values.put("signaling.cell-id", cell);
@@ -83,6 +103,13 @@ public final class LocalPekkoConfig {
         values.put("pekko.management.http.bind-hostname", profile.podIp());
         values.put(
                 "pekko.management.cluster.bootstrap.contact-point-discovery.service-name", "signaling-" + cell);
+        // The cell's size: the formation quorum and the contact points it waits for. Production's
+        // six and four are the packaged values; a declared smaller cell replaces only these three.
+        values.put("pekko.cluster.min-nr-of-members", shape.quorum());
+        values.put("pekko.cluster.role.signaling-actor.min-nr-of-members", shape.quorum());
+        values.put(
+                "pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr",
+                shape.members());
 
         values.put(TLS + "key-store", c.resolve(tls.remotingKeyStore()).toString());
         values.put(TLS + "trust-store", c.resolve(tls.remotingTrustStore()).toString());
@@ -130,11 +157,24 @@ public final class LocalPekkoConfig {
      */
     public static NativeActorProcessEnrollment process(
             LocalRuntimeContract c, Config config, SSLContext server, SSLContext client) {
+        return process(c, config, ClusterShape.PRODUCTION, server, client);
+    }
+
+    /**
+     * As {@link #process(LocalRuntimeContract, Config, SSLContext, SSLContext)} for a cell whose
+     * declared shape the config was built for; the enrollment validates against that shape only.
+     */
+    public static NativeActorProcessEnrollment process(
+            LocalRuntimeContract c,
+            Config config,
+            ClusterShape shape,
+            SSLContext server,
+            SSLContext client) {
         var cell = c.contract().cell();
         if (!config.hasPath("signaling.cell-id") || !cell.equals(config.getString("signaling.cell-id")))
             throw LocalJson.failure(Role.IDENTITY, Category.IDENTITY_MISMATCH);
         try {
-            return new NativeActorProcessEnrollment("signaling-" + cell, config, server, client);
+            return new NativeActorProcessEnrollment("signaling-" + cell, config, server, client, shape);
         } catch (RuntimeException rejected) {
             throw profileInvalid();
         }

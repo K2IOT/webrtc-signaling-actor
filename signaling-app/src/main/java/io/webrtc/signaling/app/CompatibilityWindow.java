@@ -1,5 +1,7 @@
 package io.webrtc.signaling.app;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
+
 import java.util.*;
 
 /**
@@ -8,8 +10,15 @@ import java.util.*;
 public final class CompatibilityWindow {
     private final String cell, fingerprint;
     private final int major, minor;
+    private final ClusterShape shape;
     private final EnumSet<Feature> enabled = EnumSet.noneOf(Feature.class);
+
     public CompatibilityWindow(String cell, int major, int minor, String fingerprint) {
+        this(cell, major, minor, fingerprint, ClusterShape.PRODUCTION);
+    }
+
+    public CompatibilityWindow(
+            String cell, int major, int minor, String fingerprint, ClusterShape shape) {
         if (cell == null
                 || major < 1
                 || minor < 1
@@ -20,6 +29,7 @@ public final class CompatibilityWindow {
         this.major = major;
         this.minor = minor;
         this.fingerprint = fingerprint;
+        this.shape = Objects.requireNonNull(shape);
     }
 
     public synchronized boolean accepts(Peer peer) {
@@ -34,8 +44,7 @@ public final class CompatibilityWindow {
     public synchronized boolean enable(Feature feature, List<Peer> authenticatedUpPeers) {
         Objects.requireNonNull(feature);
         Objects.requireNonNull(authenticatedUpPeers);
-        if (authenticatedUpPeers.size() < 4
-                || authenticatedUpPeers.size() > 7
+        if (!shape.admitsPeerCount(authenticatedUpPeers.size())
                 || authenticatedUpPeers.stream().map(Peer::memberId).distinct().count()
                 != authenticatedUpPeers.size()
                 || authenticatedUpPeers.stream().map(Peer::zone).distinct().count() < 2

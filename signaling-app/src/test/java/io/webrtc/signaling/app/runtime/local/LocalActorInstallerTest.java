@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
 import io.webrtc.signaling.app.runtime.NativeActorBusinessEnrollment;
 import io.webrtc.signaling.app.runtime.NativeActorIngressEnrollment;
@@ -68,6 +69,7 @@ class LocalActorInstallerTest {
     static final List<Class<?>> REGISTERED =
             List.of(
                     NativeActorProcessEnrollment.class,
+                    ClusterShape.class,
                     NativeActorSourceEnrollment.class,
                     NativeWalEnrollment.class,
                     NativeActorMaintenanceEnrollment.class,
@@ -383,6 +385,47 @@ class LocalActorInstallerTest {
         // Quorum and safety are still mandatory.
         readiness.update(new ClusterReadiness.Snapshot(true, true, true, true, true, true, 3, 1, false));
         assertThat(readiness.businessReady()).isFalse();
+    }
+
+    @Test
+    void aDeclaredThreeActorCellIsReadyAtTwoUpMembers() throws Exception {
+        var c = contract();
+        var ctx = context(c);
+        ((org.springframework.mock.env.MockEnvironment) ctx.getEnvironment())
+                .setProperty("SIGNALING_LOCAL_CELL_ACTORS", "3");
+        LocalActorInstaller.install(
+                ctx,
+                c,
+                LocalPekkoConfigTest.osEnvironment()::get,
+                database -> {
+                    throw new AssertionError("TEST_ONLY: no database is opened during install");
+                });
+
+        var readiness = instance(ctx, ClusterReadiness.class);
+        readiness.update(new ClusterReadiness.Snapshot(true, true, true, true, true, true, 2, 1, false));
+        assertThat(readiness.businessReady()).as("2 of 3 Up members").isTrue();
+        readiness.update(new ClusterReadiness.Snapshot(true, true, true, true, true, true, 1, 1, false));
+        assertThat(readiness.businessReady()).as("1 of 3 Up members").isFalse();
+        var process = instance(ctx, NativeActorProcessEnrollment.class);
+        assertThat(process.config().getInt("pekko.cluster.role.signaling-actor.min-nr-of-members"))
+                .isEqualTo(2);
+        assertThat(process.config().getInt(
+                "pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr"))
+                .isEqualTo(3);
+    }
+
+    @Test
+    void anInvalidDeclaredCellSizeRegistersNothing() throws Exception {
+        var c = contract();
+        var ctx = context(c);
+        ((org.springframework.mock.env.MockEnvironment) ctx.getEnvironment())
+                .setProperty("SIGNALING_LOCAL_CELL_ACTORS", "7");
+
+        assertFailure(
+                () -> LocalActorInstaller.install(ctx, c, LocalPekkoConfigTest.osEnvironment()::get, d -> null),
+                Role.PROFILE,
+                Category.INVALID);
+        assertThat(ctx.getBeanDefinitionCount()).isZero();
     }
 
     @Test

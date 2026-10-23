@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.rpc.CellRpcClient;
 import io.webrtc.signaling.rpc.CellRpcServer;
 import io.webrtc.signaling.rpc.GatewayRelayRpcClient;
@@ -57,7 +58,8 @@ public class NativeCompatibilityObservationConfiguration {
             ObjectProvider<CellRpcClient> cells,
             ObjectProvider<GatewayRelayRpcClient> gateways,
             ObjectProvider<NativeActorIngressEnrollment> ingress,
-            ObjectProvider<NativeRollbackCollector> rollback) {
+            ObjectProvider<NativeRollbackCollector> rollback,
+            ObjectProvider<ClusterShape> shape) {
         return new NativeCompatibilityCollectors(
                 inputs,
                 cells::getIfAvailable,
@@ -69,7 +71,8 @@ public class NativeCompatibilityObservationConfiguration {
                 () -> {
                     var collector = rollback.getIfAvailable();
                     return collector == null ? null : collector.observation();
-                });
+                },
+                shape.getIfAvailable(() -> ClusterShape.PRODUCTION));
     }
 
     @Bean

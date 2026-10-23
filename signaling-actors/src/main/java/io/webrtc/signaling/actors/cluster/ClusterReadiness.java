@@ -4,27 +4,38 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class ClusterReadiness {
     private final int minimumFailureDomains;
+    private final int minimumUpActors;
     private final AtomicReference<java.util.function.BooleanSupplier> liveSafety =
             new AtomicReference<>();
     private final AtomicReference<Snapshot> state =
             new AtomicReference<>(new Snapshot(false, false, false, false, false, false, 0, 0, false));
 
     public ClusterReadiness() {
-        this(2);
+        this(2, ClusterShape.PRODUCTION);
     }
 
-    private ClusterReadiness(int minimumFailureDomains) {
+    private ClusterReadiness(int minimumFailureDomains, ClusterShape shape) {
         this.minimumFailureDomains = minimumFailureDomains;
+        this.minimumUpActors = shape.quorum();
     }
 
     /**
      * Explicit single-host qualification exception; quorum and live safety remain mandatory.
      */
     public static ClusterReadiness localMinikube(String acknowledgement) {
+        return localMinikube(acknowledgement, ClusterShape.PRODUCTION);
+    }
+
+    /**
+     * As {@link #localMinikube(String)} for a local cell that declares its own size: business
+     * readiness then needs that shape's quorum of Up members instead of production's four. Every
+     * other gate (live safety, drain, a reachable failure domain) is unchanged.
+     */
+    public static ClusterReadiness localMinikube(String acknowledgement, ClusterShape shape) {
         if (!"LOCAL_TEST_ONLY".equals(acknowledgement))
             throw new IllegalArgumentException(
                     "Local readiness requires LOCAL_TEST_ONLY acknowledgement");
-        return new ClusterReadiness(1);
+        return new ClusterReadiness(1, java.util.Objects.requireNonNull(shape));
     }
 
     /**
@@ -134,7 +145,7 @@ public final class ClusterReadiness {
         var s = state.get();
         return safety(s)
                 && !s.draining()
-                && s.upActors() >= 4
+                && s.upActors() >= minimumUpActors
                 && s.reachableAzCount() >= minimumFailureDomains;
     }
 

@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime.local;
 
 import io.netty.handler.codec.http.HttpHeaders;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
 import io.webrtc.signaling.app.runtime.NativeActorSourceEnrollment;
 import io.webrtc.signaling.app.runtime.NativeCachedRevocationSource;
@@ -95,6 +96,7 @@ public final class LocalGatewayInstaller {
                 || profile.relayPort() == profile.businessPort()
                 || profile.relayPort() == profile.healthPort()) throw profileInvalid();
         c.requireIdentity(ctx.getEnvironment());
+        var shape = LocalPekkoConfig.shape(ctx.getEnvironment());
         var contract = c.contract();
 
         var fingerprint = LocalPekkoConfig.fingerprint(ctx.getEnvironment());
@@ -112,6 +114,8 @@ public final class LocalGatewayInstaller {
         var sources = LocalTrust.sourceEndpoints(c);
         var security = security(c, sources.revocations(), wall, elapsed);
 
+        // The size every cell is expected to have: read by the compatibility gate and collectors.
+        ctx.registerBean(ClusterShape.class, () -> shape);
         ctx.registerBean(NativeGatewayIngressEnrollment.class, () -> ingress);
         ctx.registerBean(NativeCellRpcEnrollment.class, () -> cells);
         ctx.registerBean(NativeCompatibilityObservationEnrollment.class, () -> observation);

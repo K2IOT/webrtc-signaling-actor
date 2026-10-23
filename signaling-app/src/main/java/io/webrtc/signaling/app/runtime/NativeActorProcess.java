@@ -94,7 +94,7 @@ public final class NativeActorProcess {
         var memberUp = new CompletableFuture<Void>();
         Cluster.get(Adapter.toClassic(system)).registerOnMemberUp(() -> memberUp.complete(null));
         try {
-            binding = ShardingBootstrap.bindManagement(system, server, client);
+            binding = ShardingBootstrap.bindManagement(system, server, client, enrollment.shape());
             started =
                     binding.thenApply(
                             uri -> {

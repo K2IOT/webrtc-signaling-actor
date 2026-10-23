@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.app.CompatibilityWindow;
 import io.webrtc.signaling.protocol.internal.CompatibilityActorDescriptor;
 import io.webrtc.signaling.protocol.internal.CompatibilityObservationReply;
@@ -29,6 +30,7 @@ public final class NativeCompatibilityCollectors {
     private final Map<String, NativeCompatibilityEnrollment.SchemaObservation> schemas =
             new ConcurrentHashMap<>();
     private final Supplier<NativeCompatibilityEnrollment.RollbackObservation> rollback;
+    private final ClusterShape shape;
     private volatile Supplier<CompatibilityObservationReply> localGateway = () -> null;
 
     public NativeCompatibilityCollectors(
@@ -36,6 +38,17 @@ public final class NativeCompatibilityCollectors {
             Supplier<CellRpcClient> cells,
             Supplier<GatewayRelayRpcClient> gateways,
             Supplier<NativeCompatibilityEnrollment.RollbackObservation> rollback) {
+        this(inputs, cells, gateways, rollback, ClusterShape.PRODUCTION);
+    }
+
+    /** As above; {@code shape} is the size every observed cell is expected to have. */
+    public NativeCompatibilityCollectors(
+            NativeCompatibilityObservationEnrollment inputs,
+            Supplier<CellRpcClient> cells,
+            Supplier<GatewayRelayRpcClient> gateways,
+            Supplier<NativeCompatibilityEnrollment.RollbackObservation> rollback,
+            ClusterShape shape) {
+        this.shape = Objects.requireNonNull(shape);
         this.inputs = inputs;
         this.cells = cells;
         this.gateways = gateways;
@@ -184,8 +197,8 @@ public final class NativeCompatibilityCollectors {
                         features(descriptor)));
     }
 
-    private void acceptActors(String cell, CompatibilityObservationReply reply) {
-        if (reply.hasGateway() || reply.getActorsCount() < 4 || reply.getActorsCount() > 7)
+    void acceptActors(String cell, CompatibilityObservationReply reply) {
+        if (reply.hasGateway() || !shape.admitsPeerCount(reply.getActorsCount()))
             throw new IllegalStateException("Incomplete actor observation");
         var peers = new ArrayList<CompatibilityWindow.Peer>();
         var identities = new HashSet<UUID>();

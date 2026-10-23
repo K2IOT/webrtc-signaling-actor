@@ -114,6 +114,16 @@ public final class ShardingBootstrap {
     }
 
     public static void validateProduction(Config config) {
+        validateProduction(config, ClusterShape.PRODUCTION);
+    }
+
+    /**
+     * As {@link #validateProduction(Config)} for a cell whose size a LOCAL_TEST_ONLY process
+     * declares: only the member quorum and the contact-point count follow {@code shape}; every other
+     * pin is unchanged.
+     */
+    public static void validateProduction(Config config, ClusterShape shape) {
+        java.util.Objects.requireNonNull(shape);
         String cell = config.getString("signaling.cell-id"),
                 host = config.getString("pekko.remote.artery.canonical.hostname"),
                 namespace = config.getString("pekko.discovery.kubernetes-api.pod-namespace");
@@ -145,7 +155,7 @@ public final class ShardingBootstrap {
             throw new IllegalArgumentException("Remoting requires mutual TLS 1.3");
         if (!config.getString("pekko.discovery.method").equals("kubernetes-api")
                 || !config.getStringList("pekko.cluster.seed-nodes").isEmpty()
-                || config.getInt("pekko.cluster.role.signaling-actor.min-nr-of-members") != 4
+                || config.getInt("pekko.cluster.role.signaling-actor.min-nr-of-members") != shape.quorum()
                 || config.getBoolean("pekko.cluster.allow-weakly-up-members"))
             throw new IllegalArgumentException("Invalid formation/readiness policy");
         var discovery = config.getConfig("pekko.management.cluster.bootstrap.contact-point-discovery");
@@ -154,7 +164,7 @@ public final class ShardingBootstrap {
                 .equals("org.apache.pekko.discovery.kubernetes.KubernetesApiServiceDiscovery")
                 || !discovery.getString("discovery-method").equals("pekko.discovery")
                 || !discovery.getString("port-name").equals("management")
-                || discovery.getInt("required-contact-point-nr") != 6
+                || discovery.getInt("required-contact-point-nr") != shape.members()
                 || !config.getBoolean("pekko.cluster.configuration-compatibility-check.enforce-on-join"))
             throw new IllegalArgumentException(
                     "Native Kubernetes discovery and compatibility enforcement are required");
@@ -179,7 +189,16 @@ public final class ShardingBootstrap {
      */
     public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> startManagement(
             ActorSystem<?> system, HttpsConnectionContext serverTls, HttpsConnectionContext clientTls) {
-        return bindManagement(system, serverTls, clientTls)
+        return startManagement(system, serverTls, clientTls, ClusterShape.PRODUCTION);
+    }
+
+    /** As above for a LOCAL_TEST_ONLY cell that declares its own size. */
+    public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> startManagement(
+            ActorSystem<?> system,
+            HttpsConnectionContext serverTls,
+            HttpsConnectionContext clientTls,
+            ClusterShape shape) {
+        return bindManagement(system, serverTls, clientTls, shape)
                 .thenApply(
                         uri -> {
                             org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap.get(system).start();
@@ -192,7 +211,16 @@ public final class ShardingBootstrap {
      */
     public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> bindManagement(
             ActorSystem<?> system, HttpsConnectionContext serverTls, HttpsConnectionContext clientTls) {
-        validateProduction(system.settings().config());
+        return bindManagement(system, serverTls, clientTls, ClusterShape.PRODUCTION);
+    }
+
+    /** As above for a LOCAL_TEST_ONLY cell that declares its own size. */
+    public static CompletionStage<org.apache.pekko.http.javadsl.model.Uri> bindManagement(
+            ActorSystem<?> system,
+            HttpsConnectionContext serverTls,
+            HttpsConnectionContext clientTls,
+            ClusterShape shape) {
+        validateProduction(system.settings().config(), shape);
         Objects.requireNonNull(serverTls);
         Objects.requireNonNull(clientTls);
         org.apache.pekko.http.javadsl.Http.get(system).setDefaultClientHttpsContext(clientTls);

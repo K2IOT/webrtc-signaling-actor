@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.app.runtime.NativeBucketTransferEnrollment;
 import io.webrtc.signaling.app.runtime.NativeCachedRevocationSource;
 import io.webrtc.signaling.app.runtime.NativeCachedSecurity;
@@ -73,6 +74,7 @@ class LocalControlInstallerTest {
     static final List<Class<?>> REGISTERED =
             List.of(
                     NativeControlDatabaseEnrollment.class,
+                    ClusterShape.class,
                     NativeControlSourceEnrollment.class,
                     NativeControlIngressEnrollment.class,
                     NativeCompatibilityObservationEnrollment.class,
@@ -297,6 +299,31 @@ class LocalControlInstallerTest {
         }
         // The profile itself refuses a wildcard pod address, so no installer ever sees one.
         assertFailure(() -> contract(p -> p.put("podIp", "0.0.0.0")), Role.PROFILE, Category.INVALID);
+    }
+
+    @Test
+    void aDeclaredCellSizeIsRegisteredAsTheClusterShape() throws Exception {
+        var c = contract();
+        var ctx = context(environment().withProperty("SIGNALING_LOCAL_CELL_ACTORS", "3"));
+        LocalControlInstaller.install(ctx, c, Clock.systemUTC(), System::nanoTime, NO_OPEN);
+
+        assertThat(LocalActorInstallerTest.instance(ctx, ClusterShape.class))
+                .isEqualTo(ClusterShape.localMajority(3));
+        assertThat(LocalActorInstallerTest.instance(install(c), ClusterShape.class))
+                .isEqualTo(ClusterShape.PRODUCTION);
+    }
+
+    @Test
+    void anInvalidDeclaredCellSizeRegistersNothingOnControl() throws Exception {
+        var c = contract();
+        for (var bad : new String[]{"", "1", "7", "03", "three"}) {
+            var ctx = context(environment().withProperty("SIGNALING_LOCAL_CELL_ACTORS", bad));
+            assertFailure(
+                    () -> LocalControlInstaller.install(ctx, c, Clock.systemUTC(), System::nanoTime, NO_OPEN),
+                    Role.PROFILE,
+                    Category.INVALID);
+            assertThat(ctx.getBeanDefinitionCount()).as(bad).isZero();
+        }
     }
 
     @Test

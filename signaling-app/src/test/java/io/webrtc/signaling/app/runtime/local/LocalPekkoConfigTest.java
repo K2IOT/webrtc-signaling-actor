@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime.local;
 
 import com.typesafe.config.Config;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.actors.cluster.ShardingBootstrap;
 import io.webrtc.signaling.app.runtime.NativeCompatibility;
 import io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category;
@@ -383,6 +384,79 @@ class LocalPekkoConfigTest {
                 .isInstanceOfSatisfying(
                         LocalRuntimeFailure.class,
                         failure -> assertThat(failure.role()).isEqualTo(Role.IDENTITY));
+    }
+
+    private static final String CELL_SIZE = "SIGNALING_LOCAL_CELL_ACTORS";
+    private static final String QUORUM = "pekko.cluster.role.signaling-actor.min-nr-of-members";
+    private static final String CONTACT_POINTS =
+            "pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr";
+
+    @Test
+    void noDeclaredCellSizeKeepsTheProductionSixWithQuorumFour() throws Exception {
+        var env = environment();
+
+        var config = build(contract(), env);
+
+        assertThat(LocalPekkoConfig.shape(env)).isEqualTo(ClusterShape.PRODUCTION);
+        assertThat(config.getInt(QUORUM)).isEqualTo(4);
+        assertThat(config.getInt("pekko.cluster.min-nr-of-members")).isEqualTo(4);
+        assertThat(config.getInt(CONTACT_POINTS)).isEqualTo(6);
+        assertThatCode(() -> ShardingBootstrap.validateProduction(config)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aDeclaredThreeActorCellSetsAMajorityQuorumAndItsOwnContactPoints() throws Exception {
+        var c = contract();
+        var env = environment().withProperty(CELL_SIZE, "3");
+
+        var config = build(c, env);
+        var shape = LocalPekkoConfig.shape(env);
+
+        assertThat(shape).isEqualTo(ClusterShape.localMajority(3));
+        assertThat(config.getInt(QUORUM)).isEqualTo(2);
+        assertThat(config.getInt("pekko.cluster.min-nr-of-members")).isEqualTo(2);
+        assertThat(config.getInt(CONTACT_POINTS)).isEqualTo(3);
+        // everything else stays the production contract
+        assertThat(config.getBoolean("pekko.cluster.allow-weakly-up-members")).isFalse();
+        assertThat(config.getString("pekko.cluster.split-brain-resolver.active-strategy"))
+                .isEqualTo("keep-majority");
+        assertThatCode(() -> ShardingBootstrap.validateProduction(config, shape)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> ShardingBootstrap.validateProduction(config))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        var tls = SSLContext.getDefault();
+        var enrollment = LocalPekkoConfig.process(c, config, shape, tls, tls);
+        assertThat(enrollment.systemName()).isEqualTo("signaling-c001");
+        // the production-shaped entry point still refuses a smaller cell
+        assertFailure(() -> LocalPekkoConfig.process(c, config, tls, tls), Role.PROFILE, Category.INVALID);
+    }
+
+    @Test
+    void aMalformedOrOutOfRangeCellSizeIsRefusedWithoutEchoingIt() {
+        for (var bad : new String[]{"", " 3", "3 ", "0", "1", "7", "-3", "03", "3.0", "three", "0x3", "33"}) {
+            var env = environment().withProperty(CELL_SIZE, bad);
+
+            var failure = failureOf(() -> LocalPekkoConfig.shape(env));
+
+            assertThat(failure.role()).as(bad).isEqualTo(Role.PROFILE);
+            assertThat(failure.category()).as(bad).isEqualTo(Category.INVALID);
+            assertThat(String.valueOf(failure.getMessage())).as(bad).doesNotContain("three").doesNotContain("0x3");
+        }
+    }
+
+    @Test
+    void everyAllowedCellSizeValidatesAgainstItsOwnShapeOnly() throws Exception {
+        var c = contract();
+        for (int size = 2; size <= 6; size++) {
+            var env = environment().withProperty(CELL_SIZE, Integer.toString(size));
+            var config = build(c, env);
+            var shape = LocalPekkoConfig.shape(env);
+
+            assertThat(shape.members()).isEqualTo(size);
+            assertThat(config.getInt(QUORUM)).isEqualTo(size / 2 + 1);
+            assertThat(config.getInt(CONTACT_POINTS)).isEqualTo(size);
+            assertThatCode(() -> ShardingBootstrap.validateProduction(config, shape)).doesNotThrowAnyException();
+        }
     }
 
     @SuppressWarnings("unchecked")

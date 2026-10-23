@@ -3,6 +3,7 @@ package io.webrtc.signaling.app.runtime;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import io.webrtc.signaling.actors.cluster.ClusterReadiness;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.actors.cluster.NativeClusterMembership;
 import io.webrtc.signaling.app.CompatibilityWindow;
 import io.webrtc.signaling.app.CompatibilityWindow.Feature;
@@ -34,6 +35,7 @@ public final class NativeCompatibility implements RuntimeCapabilities {
     private final Supplier<NativeActorBusinessEnrollment> local;
     private final Supplier<NativeCompatibilityEnrollment> enrollment;
     private final Supplier<NativeActorSchedulingEnrollment> scheduling;
+    private final ClusterShape shape;
     private boolean admissionDisabled;
     private UUID admissionFence;
     private volatile NativeCompatibilityEnrollment.SchemaObservation localSchema;
@@ -44,6 +46,18 @@ public final class NativeCompatibility implements RuntimeCapabilities {
             Supplier<NativeActorBusinessEnrollment> local,
             Supplier<NativeActorSchedulingEnrollment> scheduling,
             Supplier<NativeCompatibilityEnrollment> enrollment) {
+        this(cell, fingerprint, local, scheduling, enrollment, ClusterShape.PRODUCTION);
+    }
+
+    /** As above for a LOCAL_TEST_ONLY cell that declares its own size. */
+    public NativeCompatibility(
+            String cell,
+            String fingerprint,
+            Supplier<NativeActorBusinessEnrollment> local,
+            Supplier<NativeActorSchedulingEnrollment> scheduling,
+            Supplier<NativeCompatibilityEnrollment> enrollment,
+            ClusterShape shape) {
+        this.shape = Objects.requireNonNull(shape);
         this.cell = Objects.requireNonNull(cell);
         this.fingerprint = Objects.requireNonNull(fingerprint);
         this.local = Objects.requireNonNull(local);
@@ -161,7 +175,7 @@ public final class NativeCompatibility implements RuntimeCapabilities {
             // Independent feature windows prevent optional observability from latching authority gates.
             var window =
                     new CompatibilityWindow(
-                            target, approved.major(), approved.upperMinor(), build.fingerprint());
+                            target, approved.major(), approved.upperMinor(), build.fingerprint(), shape);
             return window.enable(feature, peers) && peers.stream().allMatch(window::accepts);
         } catch (RuntimeException unavailable) {
             return false;

@@ -1,5 +1,6 @@
 package io.webrtc.signaling.app.runtime.local;
 
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.app.SignalingApplication.Plane;
 import io.webrtc.signaling.app.runtime.NativeActorSourceEnrollment;
 import io.webrtc.signaling.app.runtime.NativeBucketTransferEnrollment;
@@ -91,6 +92,7 @@ public final class LocalControlInstaller {
         if (profile.plane() != Plane.CONTROL) throw profileInvalid();
         var transfer = transferCell(c);
         c.requireIdentity(ctx.getEnvironment());
+        var shape = LocalPekkoConfig.shape(ctx.getEnvironment());
         var contract = c.contract();
 
         var fingerprint = LocalPekkoConfig.fingerprint(ctx.getEnvironment());
@@ -106,6 +108,8 @@ public final class LocalControlInstaller {
         var source = source(c, sources.clock());
         var databases = databases(c);
 
+        // The size every cell is expected to have: read by the compatibility gate and collectors.
+        ctx.registerBean(ClusterShape.class, () -> shape);
         ctx.registerBean(NativeControlDatabaseEnrollment.class, () -> databases);
         ctx.registerBean(NativeControlSourceEnrollment.class, () -> source);
         ctx.registerBean(NativeControlIngressEnrollment.class, () -> ingress);

@@ -2,6 +2,7 @@ package io.webrtc.signaling.app.runtime;
 
 import ch.qos.logback.classic.LoggerContext;
 import io.micrometer.core.instrument.Gauge;
+import io.webrtc.signaling.actors.cluster.ClusterShape;
 import io.webrtc.signaling.app.SignalingApplication;
 import io.webrtc.signaling.app.config.SignalingProperties;
 import io.webrtc.signaling.observability.BoundedAsyncLogAppender;
@@ -106,7 +107,8 @@ public class NativeTelemetryConfiguration {
             Environment environment,
             org.springframework.beans.factory.ObjectProvider<NativeActorBusinessEnrollment> local,
             org.springframework.beans.factory.ObjectProvider<NativeActorSchedulingEnrollment> scheduling,
-            org.springframework.beans.factory.ObjectProvider<NativeCompatibilityEnrollment> enrollment) {
+            org.springframework.beans.factory.ObjectProvider<NativeCompatibilityEnrollment> enrollment,
+            org.springframework.beans.factory.ObjectProvider<ClusterShape> shape) {
         String cell = environment.getProperty("SIGNALING_CELL_ID", environment.getProperty("CELL_ID"));
         if (cell == null) cell = environment.getProperty("signaling.cell-id");
         String fingerprint =
@@ -118,6 +120,7 @@ public class NativeTelemetryConfiguration {
                 fingerprint,
                 local::getIfAvailable,
                 scheduling::getIfAvailable,
-                enrollment::getIfAvailable);
+                enrollment::getIfAvailable,
+                shape.getIfAvailable(() -> ClusterShape.PRODUCTION));
     }
 }
