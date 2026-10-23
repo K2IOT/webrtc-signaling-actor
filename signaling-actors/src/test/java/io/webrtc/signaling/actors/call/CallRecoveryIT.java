@@ -266,6 +266,115 @@ class CallRecoveryIT {
         }
     }
 
+    private static final DbOperation<Boolean> NOT_HYDRATED =
+            new DbOperation<>(
+                    CompletableFuture.completedFuture(false),
+                    CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.NOT_STARTED));
+
+    @Test
+    void anIdlePartitionCompletesItsCycleInOneTransaction() throws Exception {
+        try (var f = new Fixture()) {
+            var transactions = new java.util.concurrent.atomic.AtomicInteger();
+            f.runtime.sql.observe(
+                    operation -> {
+                        if (operation == io.webrtc.signaling.observability.SignalingMetrics.Operation.TRANSACTION_SAFETY)
+                            transactions.incrementAndGet();
+                        return io.webrtc.signaling.observability.OperationObservation.NONE.start(operation);
+                    });
+            Set<Integer> partition =
+                    java.util.stream.IntStream.range(0, 340).boxed().collect(java.util.stream.Collectors.toUnmodifiableSet());
+            try (var recovery =
+                         new CallRecoveryService(
+                                 f.runtime.sql, "c001", 1, null, () -> partition, (call, budget) -> NOT_HYDRATED)) {
+                var report = finish(recovery.sweepTracked(Duration.ofSeconds(2)));
+
+                assertThat(report.cycleComplete()).isTrue();
+                assertThat(report.examined()).isZero();
+                assertThat(transactions.get()).isEqualTo(1);
+            }
+        }
+    }
+
+    @Test
+    void aGroupWithALiveCallIsStillScannedWhileEmptyGroupsAreSkipped() throws Exception {
+        try (var f = new Fixture()) {
+            var calls = new ArrayList<CallId>();
+            for (int i = 0; i < 5; i++) calls.add(f.create());
+            var live =
+                    f.tokens.values().stream()
+                            .map(AuthoritySql.GroupToken::group)
+                            .collect(java.util.stream.Collectors.toSet());
+            var partition = new HashSet<Integer>(live);
+            for (int group = 0; group < 340; group++) partition.add(group);
+            var transactions = new java.util.concurrent.atomic.AtomicInteger();
+            f.runtime.sql.observe(
+                    operation -> {
+                        if (operation == io.webrtc.signaling.observability.SignalingMetrics.Operation.TRANSACTION_SAFETY)
+                            transactions.incrementAndGet();
+                        return io.webrtc.signaling.observability.OperationObservation.NONE.start(operation);
+                    });
+            var observed = ConcurrentHashMap.<CallId>newKeySet();
+            try (var recovery =
+                         new CallRecoveryService(
+                                 f.runtime.sql,
+                                 "c001",
+                                 1,
+                                 null,
+                                 () -> partition,
+                                 (call, budget) -> {
+                                     observed.add(call);
+                                     return NOT_HYDRATED;
+                                 })) {
+                boolean complete = false;
+                int sweeps = 0;
+                while (sweeps < 3 && !complete) {
+                    complete = finish(recovery.sweepTracked(Duration.ofSeconds(2))).cycleComplete();
+                    sweeps++;
+                }
+
+                assertThat(complete).isTrue();
+                assertThat(observed).containsExactlyInAnyOrderElementsOf(calls);
+                // per sweep: one probe plus at most one page transaction per live group; the 300+ idle
+                // groups cost nothing of their own
+                assertThat(transactions.get()).isLessThanOrEqualTo(sweeps * (1 + live.size()));
+            }
+        }
+    }
+
+    @Test
+    void groupsOwnedByAnotherLiveNodeAreIdleForThisOwnerAndMineAreScanned() throws Exception {
+        try (var f = new Fixture()) {
+            var calls = new ArrayList<CallId>();
+            for (int i = 0; i < 4; i++) calls.add(f.create());
+            var partition = new HashSet<Integer>();
+            f.tokens.values().forEach(token -> partition.add(token.group()));
+            for (int group = 0; group < 200; group++) partition.add(group);
+            for (var owner : List.of("TEST_ONLY_OWNER", "ANOTHER_NODE")) {
+                var observed = ConcurrentHashMap.<CallId>newKeySet();
+                try (var recovery =
+                             new CallRecoveryService(
+                                     f.runtime.sql,
+                                     "c001",
+                                     1,
+                                     owner,
+                                     () -> partition,
+                                     (call, budget) -> {
+                                         observed.add(call);
+                                         return NOT_HYDRATED;
+                                     })) {
+                    boolean complete = false;
+                    for (int sweep = 0; sweep < 4 && !complete; sweep++)
+                        complete = finish(recovery.sweepTracked(Duration.ofSeconds(2))).cycleComplete();
+
+                    assertThat(complete).as(owner).isTrue();
+                    if (owner.equals("TEST_ONLY_OWNER"))
+                        assertThat(observed).as(owner).containsExactlyInAnyOrderElementsOf(calls);
+                    else assertThat(observed).as(owner).isEmpty();
+                }
+            }
+        }
+    }
+
     @Test
     void expiredCallerReservationSafelyTerminalizesSilentWorkflowOnHydration() throws Exception {
         try (var f = new Fixture()) {

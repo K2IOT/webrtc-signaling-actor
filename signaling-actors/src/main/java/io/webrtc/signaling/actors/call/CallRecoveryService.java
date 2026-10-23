@@ -149,7 +149,7 @@ public final class CallRecoveryService implements AutoCloseable {
             logical =
                     partition.isEmpty()
                             ? CompletableFuture.completedFuture(report(0, 0, true))
-                            : pages(partition, end, 0, 0, 0, retained);
+                            : scan(partition, end, retained);
         } catch (RuntimeException failed) {
             logical = CompletableFuture.failedFuture(failed);
         }
@@ -174,8 +174,82 @@ public final class CallRecoveryService implements AutoCloseable {
         return new DbOperation<>(logical, physical.minimalCompletionStage());
     }
 
+    /**
+     * One transaction names the groups of the partition that hold a non-terminal call; the others
+     * complete without a scan of their own, exactly as an empty scan would complete them. A failed
+     * probe changes nothing: every group is then scanned as before.
+     */
+    private CompletionStage<Report> scan(
+            Set<Integer> partition, long end, List<CompletableFuture<?>> retained) {
+        return track(liveGroups(partition, remaining(end)), retained)
+                .handle((live, error) -> error != null ? Set.<Integer>of() : idle(partition, live))
+                .thenCompose(
+                        idle -> {
+                            synchronized (this) {
+                                for (int group : idle) {
+                                    completedGroups.set(group);
+                                    cursors[group] = null;
+                                    uppers[group] = null;
+                                }
+                                if (!idle.isEmpty() && partition.stream().allMatch(completedGroups::get)) {
+                                    completedGroups.clear();
+                                    lastCycleNanos = System.nanoTime() - cycleStarted;
+                                    cycleStarted = System.nanoTime();
+                                    return CompletableFuture.completedFuture(report(0, 0, true));
+                                }
+                            }
+                            return pages(partition, idle, end, 0, 0, 0, retained);
+                        });
+    }
+
+    private static Set<Integer> idle(Set<Integer> partition, Set<Integer> live) {
+        var idle = new HashSet<>(partition);
+        idle.removeAll(live);
+        return idle;
+    }
+
+    private DbOperation<Set<Integer>> liveGroups(Set<Integer> partition, Duration budget) {
+        return sql.submitTracked(
+                DbClass.RECOVERY,
+                budget,
+                c -> {
+                    AuthoritySql.cellBarrier(c, false);
+                    AuthoritySql.validateCell(c, cell, epoch);
+                    var selected = c.createArrayOf("integer", partition.toArray(Integer[]::new));
+                    try (var q =
+                                 c.prepareStatement(
+                                         "SELECT u.id FROM unnest(?) AS u(id) WHERE EXISTS (SELECT 1 FROM call_state s"
+                                                 + (owner == null
+                                                 ? ""
+                                                 : " LEFT JOIN group_owner g ON g.cell_id=?"
+                                                 + " AND g.ownership_hash_version=s.ownership_hash_version"
+                                                 + " AND g.group_id=s.ownership_group_id")
+                                                 + " WHERE s.terminal_at IS NULL AND s.ownership_group_id=u.id"
+                                                 + (owner == null
+                                                 ? ""
+                                                 : " AND (g.group_id IS NULL OR g.owner_node=? OR g.status<>'OWNED'"
+                                                 + " OR g.lease_until<=clock_timestamp())")
+                                                 + ")")) {
+                        int index = 1;
+                        q.setArray(index++, selected);
+                        if (owner != null) {
+                            q.setString(index++, cell);
+                            q.setString(index, owner);
+                        }
+                        var live = new HashSet<Integer>();
+                        try (var r = q.executeQuery()) {
+                            while (r.next()) live.add(r.getInt(1));
+                        }
+                        return Set.copyOf(live);
+                    } finally {
+                        selected.free();
+                    }
+                });
+    }
+
     private CompletionStage<Report> pages(
             Set<Integer> partition,
+            Set<Integer> idle,
             long end,
             int page,
             int examined,
@@ -191,7 +265,7 @@ public final class CallRecoveryService implements AutoCloseable {
             if (wakes.size() >= MAXIMUM_WAKES)
                 return CompletableFuture.completedFuture(report(examined, hydrated, false));
             int candidate = nextGroup;
-            while (!partition.contains(candidate)) candidate = (candidate + 1) % 1024;
+            while (!partition.contains(candidate) || idle.contains(candidate)) candidate = (candidate + 1) % 1024;
             selectedGroup = candidate;
             nextGroup = (selectedGroup + 1) % 1024;
             after = cursors[selectedGroup];
@@ -291,7 +365,7 @@ public final class CallRecoveryService implements AutoCloseable {
                                                 if (complete)
                                                     return CompletableFuture.completedFuture(
                                                             report(scanned, total, complete));
-                                                return pages(partition, end, page + 1, scanned, total, retained);
+                                                return pages(partition, idle, end, page + 1, scanned, total, retained);
                                             });
                         });
     }
