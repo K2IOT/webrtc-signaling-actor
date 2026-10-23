@@ -257,11 +257,24 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
                                 io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RECOVERY_RECEIPT_V1);
                         NativeEnvelopeAdmission.send(
                                 retained.get(),
-                                charge -> new CallActor.ReconcileWake(call, receipt, clock.instant().plus(budget)),
+                                reconcileFactory(call, receipt, clock, budget),
                                 sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, call.value())::tell,
                                 serializer);
                     }
                 });
+    }
+
+    /**
+     * The envelope is built more than once while it is sized and sent, and its serialized length
+     * depends on the instant: read the clock once, outside the factory.
+     */
+    static java.util.function.IntFunction<CallActor.ReconcileWake> reconcileFactory(
+            io.webrtc.signaling.protocol.Identity.CallId call,
+            CompletionReceipt receipt,
+            Clock clock,
+            Duration budget) {
+        Instant deadline = clock.instant().plus(budget);
+        return charge -> new CallActor.ReconcileWake(call, receipt, deadline);
     }
 
     public RpcOperation<Boolean> wakeTracked(
