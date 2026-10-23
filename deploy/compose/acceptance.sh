@@ -102,6 +102,8 @@ SIBLING="actor-c001-$((ACTORS_PER_CELL - 1))"
 _v="ACTOR_C001_${ACTORS_PER_CELL}_CELL_IP"; SPARE_CELL_IP="${!_v}"
 _v="ACTOR_C001_${ACTORS_PER_CELL}_SHARED_IP"; SPARE_SHARED_IP="${!_v}"
 N_ACTORS=$((ACTORS_PER_CELL * 2))
+# actors + 2 gateways + control + identity + local-platform + 5 PostgreSQL + 2 kube-api + 2 provisioners
+N_CONTAINERS=$((N_ACTORS + 2 + 1 + 1 + 1 + 5 + 2 + 2))
 PLANES="$ACTORS gateway-c001 gateway-c002 control"
 
 ready_all() { # ready_all <criterion> <label> <services...>: /ready 200 on each, from itself
@@ -167,7 +169,7 @@ phase_up() {
   oneshots=$(grep -cE '^provision-[12]\|exited\|\|0$' "$OUT/ps-after-up.txt")
   actors=$(grep -cE '^actor-c00[12]-[1-9]\|running\|healthy\|' "$OUT/ps-after-up.txt")
   check 1 all-healthy "$healthy of $((total - 2)) long-running services healthy, $oneshots of 2 provisioners exited 0, $total containers" \
-    "$([ "$total" -eq 26 ] && [ "$healthy" -eq 24 ] && [ "$oneshots" -eq 2 ] && echo 0 || echo 1)"
+    "$([ "$total" -eq "$N_CONTAINERS" ] && [ "$healthy" -eq $((N_CONTAINERS - 2)) ] && [ "$oneshots" -eq 2 ] && echo 0 || echo 1)"
   check 1 all-actors "$actors of $N_ACTORS actors running and healthy" "$([ "$actors" -eq "$N_ACTORS" ] && echo 0 || echo 1)"
   # shellcheck disable=SC2086
   ready_all 1 ready-planes $PLANES
@@ -214,7 +216,7 @@ phase_actor() {
   sleep 10 # let the cell observe the loss before asking it
   # shellcheck disable=SC2086
   took=$(ready_within "$READY_WAIT_S" gateway-c001 control $C001_REST); rc=$?
-  check 3a cell-ready "gateway-c001, control and the five other c001 actors /ready 200 ${took}s after the 10s settle" "$rc"
+  check 3a cell-ready "gateway-c001, control and the other c001 actors /ready 200 ${took}s after the 10s settle" "$rc"
   run_smoke smoke-3a-down; rc=$?
   check 3a smoke-one-actor-down "$(smoke_summary smoke-3a-down)" "$rc"
   docker start "$(cid "$SPARE")" >/dev/null

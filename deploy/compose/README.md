@@ -2,28 +2,28 @@
 
 Runs the signaling flow `login -> JWT -> bootstrap -> directory -> WSS -> gateway -> actor RPC ->
 Pekko -> PostgreSQL -> cross-cell call` on one Linux machine: two home cells (`c001`, `c002`) with
-six actors, a gateway and a primary plus streaming standby PostgreSQL each, and a shared control,
+three actors each (`ACTORS_PER_CELL` in `topology.env`; production is six), a gateway and a primary plus streaming standby PostgreSQL each, and a shared control,
 directory PostgreSQL, identity service and local platform (clock and revocation source).
 
 **Status: `LOCAL_TEST_ONLY`, release `NOT_QUALIFIED`.** Nothing here is evidence of production
 readiness, high availability, host clock discipline, N-1 upgrade behaviour or any capacity figure.
-The acceptance run of this environment (spec section 9, `acceptance.sh`) still FAILED on a shared
-16-core host after the idle-CPU defect in the recovery sweep was fixed: an idle actor now costs
-about 0.5 to 0.7 core (it was 0.7 to 1.4), the stack about 10 cores, and that is still too much
-next to a busy desktop (see [ACCEPTANCE.md](ACCEPTANCE.md)); the environment is not `LOCAL_QUALIFIED`.
+The acceptance run of this environment (spec section 9, `acceptance.sh`) still FAILED. With three
+actors per cell on a quiet 16-core host everything starts in 140 s and every plane is ready, but the
+first INVITE misses its 2 s deadline; the stack itself uses about 11 cores at idle (see
+[ACCEPTANCE.md](ACCEPTANCE.md)). The environment is not `LOCAL_QUALIFIED`.
 Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
 
 ## Requirements
 
 - Linux, Docker Compose >= 2.26 (checked by `make up`), Java 21 and Node >= 20 on the host (Maven
   wrapper and smoke client). Developed and tried only with Docker 29 and Compose 5.6.
-- At least 12 GiB of free RAM (measured 7.3 to 8.7 GiB in use; `PREFLIGHT_MIN_MEM_GIB` adjusts the
-  floor) and far more free CPU than the preflight checks: the idle stack used about 10 cores of a
-  16-core host (ACCEPTANCE.md; 12.9 before the recovery-sweep fix), and with about 5 cores taken by
+- At least 12 GiB of free RAM (measured 4.5 to 5.0 GiB in use with three-actor cells, 7.3 to 8.7 GiB with six; `PREFLIGHT_MIN_MEM_GIB` adjusts the
+  floor) and far more free CPU than the preflight checks: the idle stack used about 11 cores of a
+  16-core host (ACCEPTANCE.md; 12.9 with twelve actors before the recovery-sweep fix), and with about 5 cores taken by
   other work the source and database deadlines (500 ms to 2 s) were missed and readiness failed. Plan
-  for about 12 free cores. `make up` refuses at more than 0.7 load per core.
+  for about 12 free cores even with three-actor cells. `make up` refuses at more than 0.7 load per core.
 - Free Docker subnets `172.30.0.0/24`, `172.30.1.0/24`, `172.30.2.0/24`.
-- 26 containers: 17 JVM (15 plane JVMs: 12 actors, 2 gateways, control; plus identity and
+- 20 containers: 11 JVM (9 plane JVMs: 6 actors, 2 gateways, control; plus identity and
   local-platform), 5 PostgreSQL (`pg-<cell>-primary`, `pg-<cell>-standby`, `pg-directory`), 2 fake
   kube-API (one per cell) and 2 one-shot provisioner steps.
 - Ports published on `127.0.0.1` only: `8443` gateway c001, `8444` gateway c002, `8445` control,
@@ -63,7 +63,7 @@ name comes from `topology.env`; nothing else holds one.
    renders `provider.json`, `process.json`, `runtime.yaml`, the directory snapshot and `launch.sh`
    per service, validated by the same loaders the application uses.
 4. Each cell's fake kube-API answers the Pekko discovery query; local-platform and identity start.
-5. The twelve actors start at once (the 30 s start-up gate counts from process start), then the
+5. The six actors (three per cell) start at once (the 30 s start-up gate counts from process start), then the
    gateways and control.
 6. The application is the packaged `signaling-app` jar, selected per container by Spring profile.
 
@@ -107,7 +107,7 @@ PostgreSQL containers, minutes). The smoke client's own tests need `npm ci` in `
 - `preflight: FAIL compose|memory|load|subnets|images ...`: one line each, naming the cause.
   `PREFLIGHT_SKIP=name1,name2` skips checks; `images` means run `make build`.
 - `guard: REFUSED ...`: run `make reset`, then `make up`.
-- A re-run `make up` on a stack whose 17 JVM services all run skips the memory and load checks (the
+- A re-run `make up` on a stack whose 11 JVM services all run skips the memory and load checks (the
   stack itself uses that RAM and CPU) and prints `PREFLIGHT_NOTE`; the other checks still run.
 - A service is unhealthy: `make up` prints its last log lines. Later:
   `docker compose -p signaling-compose-local logs <service>`.

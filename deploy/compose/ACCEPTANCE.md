@@ -1,10 +1,11 @@
 # Acceptance run of the two-cell compose environment
 
-**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED** after the product CPU
-defect was fixed in `fb249e7`. The fix roughly halves the idle cost of an actor, but on this shared
-16-core host the stack still leaves too little CPU for the safety sources to stay fresh. The
-environment is **not** `LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing,
-N-1 or any capacity figure.
+**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED**, now with three actors per
+cell (the user's change of the spec: ready when 2 of 3 are Up). On a quiet host the stack starts and
+every plane is ready, and the smoke gets as far as the first INVITE, which then misses its 2 s
+deadline. The environment is **not** `LOCAL_QUALIFIED`. Nothing here says anything about
+production, HA, fencing, N-1 or any capacity figure. See "Three actors per cell" below for the
+latest run; the earlier sections describe the six-actor cells.
 
 - Dates: 2026-10-22/23 (UTC). First run (before the fix): commits `6ab9a40` to `05bf35d`. Run after
   the fix: commit `fb249e7` (`fix(rpc): read the recovery safety gate once per sweep`); the
@@ -32,6 +33,57 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
+
+## Three actors per cell (latest)
+
+Spec change by the user: `ACTORS_PER_CELL=3`, a cell is business-ready on a strict majority (2 of 3).
+Production keeps six actors with a quorum of four; the size is declared only through the
+LOCAL_TEST_ONLY `SIGNALING_LOCAL_CELL_ACTORS` (commits `dabd6cd`, `a39d081`). 11 JVM services, 20
+containers. Review found and fixed one blocker before the run (the management binding still checked
+production's six and four, so a 3-actor cell could not start); unit tests 110 + 74 + 334 green, and
+`LocalRuntimeCompositionIT` (six actors, the default) 5 of 5.
+
+**Run `three-A`** (2026-10-23 07:04 UTC, driver started it when the host was 98 % idle, load 4; the
+load guard was not skipped): 31 PASS, 8 FAIL.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **PASS** (one check mis-coded) | `make up` exit 0 in **140 s** (302 s with six actors); 18 of 18 services healthy, 2 provisioners exited 0, 20 containers; 6 of 6 actors; `/ready` 200 on 9 of 9 planes and on `local-platform`. The `all-healthy` line reported FAIL only because the script still compared against the old 26/24 counts: fixed afterwards (`N_CONTAINERS`). |
+| 2 | **FAIL** | Login, bootstrap (admin -> c001, mod -> c002) and WSS `AUTH_OK` x2 pass for the first time on a full run. Step 4: `INVITE: expected RINGING/RINGING, got TIMEOUT/TERMINAL`. |
+| 3a | **PARTIAL** | PASS: `docker stop actor-c001-3`, gateway, control and the two other c001 actors stay `/ready` 200 (**the 2-of-3 rule works**), restart healthy in **34 s** (108 s before), `/ready` 200 on 3 of 3. FAIL: both smokes (the INVITE, above). |
+| 3b | **PARTIAL** | PASS: with `pg-c001-standby` stopped `synchronous_standby_names` unchanged, no commit, 16 backends waiting on `SyncRep`; standby healthy in 3 s, `quorum` 1 s later. FAIL: c001 planes `/ready` not 200 within 120 s after quorum; smoke after (step 3, `Bye`). |
+| 4 | **PARTIAL** | Same as before: missing contract 10 s, empty mount 7 s (22 frames), foreign SPIFFE 13 s, malformed fingerprint 9 s all refused; **well-formed wrong fingerprint still exits 1 after 31 s with the generic `STARTUP_FAILED`** (FAIL). |
+| 5 | not run here | Network isolation PASS (control is the only container reaching both cell primaries). |
+| 6 | **PASS** | No key body or secret literal added; 38 secret values of the run found 0 times in `docker inspect` env; 2,233,843 log lines: 0 secrets, 0 JWTs, 0 test passwords; images labelled `NOT_QUALIFIED`. |
+
+A second run (`three-B`) was started by the driver and stopped on purpose: it would have repeated
+the INVITE failure and the stack was needed to find its cause. **Passed twice in a row: no. Passed
+once: no.**
+
+**Why the INVITE fails.** Gateway-c001's log shows `INVITE` taking 2.0 s (`OUTCOME_UNKNOWN`, the
+2 s deadline), `RPC_CONTROL` about 1.9 s and the CallActor `WAKE` 1.1 s. Run on a warmed stack (three
+more smokes) it fails the same way, so it is not only cold JIT. It is latency against a fixed
+deadline on a saturated host, not a logic error: no deadline was changed. This is the open item the
+earlier runs already listed ("first INVITE slower than 2 s").
+
+**Idle cost, six actors in two cells** (stack up and idle, cgroup counters, 15 to 20 s windows):
+
+| | cores |
+|---|---|
+| compose total | **10.8** (12.6 in the harness window right after the smoke) |
+| actors, each | 0.8 to 1.0 (user 0.2, **system 0.55 to 0.71**) |
+| local-platform | 1.69 (user 0.94, sys 0.69) |
+| PostgreSQL primaries / pg-directory | 1.0 and 0.8 / 0.8 |
+| host | 6 % idle, 46 to 48 % system time, 9 to 13 % softirq |
+
+Most of the stack's CPU is kernel time. Two findings worth acting on, neither done here:
+`pg-directory` serves about 118 transactions per second for the `source` database (about 63 rows
+returned per transaction), which is `local-platform` (the SP2 clock and revocation source) answering
+nine pollers; together they cost about 2.5 cores of a test double. And every actor spends about
+three times as much CPU in the kernel as in user code (network and timer calls of the 100 ms jobs).
+Memory with three-actor cells: JVM RSS 4475 MiB over 11 JVMs (max 505, min 209), `docker stats`
+4720 to 5037 MiB over 18 containers (7288 and 7720 MiB with twelve actors). The 12 GiB preflight floor
+is left unchanged (no passing run yet).
 
 ## Run after the fix (`fb249e7`): 31 PASS, 8 FAIL
 
