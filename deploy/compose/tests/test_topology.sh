@@ -17,8 +17,8 @@ all_addresses_unique() {
   assert_eq "" "$dups" "duplicate addresses"
   local n
   n="$(all_addresses | wc -l | tr -d ' ')"
-  # 12 actors x 2 addresses + 2 gateways + control/identity/platform/pg-directory + 2 x (2 pg + kube + control cell-net address)
-  assert_eq "38" "$n" "number of addressed endpoints"
+  # 6 actors (3 per cell) x 2 addresses + 2 gateways + control/identity/platform/pg-directory + 2 x (2 pg + kube + control cell-net address)
+  assert_eq "26" "$n" "number of addressed endpoints"
 }
 
 every_address_inside_its_subnet() {
@@ -43,25 +43,27 @@ kube_api_has_one_ip_per_cell_network() {
 }
 
 actors_have_cell_and_shared_ips() {
-  local cell n var cip sip az
+  local cell n var cip sip az want
   for cell in c001 c002; do
-    for n in 1 2 3 4 5 6; do
+    for n in $(seq 1 "$ACTORS_PER_CELL"); do
       assert_eq "172.30.${cell: -1}.1$n" "$(ip_of "actor-$cell-$n" net-$cell)" "actor-$cell-$n cell ip"
     done
   done
-  for n in 1 2 3 4 5 6; do
+  for n in $(seq 1 "$ACTORS_PER_CELL"); do
     assert_eq "172.30.0.3$n" "$(ip_of "actor-c001-$n" shared)" "actor-c001-$n shared ip"
     assert_eq "172.30.0.4$n" "$(ip_of "actor-c002-$n" net-shared)" "actor-c002-$n shared ip"
   done
   # c001 actors never get a c002 address and vice versa
   assert_false "actor-c001-1 is not on net-c002" ip_of actor-c001-1 net-c002
   for cell in C001 C002; do
-    for n in 1 2 3 4 5 6; do
+    for n in $(seq 1 "$ACTORS_PER_CELL"); do
       var="ACTOR_${cell}_${n}_CELL_IP"; cip="${!var}"
       var="ACTOR_${cell}_${n}_SHARED_IP"; sip="${!var}"
       assert_true "actor $cell/$n has distinct cell and shared ips" test "$cip" != "$sip"
       var="ACTOR_${cell}_${n}_AZ"; az="${!var}"
-      if [ "$n" -le 3 ]; then assert_eq "az-a" "$az" "AZ of $cell/$n"; else assert_eq "az-b" "$az" "AZ of $cell/$n"; fi
+      # one zone per actor: any single actor can be lost and two zones remain
+      case "$n" in 1) want=az-a ;; 2) want=az-b ;; *) want=az-c ;; esac
+      assert_eq "$want" "$az" "AZ of $cell/$n"
     done
   done
 }
@@ -88,6 +90,7 @@ control_has_an_address_on_each_cell_network() {
 
 other_fixed_values() {
   assert_eq "c001 c002" "$CELLS" "CELLS"
+  assert_eq "3" "$ACTORS_PER_CELL" "ACTORS_PER_CELL"
   assert_eq "172.30.0.10" "$CONTROL_IP" "CONTROL_IP"
   assert_eq "172.30.0.11" "$IDENTITY_IP" "IDENTITY_IP"
   assert_eq "172.30.0.12" "$PLATFORM_IP" "PLATFORM_IP"
@@ -141,18 +144,17 @@ dynamic_ranges_hold_no_static_address() {
   assert_true "172.30.0.200 is inside NET_SHARED_DYNAMIC" ip_in_cidr 172.30.0.200 "$NET_SHARED_DYNAMIC"
 }
 
-service_list_has_17_names() {
+service_list_has_11_names() {
   local names n
   names="$(service_list)"
   n="$(printf '%s\n' "$names" | wc -l | tr -d ' ')"
-  # 12 actors + 2 gateways + control (15 plane JVMs) + identity + local-platform.
-  # (the plan text says "16 names / 14 plane JVMs"; its own enumeration yields 17 / 15)
-  assert_eq "17" "$n" "service_list length"
+  # 6 actors (3 per cell) + 2 gateways + control (9 plane JVMs) + identity + local-platform.
+  assert_eq "11" "$n" "service_list length"
   assert_eq "0" "$(printf '%s\n' "$names" | sort | uniq -d | wc -l | tr -d ' ')" "service names unique"
   assert_eq "actor-c001-1" "$(printf '%s\n' "$names" | sed -n 1p)" "first service"
-  assert_eq "actor-c002-6" "$(printf '%s\n' "$names" | sed -n 12p)" "12th service"
+  assert_eq "actor-c002-3" "$(printf '%s\n' "$names" | sed -n 6p)" "6th service"
   assert_eq "gateway-c001 gateway-c002 control identity local-platform" \
-    "$(printf '%s\n' "$names" | sed -n '13,17p' | tr '\n' ' ' | sed 's/ $//')" "services 13..17"
+    "$(printf '%s\n' "$names" | sed -n '7,11p' | tr '\n' ' ' | sed 's/ $//')" "services 7..11"
   # every listed service has at least one address
   local s
   while read -r s; do
@@ -177,7 +179,7 @@ hosts_sh_prints_four_lines_and_writes_nothing() {
 }
 
 for t in all_addresses_unique every_address_inside_its_subnet kube_api_has_one_ip_per_cell_network \
-  actors_have_cell_and_shared_ips control_has_an_address_on_each_cell_network other_fixed_values dynamic_ranges_hold_no_static_address service_list_has_17_names \
+  actors_have_cell_and_shared_ips control_has_an_address_on_each_cell_network other_fixed_values dynamic_ranges_hold_no_static_address service_list_has_11_names \
   hosts_sh_prints_four_lines_and_writes_nothing; do
   run_test "$t"
 done

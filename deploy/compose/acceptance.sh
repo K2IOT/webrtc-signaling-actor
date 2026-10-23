@@ -6,9 +6,9 @@
 #
 #   bash deploy/compose/acceptance.sh [phase ...]
 #     phases (default: all, in this order): up smoke actor standby refusal isolation secrets measure
-#       up        make down; make up; every service healthy, twelve actors running, /ready 200
+#       up        make down; make up; every service healthy, all actors running, /ready 200
 #       smoke     make smoke passes (cross-cell call and token revoke); RSS/time measured after it
-#       actor     docker stop actor-c001-6: the cell stays ready, a fresh smoke passes; start -> healthy
+#       actor     docker stop the last c001 actor: the cell stays ready (quorum is a majority), a fresh smoke passes; start -> healthy
 #       standby   docker stop pg-c001-standby: a c001 INVITE does not commit, synchronous_standby_names
 #                 unchanged; start -> quorum back, the smoke passes again
 #       refusal   bad fingerprint, foreign SPIFFE leaf, missing contract: one container each
@@ -94,7 +94,14 @@ health_ip() { # the /ready address of a plane or local-platform
   esac
 }
 
-ACTORS=$(for c in c001 c002; do for n in 1 2 3 4 5 6; do printf 'actor-%s-%s ' "$c" "$n"; done; done)
+ACTORS=$(for c in c001 c002; do for n in $(seq 1 "$ACTORS_PER_CELL"); do printf 'actor-%s-%s ' "$c" "$n"; done; done)
+# The last c001 actor is the one the actor, standby and refusal phases stop or replace; the one before
+# it is the "sibling" whose leaf the sibling-identity case borrows.
+SPARE="actor-c001-$ACTORS_PER_CELL"
+SIBLING="actor-c001-$((ACTORS_PER_CELL - 1))"
+_v="ACTOR_C001_${ACTORS_PER_CELL}_CELL_IP"; SPARE_CELL_IP="${!_v}"
+_v="ACTOR_C001_${ACTORS_PER_CELL}_SHARED_IP"; SPARE_SHARED_IP="${!_v}"
+N_ACTORS=$((ACTORS_PER_CELL * 2))
 PLANES="$ACTORS gateway-c001 gateway-c002 control"
 
 ready_all() { # ready_all <criterion> <label> <services...>: /ready 200 on each, from itself
@@ -158,10 +165,10 @@ phase_up() {
   total=$(wc -l <"$OUT/ps-after-up.txt")
   healthy=$(grep -c '|running|healthy|' "$OUT/ps-after-up.txt")
   oneshots=$(grep -cE '^provision-[12]\|exited\|\|0$' "$OUT/ps-after-up.txt")
-  actors=$(grep -cE '^actor-c00[12]-[1-6]\|running\|healthy\|' "$OUT/ps-after-up.txt")
+  actors=$(grep -cE '^actor-c00[12]-[1-9]\|running\|healthy\|' "$OUT/ps-after-up.txt")
   check 1 all-healthy "$healthy of $((total - 2)) long-running services healthy, $oneshots of 2 provisioners exited 0, $total containers" \
     "$([ "$total" -eq 26 ] && [ "$healthy" -eq 24 ] && [ "$oneshots" -eq 2 ] && echo 0 || echo 1)"
-  check 1 twelve-actors "$actors of 12 actors running and healthy" "$([ "$actors" -eq 12 ] && echo 0 || echo 1)"
+  check 1 all-actors "$actors of $N_ACTORS actors running and healthy" "$([ "$actors" -eq "$N_ACTORS" ] && echo 0 || echo 1)"
   # shellcheck disable=SC2086
   ready_all 1 ready-planes $PLANES
   ready_all 1 ready-platform local-platform
@@ -182,7 +189,7 @@ phase_smoke() {
 
 # --- criterion 3a: lose one actor of c001 --------------------------------------------------------
 
-C001_REST="actor-c001-1 actor-c001-2 actor-c001-3 actor-c001-4 actor-c001-5"
+C001_REST=$(for n in $(seq 1 $((ACTORS_PER_CELL - 1))); do printf 'actor-c001-%s ' "$n"; done)
 
 ready_within() { # ready_within <seconds> <services...>: polls until every /ready is 200
   local limit="$1" t0 s all
@@ -200,20 +207,20 @@ ready_within() { # ready_within <seconds> <services...>: polls until every /read
 }
 
 phase_actor() {
-  log "criterion 3a: docker stop actor-c001-6"
+  log "criterion 3a: docker stop $SPARE"
   local took rc
-  docker stop -t 90 "$(cid actor-c001-6)" >/dev/null
-  check 3a stopped "actor-c001-6 state $(state actor-c001-6)" "$([ "$(state actor-c001-6)" = exited ] && echo 0 || echo 1)"
+  docker stop -t 90 "$(cid "$SPARE")" >/dev/null
+  check 3a stopped "$SPARE state $(state "$SPARE")" "$([ "$(state "$SPARE")" = exited ] && echo 0 || echo 1)"
   sleep 10 # let the cell observe the loss before asking it
   # shellcheck disable=SC2086
   took=$(ready_within "$READY_WAIT_S" gateway-c001 control $C001_REST); rc=$?
   check 3a cell-ready "gateway-c001, control and the five other c001 actors /ready 200 ${took}s after the 10s settle" "$rc"
   run_smoke smoke-3a-down; rc=$?
   check 3a smoke-one-actor-down "$(smoke_summary smoke-3a-down)" "$rc"
-  docker start "$(cid actor-c001-6)" >/dev/null
-  took=$(wait_health actor-c001-6 healthy "$RESTART_WAIT_S"); rc=$?
-  check 3a restart "actor-c001-6 healthy ${took}s after docker start" "$rc"
-  ready_all 3a ready-after-restart actor-c001-6 gateway-c001 control
+  docker start "$(cid "$SPARE")" >/dev/null
+  took=$(wait_health "$SPARE" healthy "$RESTART_WAIT_S"); rc=$?
+  check 3a restart "$SPARE healthy ${took}s after docker start" "$rc"
+  ready_all 3a ready-after-restart "$SPARE" gateway-c001 control
   run_smoke smoke-3a-after; rc=$?
   check 3a smoke-after-restart "$(smoke_summary smoke-3a-after)" "$rc"
 }
@@ -252,7 +259,7 @@ phase_standby() {
   check 3b quorum-back "pg_stat_replication sync_state=${st:-none} $(($(date +%s) - t0))s after healthy" \
     "$([ "$st" = quorum ] || [ "$st" = sync ] && echo 0 || echo 1)"
   # shellcheck disable=SC2086
-  took=$(ready_within "$READY_WAIT_S" gateway-c001 control $C001_REST actor-c001-6); rc=$?
+  took=$(ready_within "$READY_WAIT_S" gateway-c001 control $C001_REST "$SPARE"); rc=$?
   check 3b cell-ready "c001 planes /ready 200 ${took}s after quorum" "$rc"
   run_smoke smoke-3b-after
   rc=$?
@@ -270,7 +277,7 @@ plane_env() { # docker run -e flags of an actor of c001 (compose's x-plane-env p
   printf -- '-e\nSIGNALING_LOCAL_PROCESS_PROFILE=/run/signaling/process.json\n'
   printf -- '-e\nSIGNALING_RUNTIME_CONTRACT=/run/signaling/runtime.yaml\n'
   printf -- '-e\nSIGNALING_IDENTITY_ISSUER=%s\n-e\nSIGNALING_IDENTITY_AUDIENCE=%s\n' "$ISSUER" "$AUDIENCE"
-  printf -- '-e\nSPRING_PROFILES_ACTIVE=actor\n-e\nSIGNALING_CELL_ID=c001\n-e\nSIGNALING_FORMATION_PROFILE=initial-six\n'
+  printf -- '-e\nSPRING_PROFILES_ACTIVE=actor\n-e\nSIGNALING_CELL_ID=c001\n-e\nSIGNALING_FORMATION_PROFILE=initial-six\n-e\nSIGNALING_LOCAL_CELL_ACTORS=%s\n' "$ACTORS_PER_CELL"
   printf -- '-e\nJVM_OPTS=%s\n' "$(sed -n 's/^JVM_OPTS=//p' "$here/.env" | tail -n 1)"
 }
 
@@ -332,8 +339,8 @@ phase_refusal() {
   local base=(--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true
     --tmpfs /tmp:size=128m,nosuid --memory 1g)
   local hardening=("${base[@]}" --network none)
-  # (a) missing contract: actor-c001-6's mount without provider.json, compose's actor environment.
-  scratch_mount acceptance-no-contract actor-c001-6 - provider.json
+  # (a) missing contract: the last c001 actor's mount without provider.json, compose's actor environment.
+  scratch_mount acceptance-no-contract "$SPARE" - provider.json
   refuse_case pass missing-contract "$REJECTED,\"role\":\"contract\",\"category\":\"MISSING\"" "${hardening[@]}" \
     --mount "type=volume,src=acceptance-no-contract,dst=/run/signaling,readonly" \
     "${env_args[@]}" --entrypoint bash "$img" /run/signaling/launch.sh
@@ -344,24 +351,24 @@ phase_refusal() {
     --tmpfs /run/signaling:size=1m "${env_args[@]}" -e SIGNALING_POD_UID=00000000-0000-4000-8000-000000000000 \
     -e SIGNALING_REMOTING_KEYSTORE_PASSWORD=TEST_ONLY_PLACEHOLDER -e SIGNALING_REMOTING_KEY_PASSWORD=TEST_ONLY_PLACEHOLDER \
     -e SIGNALING_REMOTING_TRUSTSTORE_PASSWORD=TEST_ONLY_PLACEHOLDER "$img"
-  # (b) foreign SPIFFE id: actor-c001-6's mount with gateway-c001's leaf (key and certificate).
-  scratch_mount acceptance-foreign-leaf actor-c001-6 gateway-c001
+  # (b) foreign SPIFFE id: the last c001 actor's mount with gateway-c001's leaf (key and certificate).
+  scratch_mount acceptance-foreign-leaf "$SPARE" gateway-c001
   refuse_case pass foreign-spiffe-gateway "$REJECTED,\"role\":\"identity\",\"category\":\"IDENTITY_MISMATCH\"" \
     "${hardening[@]}" --mount "type=volume,src=acceptance-foreign-leaf,dst=/run/signaling,readonly" \
     "${env_args[@]}" --entrypoint bash "$img" /run/signaling/launch.sh
   docker volume rm acceptance-foreign-leaf >/dev/null
-  # (b') a sibling's per-pod SPIFFE id (actor-c001-5's leaf in actor-c001-6's mount): recorded only;
+  # (b') a sibling's per-pod SPIFFE id (the previous actor's leaf in the last actor's mount): recorded only;
   # startup checks the cell-level actor URI, the per-pod id is the source's concern.
-  scratch_mount acceptance-sibling-leaf actor-c001-6 actor-c001-5
+  scratch_mount acceptance-sibling-leaf "$SPARE" "$SIBLING"
   refuse_case info foreign-spiffe-sibling "$REJECTED" "${hardening[@]}" \
     --mount "type=volume,src=acceptance-sibling-leaf,dst=/run/signaling,readonly" \
     "${env_args[@]}" --entrypoint bash "$img" /run/signaling/launch.sh
   docker volume rm acceptance-sibling-leaf >/dev/null
   # (c) a fingerprint that is not 64 lower-case hex: refused at startup.
   refuse_case pass fingerprint-malformed "$REJECTED,\"role\":\"identity\",\"category\":\"INVALID\"" "${hardening[@]}" \
-    --mount "type=volume,src=${PROJECT}_run,dst=/run/signaling,readonly,volume-subpath=actor-c001-6" \
+    --mount "type=volume,src=${PROJECT}_run,dst=/run/signaling,readonly,volume-subpath=$SPARE" \
     "${env_args[@]}" -e "SIGNALING_CLUSTER_FINGERPRINT=NOT-A-FINGERPRINT" --entrypoint bash "$img" /run/signaling/launch.sh
-  # (d) a well-formed but different fingerprint, in actor-c001-6's place on the live cell.
+  # (d) a well-formed but different fingerprint, in the last c001 actor's place on the live cell.
   wrong="$(printf 'TEST_ONLY_ACCEPTANCE_WRONG_FINGERPRINT' | sha256sum | cut -c1-64)"
   mapfile -t env_args < <(plane_env)
   fingerprint_mismatch "$img" "$wrong" "${base[@]}" "${env_args[@]}"
@@ -369,25 +376,25 @@ phase_refusal() {
 
 # The product validates only the fingerprint's form at startup; a different 64-hex value is a
 # cluster join property (FingerprintCompatibilityChecker). This case records what really happens to
-# such a container in actor-c001-6's place: does it exit, join, or become ready?
+# such a container in the last c001 actor's place: does it exit, join, or become ready?
 fingerprint_mismatch() {
   local img="$1" wrong="$2" c t0 took code st ready="000" logf="$OUT/refusal-fingerprint-mismatch.log"
   shift 2
-  docker stop -t 90 "$(cid actor-c001-6)" >/dev/null
+  docker stop -t 90 "$(cid "$SPARE")" >/dev/null
   c="$(docker run -d --label "$SCRATCH_LABEL" --name acceptance-fingerprint-mismatch "$@" \
-    --network "name=${PROJECT}_net-c001,ip=$ACTOR_C001_6_CELL_IP" \
-    --network "name=${PROJECT}_net-shared,ip=$ACTOR_C001_6_SHARED_IP" \
-    --mount "type=volume,src=${PROJECT}_run,dst=/run/signaling,readonly,volume-subpath=actor-c001-6" \
+    --network "name=${PROJECT}_net-c001,ip=$SPARE_CELL_IP" \
+    --network "name=${PROJECT}_net-shared,ip=$SPARE_SHARED_IP" \
+    --mount "type=volume,src=${PROJECT}_run,dst=/run/signaling,readonly,volume-subpath=$SPARE" \
     -e "SIGNALING_CLUSTER_FINGERPRINT=$wrong" --entrypoint bash "$img" /run/signaling/launch.sh)" || {
     fail 4 fingerprint-mismatch "docker run failed"
-    docker start "$(cid actor-c001-6)" >/dev/null
+    docker start "$(cid "$SPARE")" >/dev/null
     return
   }
   t0=$(date +%s)
   while [ $(($(date +%s) - t0)) -lt 150 ]; do
     st="$(docker inspect -f '{{.State.Status}}' "$c")"
     [ "$st" = running ] || break
-    ready="$(timeout 8 docker exec "$c" bash -c "$PROBE" probe "$ACTOR_C001_6_CELL_IP" "$HEALTH_PORT" /ready 2>/dev/null | tr -d '\r')"
+    ready="$(timeout 8 docker exec "$c" bash -c "$PROBE" probe "$SPARE_CELL_IP" "$HEALTH_PORT" /ready 2>/dev/null | tr -d '\r')"
     [ "$ready" = 200 ] && break
     sleep 3
   done
@@ -412,10 +419,10 @@ fingerprint_mismatch() {
   fi
   check 4 fingerprint-mismatch "$how; diagnostic: ${line:-none}; incompatible-config log lines: $incompat; secret-looking lines: $leaks" \
     "$([ "$st" != running ] && [ "$code" -ne 0 ] && [ "$took" -le "$REFUSAL_LIMIT_S" ] && grep -q "$REJECTED" <<<"$line" && echo 0 || echo 1)"
-  docker start "$(cid actor-c001-6)" >/dev/null
+  docker start "$(cid "$SPARE")" >/dev/null
   local rc
-  took=$(wait_health actor-c001-6 healthy "$RESTART_WAIT_S"); rc=$?
-  check 4 actor-back "actor-c001-6 healthy ${took}s after the case" "$rc"
+  took=$(wait_health "$SPARE" healthy "$RESTART_WAIT_S"); rc=$?
+  check 4 actor-back "$SPARE healthy ${took}s after the case" "$rc"
   run_smoke smoke-4-after; rc=$?
   check 4 smoke-after "$(smoke_summary smoke-4-after)" "$rc"
 }

@@ -3,9 +3,9 @@
 # LOCAL_TEST_ONLY / NOT_QUALIFIED.
 #
 #   load_topology            export every topology.env variable into the caller
-#   service_list             print the 17 service names, one per line: 12 actors, 2 gateways,
-#                            control (= 15 plane JVMs), then identity, local-platform
-#                            (= 17 JVM services in total)
+#   service_list             print the 11 service names, one per line: 6 actors (ACTORS_PER_CELL
+#                            per cell), 2 gateways, control (= 9 plane JVMs), then identity,
+#                            local-platform (= 11 JVM services in total)
 #   ip_of <service> <net>    print the address of <service> on <net>; <net> is
 #                            net-c001 | net-c002 | net-shared (or cell | shared, where
 #                            "cell" means the service's own cell network); non-zero if none
@@ -30,7 +30,7 @@ load_topology() {
 service_list() {
   local cell n
   for cell in c001 c002; do
-    for n in 1 2 3 4 5 6; do
+    for n in $(seq 1 "$ACTORS_PER_CELL"); do
       printf 'actor-%s-%s\n' "$cell" "$n"
     done
   done
@@ -121,7 +121,7 @@ all_addresses() {
     printf '%s %s\n' "$key" "${!key}"
   done
   for cell in C001 C002; do
-    for n in 1 2 3 4 5 6; do
+    for n in $(seq 1 "$ACTORS_PER_CELL"); do
       key="ACTOR_${cell}_${n}_CELL_IP"
       printf '%s %s\n' "$key" "${!key}"
       key="ACTOR_${cell}_${n}_SHARED_IP"

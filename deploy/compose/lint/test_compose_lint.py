@@ -107,8 +107,8 @@ class ComposeModel(unittest.TestCase):
 
     def test_c001_and_c002_actors_share_no_cell_network(self):
         self.assertClean(cl.check_actor_cell_isolation(MODEL))
-        m = mutated(lambda m: m["services"]["actor-c001-4"]["networks"].update({"net-c002": None}))
-        self.assertCaught(cl.check_actor_cell_isolation(m), "actor-c001-4: joins net-c002")
+        m = mutated(lambda m: m["services"]["actor-c001-3"]["networks"].update({"net-c002": None}))
+        self.assertCaught(cl.check_actor_cell_isolation(m), "actor-c001-3: joins net-c002")
 
     def test_artery_and_management_ports_are_not_published_or_on_net_shared(self):
         self.assertClean(cl.check_internal_ports(MODEL, TOPOLOGY))
@@ -150,18 +150,18 @@ class ComposeModel(unittest.TestCase):
         m = mutated(lambda m: m["services"]["control"]["volumes"][0].update(volume={"subpath": "gateway-c001"}))
         self.assertCaught(cl.check_volumes(m), "control: run volume must be mounted read-only at /run/signaling with subpath control")
 
-    def test_service_count_is_24_plus_provisioners(self):
+    def test_service_count_is_18_plus_provisioners(self):
         names = set(MODEL["services"])
-        self.assertEqual(24, len(names - set(cl.PROVISIONERS)))
+        self.assertEqual(18, len(names - set(cl.PROVISIONERS)))
         self.assertEqual(set(cl.PROVISIONERS), names & set(cl.PROVISIONERS))
 
     # --- controller additions ----------------------------------------------------------------
 
-    def test_service_set_is_exactly_the_26(self):
-        self.assertEqual(26, len(cl.EXPECTED_SERVICES))
+    def test_service_set_is_exactly_the_20(self):
+        self.assertEqual(20, len(cl.EXPECTED_SERVICES))
         self.assertClean(cl.check_service_set(MODEL))
         m = mutated(lambda m: m["services"].update(debug={"image": "busybox"}))
-        self.assertCaught(cl.check_service_set(m), "debug is not one of the 26")
+        self.assertCaught(cl.check_service_set(m), "debug is not one of the expected")
 
     def test_env_matches_rendered_env_list(self):
         self.assertClean(cl.check_environment(MODEL, TOPOLOGY))
@@ -190,7 +190,7 @@ class ComposeModel(unittest.TestCase):
     def test_kube_api_env_is_per_cell(self):
         self.assertClean(cl.check_kube_api_env(MODEL, TOPOLOGY))
         env1 = MODEL["services"]["kube-api-c001"]["environment"]
-        self.assertEqual("172.30.1.11,172.30.1.12,172.30.1.13,172.30.1.14,172.30.1.15,172.30.1.16", env1["KUBE_POD_IPS"])
+        self.assertEqual("172.30.1.11,172.30.1.12,172.30.1.13", env1["KUBE_POD_IPS"])
 
         def swap(key):
             def fn(m):
@@ -240,7 +240,7 @@ class ComposeModel(unittest.TestCase):
         dep = {"condition": "service_healthy", "required": True}
         m = mutated(lambda m: m["services"]["actor-c001-2"]["depends_on"].update({"actor-c001-1": dep}))
         self.assertCaught(cl.check_start_order(m), "actor-c001-2: actors must not depend on each other")
-        m = mutated(lambda m: m["services"]["gateway-c001"]["depends_on"].pop("actor-c001-6"))
+        m = mutated(lambda m: m["services"]["gateway-c001"]["depends_on"].pop("actor-c001-3"))
         self.assertCaught(cl.check_start_order(m), "gateway-c001: depends_on differs")
         m = mutated(lambda m: m["services"]["control"]["depends_on"].pop("actor-c002-1"))
         self.assertCaught(cl.check_start_order(m), "control: depends_on differs")

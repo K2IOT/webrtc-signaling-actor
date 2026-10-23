@@ -47,11 +47,11 @@ Phương án đã loại: main class local riêng dựng enrollment kiểu test 
 
 ## 3. Topology
 
-### 3.1 Service (26 container: 17 JVM, 5 PostgreSQL, 2 kube-api, 2 bước provisioner)
+### 3.1 Service (20 container: 11 JVM, 5 PostgreSQL, 2 kube-api, 2 bước provisioner)
 
 | Nhóm | Container | Ghi chú |
 |---|---|---|
-| Mỗi cell (×2) | `actor-<cell>-1..6` | Cố định 6 (`SignalingProperties.Cluster` yêu cầu), quorum 4, `required-contact-point-nr=6` |
+| Mỗi cell (×2) | `actor-<cell>-1..3` | **Ba actor mỗi cell (quyết định của người dùng, thay cho sáu)**; cell `ready` khi 2/3 actor Up (quorum là đa số chặt). Production giữ nguyên sáu actor, quorum 4. Kích thước khai báo bằng `ACTORS_PER_CELL` trong `topology.env`, actor nhận qua `SIGNALING_LOCAL_CELL_ACTORS` (`config/native-sources.md`) và chỉ đường `LOCAL_TEST_ONLY` đọc nó: Pekko `min-nr-of-members=2`, `required-contact-point-nr=3`, cửa sổ tương thích nhận 2–4 peer (quorum đến kích thước + 1). `SignalingProperties.Cluster.actorPods == 6` là hằng số hợp đồng không ai đọc, giữ nguyên. Mỗi actor một vùng AZ riêng (`az-a/b/c`) để mất một actor vẫn còn hai vùng |
 | | `gateway-<cell>` | WSS 8443, relay gRPC 9443 |
 | | `pg-<cell>-primary`, `pg-<cell>-standby` | PostgreSQL 17.6 |
 | | `kube-api-<cell>` | Fake Kubernetes API cho Pekko, một cái cho mỗi cell, nằm trên mạng cell của nó |
@@ -61,9 +61,9 @@ Phương án đã loại: main class local riêng dựng enrollment kiểu test 
 | | `pg-directory` | Hai database: `directory`, `source` |
 | | `provision-1`, `provision-2` | Hai bước one-shot dùng chung một image (§6) |
 
-17 JVM = 15 JVM plane (12 actor, 2 gateway, `control`) + `identity` + `local-platform`. 5 PostgreSQL = 4 cell + `pg-directory`. Bản thiết kế đầu ghi 14 JVM và một `kube-api` dùng chung; kube-api tách theo cell để mỗi cell chỉ thấy kube-API của chính nó (§3.2).
+11 JVM = 9 JVM plane (6 actor, 2 gateway, `control`) + `identity` + `local-platform`. 5 PostgreSQL = 4 cell + `pg-directory`. Bản thiết kế đầu ghi 14 JVM và một `kube-api` dùng chung; kube-api tách theo cell để mỗi cell chỉ thấy kube-API của chính nó (§3.2).
 
-Ước tính tài nguyên: 17 JVM × heap tối đa 384 MB (`-Xmx384m`, mặc định của `.env.example`) cộng overhead JVM, và 5 PostgreSQL; sàn preflight là 12 GiB RAM trống. Đây là ước lượng, không phải đo; Task 10 đo (`docker stats`) và chỉnh `JVM_OPTS` cùng sàn preflight.
+Ước tính tài nguyên (đã tính cho 17 JVM của thiết kế sáu actor, nay còn 11 JVM): 11 JVM × heap tối đa 384 MB (`-Xmx384m`, mặc định của `.env.example`) cộng overhead JVM, và 5 PostgreSQL; sàn preflight là 12 GiB RAM trống. Đây là ước lượng, không phải đo; Task 10 đo (`docker stats`) và chỉnh `JVM_OPTS` cùng sàn preflight.
 
 ### 3.2 Mạng và địa chỉ tĩnh
 
@@ -71,9 +71,9 @@ Discovery dùng `use-raw-ip=true` và management client kiểm hostname bằng t
 
 | Mạng | Subnet | Chứa | Dùng cho |
 |---|---|---|---|
-| `net-c001` | 172.30.1.0/24 | actor c001 (.11–.16), `control` (.10), `pg-c001-primary` (.101), `pg-c001-standby` (.102), `kube-api-c001` (.250) | Artery 25520, management 8558, DB, discovery |
-| `net-c002` | 172.30.2.0/24 | tương tự (.11–.16, .10, .101, .102), `kube-api-c002` (.250) | như trên |
-| `net-shared` | 172.30.0.0/24 | actor c001 (.31–.36), actor c002 (.41–.46), `gateway-c001` (.21), `gateway-c002` (.22), `control` (.10), `identity` (.11), `local-platform` (.12), `pg-directory` (.14) | RPC 8443/9443, bootstrap, source |
+| `net-c001` | 172.30.1.0/24 | actor c001 (.11–.13), `control` (.10), `pg-c001-primary` (.101), `pg-c001-standby` (.102), `kube-api-c001` (.250) | Artery 25520, management 8558, DB, discovery |
+| `net-c002` | 172.30.2.0/24 | tương tự (.11–.13, .10, .101, .102), `kube-api-c002` (.250) | như trên |
+| `net-shared` | 172.30.0.0/24 | actor c001 (.31–.33), actor c002 (.41–.43), `gateway-c001` (.21), `gateway-c002` (.22), `control` (.10), `identity` (.11), `local-platform` (.12), `pg-directory` (.14) | RPC 8443/9443, bootstrap, source |
 
 Artery và management chỉ lên `net-<cell>`, nên c001 không có đường tới Artery của c002. `control` nối cả `net-c001`, `net-c002` và `net-shared` để tới ba PostgreSQL; địa chỉ trên hai mạng cell là `CONTROL_C001_IP`=172.30.1.10 và `CONTROL_C002_IP`=172.30.2.10 (bảng địa chỉ đầu tiên không liệt kê, dùng host .10 còn trống). Có hai `kube-api`, mỗi cái chỉ nằm trên mạng cell của nó (`KUBE_C001_IP`, `KUBE_C002_IP`). Hai mạng cell là `internal: true` (không có egress); `net-shared` là bridge thường vì các cổng publish cần nó. Mỗi mạng khai `ip_range` (`NET_*_DYNAMIC`, `.192/27`) cho địa chỉ động của `provision-2` (nối cả ba mạng); mọi địa chỉ tĩnh nằm ngoài các dải này nên container một lần không bao giờ chiếm địa chỉ mà service sau cần (`pg-directory` nhận `control` và `local-platform` theo /32). Địa chỉ cụ thể nằm trong `topology.env` và là nguồn duy nhất cho compose, generator PKI và contract.
 
@@ -185,9 +185,9 @@ Khóa Ed25519: proof signing mỗi cell, ký source. Mật khẩu PKCS12 sinh ng
 
 ### 4.7 Formation và kube-API
 
-- Lần dựng đầu dùng profile `initial-six`: `new-cluster-enabled=on` cùng `signaling.controlled-initial-formation=true`, sáu contact point; các lần khởi động lại tiếp tục dùng cùng cấu hình (Pekko bootstrap gia nhập cluster đã có).
+- Lần dựng đầu dùng profile `initial-six` (tên giữ nguyên, chỉ có nghĩa "dựng cụm ban đầu có kiểm soát"): `new-cluster-enabled=on` cùng `signaling.controlled-initial-formation=true`, ba contact point (số actor của cell); các lần khởi động lại tiếp tục dùng cùng cấu hình (Pekko bootstrap gia nhập cluster đã có).
 - `kube-api` trả `GET /api/v1/namespaces/<ns>/pods?labelSelector=app=webrtc-signaling,plane=actor,cell=<cell>` với bearer token, JSON `items[]` gồm `status.podIP`, `phase=Running`, `containerStatuses`, `spec.containers[].ports[name=management]`. Danh sách lấy từ `topology.env`; mẫu hành vi: `NativeActorProcessIT`. Namespace giả `wsa-<cell>`.
-- Đồng hồ khởi động local của actor là 30s kể từ lúc process bắt đầu: mười hai actor phải khởi động đồng thời, không nối tiếp.
+- Đồng hồ khởi động local của actor là 30s kể từ lúc process bắt đầu: sáu actor (ba mỗi cell) phải khởi động đồng thời, không nối tiếp.
 
 ## 5. Bố cục `deploy/compose/`
 
@@ -244,7 +244,7 @@ Cột "Trạng thái" phản ánh SP1, SP2 và SP3 tới Task 9; chưa có hàng
 | `NativeCompatibility` đọc `...artery.ssl.config.require-mutual-authentication` nhưng conf đặt dưới `ssl.config-ssl-engine`; gate tương thích có thể không bao giờ mở | **Đã sửa (SP1)**: lỗi đường dẫn khóa là có thật; nơi đọc dùng khóa hiệu lực `ssl.config-ssl-engine`, `ssl.config` chỉ là dự phòng khi thiếu | Có test; gate mở trong `LocalRuntimeCompositionIT` |
 | Epoch phát hành của Identity so với watermark `RevocationState` (nguy cơ epoch 0 bị coi là đã revoke) | **Đã giải quyết bằng test (SP2)**: token không có claim `securityEpoch` được đọc là epoch 0; user không có sự kiện nào không bị ảnh hưởng, còn revoke đầu tiên (epoch 0) chặn token epoch 0 | `RevocationPageServiceTest`, `LocalPlatformCompositionIT` (revoke trả epoch 0, user bị từ chối trên các plane đang chạy, user khác không bị); không đổi ngữ nghĩa `RevocationState`. Revoke user là vĩnh viễn trong môi trường này |
 | Control cần `CellRpcClient`; `NativeCellRpcConfiguration` hiện chỉ profile `actor`, `gateway` | **Đã giải quyết (SP1)** bằng danh tính workload `control` chỉ-quan-sát (§4.3 mục 7, §4.6) | Test từ chối của server actor cho execute, relay và sync; `LocalRuntimeCompositionIT` chứng minh gate control quay về 503 khi chỉ dừng actor (§9) |
-| Cổng thời gian 30s của actor khi khởi động | **Đã xử lý trong thiết kế (SP3)**: không actor nào `depends_on` actor khác, cả mười hai khởi động đồng thời; chưa chạy thật | Nếu compose chậm, tăng giới hạn trong chính config có kiểm range, không bỏ kiểm tra; Task 10 quan sát |
+| Cổng thời gian 30s của actor khi khởi động | **Đã xử lý trong thiết kế (SP3)**: không actor nào `depends_on` actor khác, cả sáu khởi động đồng thời; chưa chạy thật | Nếu compose chậm, tăng giới hạn trong chính config có kiểm range, không bỏ kiểm tra; Task 10 quan sát |
 | Phép đo đồng hồ chỉ trong container | **Giới hạn đã chấp nhận (SP2)**: source đo thật lệch wall/monotonic của chính process (`HostClockObserver`) và cộng phụ cấp cố định 100000µs cho độ trễ đọc của consumer | Không dùng làm bằng chứng kỷ luật đồng hồ host; đo trên 5s gần nhất, không thấy drift làm hai đồng hồ lệch cùng nhau (xem `config/native-sources.md`). `ClockReportServiceTest`, `HostClockObserverTest`, `LocalPlatformCompositionIT`. Source của IT SP1 vẫn không đo gì, chỉ khai mức tối đa đã enroll |
 | Control giữ credential hai cell | Chấp nhận, chỉ `LOCAL_TEST_ONLY`; SP1 giới hạn còn đúng một `transferCells` | Đóng bằng A3/A4 |
 | Cổng RPC ingress của actor (`CellRpcServer`) và relay của gateway (`GatewayRelayRpcServer`) bind mọi interface; WSS và HTTPS của control cũng vậy (chỉ Artery, management và health bind `podIp`) | **Đã xử lý trong thiết kế (SP3)**: mạng cell `internal: true`, cổng RPC/relay/WSS/HTTPS chỉ nằm trên `net-shared`, cổng publish bind `127.0.0.1`; nghiệm thu bằng probe cô lập ở Task 10 | Thiết kế mạng compose cô lập: mỗi cổng chỉ có đường tới từ đúng mạng (§3.2); không dựa vào việc listener tự giới hạn |
@@ -259,9 +259,9 @@ Cột "Trạng thái" phản ánh SP1, SP2 và SP3 tới Task 9; chưa có hàng
 
 ## 9. Tiêu chí chấp nhận
 
-1. Từ checkout sạch, `docker compose up` đưa mọi service đến `healthy`; mười hai actor `Up`; `/ready` của gateway, control và actor trả 200.
+1. Từ checkout sạch, `docker compose up` đưa mọi service đến `healthy`; sáu actor `Up`; `/ready` của gateway, control và actor trả 200.
 2. `smoke.mjs` PASS, gồm cross-cell và revoke.
-3. Dừng một actor: cell vẫn `ready` (quorum 4) và hồi phục khi khởi động lại. Dừng standby của một cell: lệnh critical của cell đó fail-closed, không có fallback bất đồng bộ.
+3. Dừng một actor: cell vẫn `ready` (quorum 2 trên 3) và hồi phục khi khởi động lại. Dừng standby của một cell: lệnh critical của cell đó fail-closed, không có fallback bất đồng bộ.
 4. Fingerprint lệch, certificate sai SPIFFE hoặc thiếu contract: container từ chối khởi động với lỗi rõ.
 5. `./mvnw verify` của SP1/SP2 xanh; image triển khai không chứa `TestOnlyNativeCapabilities`.
 6. Không có secret hay private key mới trong git; mọi artifact và log in `LOCAL_TEST_ONLY` và `NOT_QUALIFIED`.

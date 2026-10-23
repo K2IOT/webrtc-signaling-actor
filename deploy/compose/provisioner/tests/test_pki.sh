@@ -44,14 +44,14 @@ stage1_succeeds() {
   assert_true ".provisioned marker exists" test -f "$RUN_ROOT/.provisioned"
 }
 
-service_dirs_cover_all_24_names() {
+service_dirs_cover_all_18_names() {
   local s n=0
   for s in $(service_list) pg-c001-primary pg-c001-standby pg-c002-primary pg-c002-standby pg-directory kube-api-c001 kube-api-c002; do
     assert_true "dir $s" test -d "$RUN_ROOT/$s"
     n=$((n + 1))
   done
-  assert_eq "24" "$n" "number of service directories"
-  assert_eq "24" "$(find "$RUN_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '_shared' ! -name '.ca' | wc -l | tr -d ' ')" \
+  assert_eq "18" "$n" "number of service directories"
+  assert_eq "18" "$(find "$RUN_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '_shared' ! -name '.ca' | wc -l | tr -d ' ')" \
     "no extra service directories"
 }
 
@@ -61,9 +61,9 @@ each_workload_leaf_has_exactly_one_uri_san() {
     n="$(uri_sans "$RUN_ROOT/$s/leaf.crt" | wc -l | tr -d ' ')"
     assert_eq "1" "$n" "$s URI SAN count"
   done
-  assert_eq "15" "$(planes | wc -l | tr -d ' ')" "plane count"
-  assert_eq "15" "$(for s in $(planes); do uri_sans "$RUN_ROOT/$s/leaf.crt"; done | sort -u | wc -l | tr -d ' ')" \
-    "15 distinct SPIFFE ids (no id is shared between pods)"
+  assert_eq "9" "$(planes | wc -l | tr -d ' ')" "plane count"
+  assert_eq "9" "$(for s in $(planes); do uri_sans "$RUN_ROOT/$s/leaf.crt"; done | sort -u | wc -l | tr -d ' ')" \
+    "9 distinct SPIFFE ids (no id is shared between pods)"
 }
 
 actor_uri_san_is_per_pod_id() {
@@ -266,7 +266,7 @@ kube_tokens_differ_per_cell() {
   t2="$(cat "$RUN_ROOT/kube-api-c002/kube-token")"
   assert_true "tokens are non-empty" test -n "$t1" -a -n "$t2"
   assert_true "tokens differ between cells" test "$t1" != "$t2"
-  for n in 1 2 3 4 5 6; do
+  for n in $(seq 1 "$ACTORS_PER_CELL"); do
     assert_eq "$t1" "$(cat "$RUN_ROOT/actor-c001-$n/kube-token")" "actor-c001-$n token"
     assert_eq "$t2" "$(cat "$RUN_ROOT/actor-c002-$n/kube-token")" "actor-c002-$n token"
     assert_true "actor-c001-$n kube-ca" cmp -s "$RUN_ROOT/kube-api-c001/kube-ca.crt" "$RUN_ROOT/actor-c001-$n/kube-ca.crt"
@@ -281,7 +281,7 @@ pod_uids_are_unique_lowercase_uuids() {
   local f="$RUN_ROOT/_shared/pod-uids.env" g="$RUN_ROOT/_shared/gateway-boots.env"
   local re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   local line k v
-  assert_eq "17" "$(wc -l <"$f" | tr -d ' ')" "pod-uids.env lines"
+  assert_eq "11" "$(wc -l <"$f" | tr -d ' ')" "pod-uids.env lines"
   assert_eq "2" "$(wc -l <"$g" | tr -d ' ')" "gateway-boots.env lines"
   while IFS='=' read -r k v; do
     assert_true "$k is a lowercase uuid" grep -Eq "$re" <<<"$v"
@@ -290,7 +290,7 @@ pod_uids_are_unique_lowercase_uuids() {
   while IFS='=' read -r k v; do
     assert_true "$k is a lowercase uuid" grep -Eq "$re" <<<"$v"
   done <"$g"
-  assert_eq "19" "$(cat "$f" "$g" | cut -d= -f2 | sort -u | wc -l | tr -d ' ')" "all 19 uuids distinct"
+  assert_eq "13" "$(cat "$f" "$g" | cut -d= -f2 | sort -u | wc -l | tr -d ' ')" "all 13 uuids distinct"
   assert_true "ACTOR_C001_3_POD_UID present" grep -q '^ACTOR_C001_3_POD_UID=' "$f"
   assert_true "LOCAL_PLATFORM_POD_UID present" grep -q '^LOCAL_PLATFORM_POD_UID=' "$f"
   assert_true "GATEWAY_BOOT_C001 present" grep -q '^GATEWAY_BOOT_C001=' "$g"
@@ -486,7 +486,7 @@ refuses_a_foreign_non_empty_directory() {
 }
 
 setup_run
-for t in stage1_succeeds service_dirs_cover_all_24_names each_workload_leaf_has_exactly_one_uri_san actor_uri_san_is_per_pod_id \
+for t in stage1_succeeds service_dirs_cover_all_18_names each_workload_leaf_has_exactly_one_uri_san actor_uri_san_is_per_pod_id \
   gateway_uri_san_carries_gateway_id control_leaf_has_control_uri_and_bootstrap_dns gateway_leaf_has_public_dns_san \
   leaf_has_server_and_client_eku eku_and_key_usage leaf_chains_to_workload_ca pg_server_leafs_carry_dns_and_ip_sans \
   remoting_p12_has_ip_san_and_loads_with_keytool ca_certs_are_path_length_zero issue_leaf_refuses_an_empty_san_list proof_key_is_ed25519_and_pub_matches source_pub_matches_source_key \

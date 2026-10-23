@@ -61,6 +61,7 @@ x-plane-env: &plane-env
   SIGNALING_LOCAL_PROCESS_PROFILE: /run/signaling/process.json
   SIGNALING_RUNTIME_CONTRACT: /run/signaling/runtime.yaml
   SIGNALING_CLUSTER_FINGERPRINT: ${CLUSTER_FINGERPRINT:?topology.env}
+  SIGNALING_LOCAL_CELL_ACTORS: ${ACTORS_PER_CELL:?topology.env}
   SIGNALING_IDENTITY_ISSUER: ${ISSUER:?topology.env}
   SIGNALING_IDENTITY_AUDIENCE: ${AUDIENCE:?topology.env}
   JVM_OPTS: ${JVM_OPTS:?.env}
@@ -229,7 +230,7 @@ services:
     environment:
       KUBE_CELL: c001
       KUBE_NAMESPACE: ${KUBE_C001_NAMESPACE:?topology.env}
-      KUBE_POD_IPS: "${ACTOR_C001_1_CELL_IP},${ACTOR_C001_2_CELL_IP},${ACTOR_C001_3_CELL_IP},${ACTOR_C001_4_CELL_IP},${ACTOR_C001_5_CELL_IP},${ACTOR_C001_6_CELL_IP}"
+      KUBE_POD_IPS: "${ACTOR_C001_1_CELL_IP},${ACTOR_C001_2_CELL_IP},${ACTOR_C001_3_CELL_IP}"
       KUBE_TOKEN_FILE: /run/signaling/kube-token
       KUBE_TLS_CERT: /run/signaling/kube-api.crt
       KUBE_TLS_KEY: /run/signaling/kube-api.key
@@ -253,7 +254,7 @@ services:
     environment:
       KUBE_CELL: c002
       KUBE_NAMESPACE: ${KUBE_C002_NAMESPACE:?topology.env}
-      KUBE_POD_IPS: "${ACTOR_C002_1_CELL_IP},${ACTOR_C002_2_CELL_IP},${ACTOR_C002_3_CELL_IP},${ACTOR_C002_4_CELL_IP},${ACTOR_C002_5_CELL_IP},${ACTOR_C002_6_CELL_IP}"
+      KUBE_POD_IPS: "${ACTOR_C002_1_CELL_IP},${ACTOR_C002_2_CELL_IP},${ACTOR_C002_3_CELL_IP}"
       KUBE_TOKEN_FILE: /run/signaling/kube-token
       KUBE_TLS_CERT: /run/signaling/kube-api.crt
       KUBE_TLS_KEY: /run/signaling/kube-api.key
@@ -348,39 +349,6 @@ services:
       <<: *health-timing
       test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_3_CELL_IP}", "${HEALTH_PORT}", /ready]
 
-  actor-c001-4:
-    <<: *actor-c001
-    networks:
-      net-c001: {ipv4_address: "${ACTOR_C001_4_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C001_4_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-4}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_4_CELL_IP}", "${HEALTH_PORT}", /ready]
-
-  actor-c001-5:
-    <<: *actor-c001
-    networks:
-      net-c001: {ipv4_address: "${ACTOR_C001_5_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C001_5_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-5}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_5_CELL_IP}", "${HEALTH_PORT}", /ready]
-
-  actor-c001-6:
-    <<: *actor-c001
-    networks:
-      net-c001: {ipv4_address: "${ACTOR_C001_6_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C001_6_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c001-6}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C001_6_CELL_IP}", "${HEALTH_PORT}", /ready]
-
   # --- cell c002 actors ------------------------------------------------------------------------
 
   actor-c002-1:
@@ -416,39 +384,6 @@ services:
       <<: *health-timing
       test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_3_CELL_IP}", "${HEALTH_PORT}", /ready]
 
-  actor-c002-4:
-    <<: *actor-c002
-    networks:
-      net-c002: {ipv4_address: "${ACTOR_C002_4_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C002_4_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-4}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_4_CELL_IP}", "${HEALTH_PORT}", /ready]
-
-  actor-c002-5:
-    <<: *actor-c002
-    networks:
-      net-c002: {ipv4_address: "${ACTOR_C002_5_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C002_5_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-5}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_5_CELL_IP}", "${HEALTH_PORT}", /ready]
-
-  actor-c002-6:
-    <<: *actor-c002
-    networks:
-      net-c002: {ipv4_address: "${ACTOR_C002_6_CELL_IP:?topology.env}"}
-      net-shared: {ipv4_address: "${ACTOR_C002_6_SHARED_IP:?topology.env}"}
-    volumes:
-      - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: actor-c002-6}}
-    healthcheck:
-      <<: *health-timing
-      test: [CMD, bash, -c, *http-probe, probe, "${ACTOR_C002_6_CELL_IP}", "${HEALTH_PORT}", /ready]
-
   # --- gateways (pinned boot id per provision: never restarted) and control ------------------
 
   gateway-c001:
@@ -471,9 +406,6 @@ services:
       actor-c001-1: {condition: service_healthy}
       actor-c001-2: {condition: service_healthy}
       actor-c001-3: {condition: service_healthy}
-      actor-c001-4: {condition: service_healthy}
-      actor-c001-5: {condition: service_healthy}
-      actor-c001-6: {condition: service_healthy}
 
   gateway-c002:
     <<: *plane
@@ -495,9 +427,6 @@ services:
       actor-c002-1: {condition: service_healthy}
       actor-c002-2: {condition: service_healthy}
       actor-c002-3: {condition: service_healthy}
-      actor-c002-4: {condition: service_healthy}
-      actor-c002-5: {condition: service_healthy}
-      actor-c002-6: {condition: service_healthy}
 
   control:
     <<: *plane
@@ -523,15 +452,9 @@ services:
       actor-c001-1: {condition: service_healthy}
       actor-c001-2: {condition: service_healthy}
       actor-c001-3: {condition: service_healthy}
-      actor-c001-4: {condition: service_healthy}
-      actor-c001-5: {condition: service_healthy}
-      actor-c001-6: {condition: service_healthy}
       actor-c002-1: {condition: service_healthy}
       actor-c002-2: {condition: service_healthy}
       actor-c002-3: {condition: service_healthy}
-      actor-c002-4: {condition: service_healthy}
-      actor-c002-5: {condition: service_healthy}
-      actor-c002-6: {condition: service_healthy}
 
 # --- networks and volumes ------------------------------------------------------------------------
 

@@ -35,17 +35,29 @@ PROJECT = "signaling-compose-local"
 MIN_COMPOSE = (2, 26)
 
 CELLS = ("c001", "c002")
-ACTORS = tuple(f"actor-{c}-{n}" for c in CELLS for n in range(1, 7))
+
+
+def _actors_per_cell() -> int:
+    """ACTORS_PER_CELL of topology.env: the one place the cell size is declared."""
+    for line in TOPOLOGY_ENV.read_text().splitlines():
+        m = re.fullmatch(r'ACTORS_PER_CELL="?([2-6])"?', line.strip())
+        if m:
+            return int(m.group(1))
+    raise SystemExit("topology.env must declare ACTORS_PER_CELL (2 to 6)")
+
+
+ACTORS_PER_CELL = _actors_per_cell()
+ACTORS = tuple(f"actor-{c}-{n}" for c in CELLS for n in range(1, ACTORS_PER_CELL + 1))
 GATEWAYS = tuple(f"gateway-{c}" for c in CELLS)
-PLANES = ACTORS + GATEWAYS + ("control",)  # the 15 plane JVMs (signaling-app)
-JVM_SERVICES = PLANES + ("identity", "local-platform")  # 17
+PLANES = ACTORS + GATEWAYS + ("control",)  # the plane JVMs (signaling-app)
+JVM_SERVICES = PLANES + ("identity", "local-platform")
 PG_PRIMARIES = tuple(f"pg-{c}-primary" for c in CELLS)
 PG_STANDBYS = tuple(f"pg-{c}-standby" for c in CELLS)
 PG_SERVICES = PG_PRIMARIES + PG_STANDBYS + ("pg-directory",)
 KUBE_APIS = tuple(f"kube-api-{c}" for c in CELLS)
 PROVISIONERS = ("provision-1", "provision-2")
-EXPECTED_SERVICES = frozenset(JVM_SERVICES + PG_SERVICES + KUBE_APIS + PROVISIONERS)  # 26
-LONG_RUNNING = EXPECTED_SERVICES - frozenset(PROVISIONERS)  # 24 (spec 3.1, two kube-api)
+EXPECTED_SERVICES = frozenset(JVM_SERVICES + PG_SERVICES + KUBE_APIS + PROVISIONERS)
+LONG_RUNNING = EXPECTED_SERVICES - frozenset(PROVISIONERS)  # all but the two one-shot provisioners
 
 # Images: own images are built from this checkout with a `:local` tag (`make build`); third-party
 # images must carry a digest. Nothing may use `latest`.
@@ -211,7 +223,7 @@ def expected_networks(t: dict[str, str]) -> dict[str, dict[str, str | None]]:
     m: dict[str, dict[str, str | None]] = {}
     for c in CELLS:
         C = _upper(c)
-        for n in range(1, 7):
+        for n in range(1, ACTORS_PER_CELL + 1):
             m[f"actor-{c}-{n}"] = {f"net-{c}": t[f"ACTOR_{C}_{n}_CELL_IP"], "net-shared": t[f"ACTOR_{C}_{n}_SHARED_IP"]}
         m[f"gateway-{c}"] = {"net-shared": t[f"GATEWAY_{C}_IP"]}
         m[f"pg-{c}-primary"] = {f"net-{c}": t[f"PG_{C}_PRIMARY_IP"]}
@@ -273,7 +285,7 @@ def check_service_set(model: dict) -> list[str]:
     for s in sorted(EXPECTED_SERVICES - names):
         p.append(f"service set: {s} is missing")
     for s in sorted(names - EXPECTED_SERVICES):
-        p.append(f"service set: {s} is not one of the 26 expected services")
+        p.append(f"service set: {s} is not one of the expected services")
     if model.get("name") != PROJECT:
         p.append(f"project name must be {PROJECT}, got {model.get('name')!r}")
     return p
@@ -509,7 +521,7 @@ def check_start_order(model: dict) -> list[str]:
         want[f"gateway-{c}"] = {
             "provision-2": done,
             "local-platform": healthy,
-            **{f"actor-{c}-{n}": healthy for n in range(1, 7)},
+            **{f"actor-{c}-{n}": healthy for n in range(1, ACTORS_PER_CELL + 1)},
         }
     want["control"] = {"provision-2": done, "local-platform": healthy, **{a: healthy for a in ACTORS}}
     p = []
@@ -686,6 +698,7 @@ def expected_env(service: str, t: dict[str, str]) -> dict[str, str]:
         "SIGNALING_RUNTIME_CONTRACT": f"{RUN_TARGET}/runtime.yaml",
         "SIGNALING_CELL_ID": _cell(service) or "c001",
         "SIGNALING_CLUSTER_FINGERPRINT": t["CLUSTER_FINGERPRINT"],
+        "SIGNALING_LOCAL_CELL_ACTORS": t["ACTORS_PER_CELL"],
         "SIGNALING_IDENTITY_ISSUER": t["ISSUER"],
         "SIGNALING_IDENTITY_AUDIENCE": t["AUDIENCE"],
     }
@@ -743,7 +756,7 @@ def check_kube_api_env(model: dict, t: dict[str, str]) -> list[str]:
         want = {
             "KUBE_CELL": c,
             "KUBE_NAMESPACE": t[f"KUBE_{C}_NAMESPACE"],
-            "KUBE_POD_IPS": ",".join(t[f"ACTOR_{C}_{n}_CELL_IP"] for n in range(1, 7)),
+            "KUBE_POD_IPS": ",".join(t[f"ACTOR_{C}_{n}_CELL_IP"] for n in range(1, ACTORS_PER_CELL + 1)),
             "KUBE_TOKEN_FILE": f"{RUN_TARGET}/kube-token",
             "KUBE_TLS_CERT": f"{RUN_TARGET}/kube-api.crt",
             "KUBE_TLS_KEY": f"{RUN_TARGET}/kube-api.key",

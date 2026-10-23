@@ -6,10 +6,10 @@
 # it never becomes ready. The supported lifecycle is `make up` -> use -> `make down` (down -v).
 #
 # Refuses (exit 1, one message, "run make reset first") when the `run` volume exists while
-#   - any of the 17 JVM services has no running container (a manual `docker compose down` without
+#   - any of the 11 JVM services has no running container (a manual `docker compose down` without
 #     -v, or a crashed plane), or
 #   - the volume holds an `.offline` marker (a manual offline render with placeholder WAL facts).
-# Passes when the volume does not exist (fresh host) or when all 17 JVM services run (a no-op
+# Passes when the volume does not exist (fresh host) or when all 11 JVM services run (a no-op
 # `make up` on a healthy stack).
 # Environment: COMPOSE_PROJECT (default signaling-compose-local), PROVISIONER_IMAGE.
 set -euo pipefail

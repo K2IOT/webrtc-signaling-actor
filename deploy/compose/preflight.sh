@@ -11,7 +11,7 @@
 # Environment: PREFLIGHT_SKIP=name1,name2 skips checks; PREFLIGHT_MIN_MEM_GIB; test overrides
 # PREFLIGHT_MEMINFO (default /proc/meminfo), PREFLIGHT_LOADAVG (default /proc/loadavg),
 # PREFLIGHT_NPROC (default `nproc`).
-# A re-run `make up` on a stack whose 17 JVM services all run skips memory and load (the stack
+# A re-run `make up` on a stack whose 11 JVM services all run skips memory and load (the stack
 # itself uses that RAM and CPU) and prints PREFLIGHT_NOTE; the other checks still run.
 # Exit: 0 ok, 1 a check failed, 2 usage.
 set -euo pipefail
@@ -80,7 +80,7 @@ check_memory() {
   fi
   need=$((MIN_MEM_GIB * 1048576))
   if [ "$kb" -lt "$need" ]; then
-    fail memory "$((kb / 1048576)) GiB available, at least $MIN_MEM_GIB GiB needed (17 JVMs and 5 PostgreSQL)"
+    fail memory "$((kb / 1048576)) GiB available, at least $MIN_MEM_GIB GiB needed (11 JVMs and 5 PostgreSQL)"
   fi
 }
 

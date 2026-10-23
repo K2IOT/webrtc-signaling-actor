@@ -136,7 +136,7 @@ running_stack_skips_memory_and_load_checks() {
   printf 'MemAvailable: 1048576 kB\n' >"$WORK/meminfo.busy" # 1 GiB: the stack itself uses the RAM
   printf '30.00 20.00 10.00 1/100 1234\n' >"$WORK/loadavg.busy"
   run_preflight PREFLIGHT_MEMINFO="$WORK/meminfo.busy" PREFLIGHT_LOADAVG="$WORK/loadavg.busy" STUB_RUNNING="$all_jvm"
-  assert_eq "0" "$RC" "all 17 running: resource checks skipped"
+  assert_eq "0" "$RC" "all 11 running: resource checks skipped"
   assert_eq "1" "$(lines_with 'PREFLIGHT_NOTE stack already running; memory/load not checked')" "the note"
   assert_eq "PREFLIGHT_OK" "$(printf '%s\n' "$OUT" | tail -n 1)" "still ends with OK"
   # the other checks still run on a running stack

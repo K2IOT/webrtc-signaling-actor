@@ -87,7 +87,7 @@ json_is_valid_everywhere() {
 
 default_mount_prefix_is_run_signaling() {
   assert_eq "/run/signaling/directory.json" "$(j "$RUN_ROOT/actor-c001-1/provider.json" .directorySnapshot)" "snapshot path"
-  assert_eq "/run/signaling/kube-token" "$(j "$RUN_ROOT/actor-c002-4/process.json" .kube.tokenPath)" "kube token path"
+  assert_eq "/run/signaling/kube-token" "$(j "$RUN_ROOT/actor-c002-3/process.json" .kube.tokenPath)" "kube token path"
   assert_eq "/run/signaling/source.key" "$(j "$RUN_ROOT/local-platform/platform.json" .signingKey)" "platform signing key path"
   assert_true "cell db sslrootcert in the mount" grep -q 'sslrootcert=/run/signaling/db-ca.crt' \
     <(j "$RUN_ROOT/gateway-c002/provider.json" .cellDatabase.jdbcUrl)
@@ -171,7 +171,7 @@ actor_profiles() {
     assert_eq "ACTOR" "$(j "$f" .plane)" "$s plane"
     assert_eq "$(ip_of "$s" cell)" "$(j "$f" .podIp)" "$s pod ip is the cell-net address"
     assert_eq "${!az}" "$(j "$f" .azRole)" "$s az role"
-    assert_eq "az-a,az-b" "$(j "$f" '.cellAzRoles | join(",")')" "$s cell az roles"
+    assert_eq "az-a,az-b,az-c" "$(j "$f" '.cellAzRoles | join(",")')" "$s cell az roles"
     assert_eq "${!kube}" "$(j "$f" .kube.apiHost)" "$s kube host"
     assert_eq "443" "$(j "$f" .kube.apiPort)" "$s kube port"
     assert_eq "${!ns}" "$(j "$f" .kube.namespace)" "$s namespace"
@@ -245,16 +245,16 @@ env_list_matches_contract() {
     assert_eq "/run/signaling/runtime.yaml" "$(kv "$e" SIGNALING_RUNTIME_CONTRACT)" "$s runtime location"
     assert_false "$s env.list holds no password" grep -qi 'PASSWORD' "$e"
   done
-  assert_eq "initial-six" "$(kv "$RUN_ROOT/actor-c002-6/env.list" SIGNALING_FORMATION_PROFILE)" "formation profile"
-  assert_eq "$KUBE_C002_IP" "$(kv "$RUN_ROOT/actor-c002-6/env.list" SIGNALING_KUBE_API_HOST)" "kube host env"
+  assert_eq "initial-six" "$(kv "$RUN_ROOT/actor-c002-3/env.list" SIGNALING_FORMATION_PROFILE)" "formation profile"
+  assert_eq "$KUBE_C002_IP" "$(kv "$RUN_ROOT/actor-c002-3/env.list" SIGNALING_KUBE_API_HOST)" "kube host env"
   assert_eq "/run/signaling/platform.json" "$(kv "$RUN_ROOT/local-platform/env.list" SIGNALING_PLATFORM_CONFIG)" "platform config env"
 }
 
 one_cluster_fingerprint_across_all_planes() {
   local s
   assert_eq "1" "$(for s in $(planes); do kv "$RUN_ROOT/$s/env.list" SIGNALING_CLUSTER_FINGERPRINT; printf '\n'; done |
-    sort -u | grep -c .)" "one SIGNALING_CLUSTER_FINGERPRINT over all 15 planes of both cells"
-  assert_eq "$CLUSTER_FINGERPRINT" "$(kv "$RUN_ROOT/actor-c002-6/env.list" SIGNALING_CLUSTER_FINGERPRINT)" \
+    sort -u | grep -c .)" "one SIGNALING_CLUSTER_FINGERPRINT over all 9 planes of both cells"
+  assert_eq "$CLUSTER_FINGERPRINT" "$(kv "$RUN_ROOT/actor-c002-3/env.list" SIGNALING_CLUSTER_FINGERPRINT)" \
     "the topology value"
 }
 
@@ -370,7 +370,7 @@ rendered_names_match_the_certificates() {
     for i in 0 1; do
       c="$(j "$f" ".cells[$i].cell")"
       auth="$(j "$f" ".cells[$i].tlsAuthority")"
-      for n in 1 2 3 4 5 6; do
+      for n in $(seq 1 "$ACTORS_PER_CELL"); do
         assert_true "$s: actor-$c-$n leaf has DNS:$auth" grep -qx "DNS:$auth" <(sans -in "$RUN_ROOT/actor-$c-$n/leaf.crt")
       done
       gw="$(j "$f" ".gateways[$i].cell")"
@@ -511,9 +511,9 @@ mount_prefix_rewrites_every_path() {
   local d="$TMP/prefixed" s f
   cp -a "$RUN_ROOT" "$d"
   assert_true "prefixed render succeeds" env RUN_ROOT="$d" bash "$RENDER" render --offline --mount-prefix "$d"
-  f="$d/actor-c001-5/provider.json"
-  assert_eq "$d/actor-c001-5/directory.json" "$(j "$f" .directorySnapshot)" "snapshot path under prefix"
-  assert_eq "$d/actor-c001-5/kube-ca.crt" "$(j "$d/actor-c001-5/process.json" .kube.caPath)" "kube ca under prefix"
+  f="$d/actor-c001-3/provider.json"
+  assert_eq "$d/actor-c001-3/directory.json" "$(j "$f" .directorySnapshot)" "snapshot path under prefix"
+  assert_eq "$d/actor-c001-3/kube-ca.crt" "$(j "$d/actor-c001-3/process.json" .kube.caPath)" "kube ca under prefix"
   assert_true "sslrootcert under prefix" grep -q "sslrootcert=$d/control/db-ca.crt" <(j "$d/control/provider.json" .cellDatabase.jdbcUrl)
   assert_eq "$d/local-platform/source.key" "$(j "$d/local-platform/platform.json" .signingKey)" "platform path under prefix"
   for s in $(planes); do

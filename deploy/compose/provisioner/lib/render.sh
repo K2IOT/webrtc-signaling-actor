@@ -34,7 +34,7 @@ CONTAINER_MOUNT="/run/signaling"
 # DOMAIN (the TLS-authority suffix pki.sh also puts into the SANs), PG_PORT and KUBE_API_PORT
 # come from topology.env, the single source shared with stage 1.
 MARKER=".rendered"
-CELL_AZ_ROLES='["az-a","az-b"]'
+CELL_AZ_ROLES='["az-a","az-b","az-c"]'
 APP_JAR="/opt/signaling/app.jar"
 # Compose-level workaround (deploy/compose/ACCEPTANCE.md, iteration log): with no dialect configured,
 # Hibernate's dialect detection makes the JVM's first PostgreSQL connection (cold TLS + SCRAM,
@@ -130,6 +130,7 @@ production_defaults() {
 validate_topology() {
   local c cu s n key
   check CELLS '^c[0-9]{3} c[0-9]{3}$'
+  check ACTORS_PER_CELL '^[2-6]$'
   read -r FIRST_CELL SECOND_CELL <<<"$CELLS"
   for key in ISSUER AUDIENCE; do check "$key" '^[[:print:]]{1,512}$'; done
   check ORIGIN '^https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$'
@@ -148,7 +149,7 @@ validate_topology() {
     for key in "GATEWAY_${cu}_IP" "PG_${cu}_PRIMARY_IP" "KUBE_${cu}_IP"; do check "$key" "$IP_RE"; done
     check "GATEWAY_ID_$cu" '^[A-Za-z0-9_.-]{1,128}$'
     check "KUBE_${cu}_NAMESPACE" '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
-    for n in 1 2 3 4 5 6; do
+    for n in $(seq 1 "$ACTORS_PER_CELL"); do
       for key in "ACTOR_${cu}_${n}_CELL_IP" "ACTOR_${cu}_${n}_SHARED_IP"; do check "$key" "$IP_RE"; done
       check "ACTOR_${cu}_${n}_AZ" '^az-[a-z0-9][a-z0-9-]{0,62}$'
     done
@@ -346,6 +347,7 @@ env_list_doc() {
     --arg SIGNALING_LOCAL_PROCESS_PROFILE "$mount/process.json" \
     --arg SIGNALING_RUNTIME_CONTRACT "$mount/runtime.yaml" \
     --arg SIGNALING_CELL_ID "$cell" \
+    --arg SIGNALING_LOCAL_CELL_ACTORS "$ACTORS_PER_CELL" \
     --arg SIGNALING_POD_UID "${POD_UID[$s]}" \
     --arg SIGNALING_CLUSTER_FINGERPRINT "$CLUSTER_FINGERPRINT" \
     --arg SIGNALING_IDENTITY_ISSUER "$ISSUER" \

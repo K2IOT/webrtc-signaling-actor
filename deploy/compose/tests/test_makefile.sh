@@ -204,8 +204,8 @@ guard_refuses_an_offline_marker() {
   assert_true "message says make reset" grep -q 'make reset' <<<"$OUT"
 }
 
-guard_passes_when_the_volume_exists_and_all_17_run() {
-  assert_eq "17" "$(printf '%s\n' $all_jvm | grep -c .)" "service_list has 17 names"
+guard_passes_when_the_volume_exists_and_all_11_run() {
+  assert_eq "11" "$(printf '%s\n' $all_jvm | grep -c .)" "service_list has 11 names"
   run_guard STUB_VOLUME=1 STUB_RUNNING="$all_jvm"
   assert_eq "0" "$RC" "running stack passes"
 }
@@ -223,5 +223,5 @@ run_test smoke_ca_refuses_without_the_volume
 run_test guard_passes_when_the_volume_does_not_exist
 run_test guard_refuses_when_the_volume_exists_and_a_jvm_container_is_missing
 run_test guard_refuses_an_offline_marker
-run_test guard_passes_when_the_volume_exists_and_all_17_run
+run_test guard_passes_when_the_volume_exists_and_all_11_run
 finish
