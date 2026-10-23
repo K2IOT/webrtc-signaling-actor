@@ -3,7 +3,7 @@
 **LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED, twice in a row with the
 same result** (32 PASS, 7 FAIL each), with three actors per cell and the source database pooled.
 The stack starts in about 130 s and every plane is ready, but the first INVITE of the smoke fails
-inside its 2 s deadline in a different way each time. The environment is **not**
+in a different way each time (investigation in "Why the first INVITE fails"). The environment is **not**
 `LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing, N-1 or any capacity
 figure. The latest runs are in "Pooled source database, two back-to-back runs" below; the earlier
 sections describe the three-actor first run and the six-actor cells.
@@ -34,6 +34,51 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
+
+## Why the first INVITE fails (investigation, 2026-10-23)
+
+Method: the three-actor stack was brought up and left alone; `-Xlog:exceptions` was added to
+`JVM_OPTS` (temporary, restored afterwards); one INVITE was rebuilt from the JSON operation logs of
+every plane by `traceId`, and each `FencedException` / `AuthorizationRejected` was matched to its
+throw site. The smoke was then run five more times on the same warm stack.
+
+- The INVITE is **not** a single slow call and it never reaches cell c002. It fails inside c001
+  after 240 to 950 ms (gateway `INVITE OUTCOME_UNKNOWN`; one `STALE_CONNECTION` close of the caller's
+  socket was seen as well). `RPC_CONTROL` (session proof) takes 55 to 63 ms and commits; the command
+  itself then dies on the first attempt.
+- Every retry of the smoke's INVITE (same `requestId`, new `callId` minted by the gateway) ends in
+  `CallCommandService.authorizedRead` -> `AuthorizationRejected` at +67 ms, by design (see
+  `smoke/call-flow.mjs`). So the first attempt decides the step.
+- One causal chain was captured end to end: at +237 ms `NativeCellHealthSource` records a failed
+  `cell_primary` poll (`DbOverloadedException`, DB admission of the `RECOVERY` class refused it);
+  `poll` then sets `cached = null`, the cell is not safety-ready, `NativeActorComposition.local(group)`
+  returns empty, and at +280 ms `CallCommandHandler.check` (via `NativeParticipantRenewal.sealGrant`)
+  throws `FencedException`. That is the fail-closed gate working as written.
+- It is a minority cause. The same refusals (`DB_SAFETY` `BACKPRESSURE`) occur at a steady 1.5 to 3
+  per minute per actor with or without an INVITE (counters 63 to 75 per actor after 25 min, +6 to
+  +29 over the ten minutes that included the smoke runs). Each costs at most one 500 ms probe period,
+  so roughly 5 to 10 % of INVITE attempts, not the 100 % observed.
+- The main cause is latency. With the stack idle the host load average is 36 to 40 on 16 cores and
+  the stack alone uses 9.5 cores (actors 0.9 to 1.0 each, mostly kernel time; PostgreSQL primaries 1.0
+  and 1.45; local-platform 1.4). Single transactions that take a few ms on an idle host take 50 to
+  250 ms here, so the ten or so sequential hops of the INVITE saga reach the fixed 2 s budget: warm
+  runs saw `INVITE COMMITTED` after 1708 ms, `ACCEPT` after 1524 ms and two `ACCEPT OUTCOME_UNKNOWN`
+  at 2001 and 1524 ms. Two of the four warm runs passed INVITE, ACCEPT and NEGOTIATE and then failed
+  at OFFER with `RESYNC_REQUIRED`; one failed the callee's AUTH with `AUTHORIZATION_REJECTED`.
+- Is the three-actor cell a factor? Only slightly. Fewer JVMs lowered the total (about 10.5 cores
+  against 12.9), but each actor now sweeps about 340 recovery groups instead of 170, which keeps the
+  recovery sweep lag at 5 to 6 s (spec target 5 s) and loads the shared `RECOVERY` admission class
+  (4 slots) that the cell probe uses. The failures are not caused by the cell size.
+- No fix was made. The only product candidate (not clearing the cached primary fact when the probe
+  was refused before it ran) is safety-sensitive, would remove a minority of failures, and the
+  acceptance would still fail on latency. The deadline and the fail-closed gates were not touched.
+  The acceptance was not re-run because nothing changed: the two pooled runs above stand.
+
+Open items found on the way: the gateway and control `NullPointerException` in
+`NativeCompatibilityObservationProducer.lambda$membershipJob$1`; `security_progress` lock
+contention between actors (`could not obtain lock on row`); the idle background transaction rate
+(about 175 per second per actor, 5 session statements each) that drives the PostgreSQL and kernel
+CPU; and the 5 to 6 s recovery sweep lag.
 
 ## Pooled source database, two back-to-back runs (latest)
 
