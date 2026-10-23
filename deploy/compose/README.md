@@ -7,15 +7,17 @@ directory PostgreSQL, identity service and local platform (clock and revocation 
 
 **Status: `LOCAL_TEST_ONLY`, release `NOT_QUALIFIED`.** Nothing here is evidence of production
 readiness, high availability, host clock discipline, N-1 upgrade behaviour or any capacity figure.
-The acceptance run of this environment (spec section 9) has not been executed yet; the environment
-is not `LOCAL_QUALIFIED`. Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
+The acceptance run of this environment (spec section 9, `acceptance.sh`) FAILED on a 16-core host:
+the actors' idle CPU saturates it (see [ACCEPTANCE.md](ACCEPTANCE.md)); the environment is not
+`LOCAL_QUALIFIED`. Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
 
 ## Requirements
 
 - Linux, Docker Compose >= 2.26 (checked by `make up`), Java 21 and Node >= 20 on the host (Maven
   wrapper and smoke client). Developed and tried only with Docker 29 and Compose 5.6.
-- At least 12 GiB of free RAM (an estimate; `PREFLIGHT_MIN_MEM_GIB` adjusts the floor) and a quiet
-  CPU: the database deadlines are 500 ms to 2 s, so a busy host makes checkouts and commits fail.
+- At least 12 GiB of free RAM (measured 7.3-8.7 GiB in use; `PREFLIGHT_MIN_MEM_GIB` adjusts the
+  floor) and far more free CPU than the preflight checks: the idle stack used about 13 cores of a
+  16-core host (ACCEPTANCE.md), and the database and source deadlines (500 ms to 2 s) then fail.
   `make up` refuses at more than 0.7 load per core.
 - Free Docker subnets `172.30.0.0/24`, `172.30.1.0/24`, `172.30.2.0/24`.
 - 26 containers: 17 JVM (15 plane JVMs: 12 actors, 2 gateways, control; plus identity and
@@ -92,7 +94,8 @@ name comes from `topology.env`; nothing else holds one.
 
 ## Tests
 
-`make test` runs the shell, Node and Python suites (`tests/run-tests.sh`); `make lint` checks the
+`bash acceptance.sh` automates spec section 9 against a fresh `make down; make up` (phases and
+environment in its header; results in [ACCEPTANCE.md](ACCEPTANCE.md)). `make test` runs the shell, Node and Python suites (`tests/run-tests.sh`); `make lint` checks the
 resolved compose model. `RUN_DOCKER_TESTS=1 make test` adds the Docker-gated tests (real
 PostgreSQL containers, minutes). The smoke client's own tests need `npm ci` in `smoke/` once.
 
