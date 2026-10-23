@@ -52,7 +52,7 @@ function claims(token, label) {
   }
 }
 
-async function login(ctx, account) {
+export async function login(ctx, account) {
   const url = new URL('/api/v1/auth/login', ctx.config.identityUrl);
   let res;
   try {
@@ -72,7 +72,7 @@ async function login(ctx, account) {
   return { username: account.username, token, userId, jti };
 }
 
-async function bootstrap(ctx, user) {
+export async function bootstrap(ctx, user) {
   const ca = readFile(ctx.config.caFile, 'CA_FILE');
   let res;
   try {
@@ -92,7 +92,7 @@ async function bootstrap(ctx, user) {
   return { ...user, wssUrl: url.href, endpoint: url.host, cell: url.hostname.split('.')[0] };
 }
 
-async function connect(ctx, user, role) {
+export async function connect(ctx, user, role) {
   const peer = await Peer.open({ url: user.wssUrl, ca: readFile(ctx.config.caFile, 'CA_FILE'), origin: ctx.config.origin,
     lookup: ctx.lookup, timeoutMs: ctx.config.httpTimeoutMs, name: role });
   ctx.peers.push(peer);

@@ -30,7 +30,7 @@ MVN := ./mvnw$(if $(filter 1,$(MVN_OFFLINE)), -o)
 COMPOSE := docker compose --project-directory $(COMPOSE_DIR) --env-file $(COMPOSE_DIR)/topology.env --env-file $(COMPOSE_DIR)/.env -f $(COMPOSE_DIR)/compose.yaml
 SMOKE_DIR := $(COMPOSE_DIR)/.smoke
 
-.PHONY: help build hosts preflight up smoke-ca smoke down reset lint test ensure-env
+.PHONY: help build hosts preflight up smoke-ca smoke p2p down reset lint test ensure-env
 
 help: ## list the targets
 	@echo "deploy/compose (LOCAL_TEST_ONLY / NOT_QUALIFIED). Targets:"
@@ -82,6 +82,15 @@ smoke: smoke-ca ## run the cross-cell smoke test against the running stack
 	fi; \
 	CA_FILE=$(SMOKE_DIR)/ca-workload.crt ADMIN_CERT_FILE=$(SMOKE_DIR)/admin-client.crt ADMIN_KEY_FILE=$(SMOKE_DIR)/admin-client.key \
 	  SMOKE_RESOLVE="$$resolve" node $(COMPOSE_DIR)/smoke/smoke.mjs
+
+p2p: smoke-ca ## peer-to-peer check: real WebRTC data channel negotiated through the stack's signaling
+	@[ -d $(COMPOSE_DIR)/smoke/node_modules/ws ] || (cd $(COMPOSE_DIR)/smoke && npm ci --ignore-scripts --no-audit --no-fund)
+	@resolve=""; \
+	hosts_ok="$$(getent hosts c001.signaling.local c002.signaling.local bootstrap.signaling.local identity.signaling.local | grep -c '^127\.0\.0\.1' || true)"; \
+	if [ "$$hosts_ok" -lt 4 ]; then \
+	  resolve="$$(bash $(COMPOSE_DIR)/hosts.sh 2>/dev/null | awk '{ printf "%s%s=%s", sep, $$2, $$1; sep="," }')"; \
+	fi; \
+	CA_FILE=$(SMOKE_DIR)/ca-workload.crt SMOKE_RESOLVE="$$resolve" node $(COMPOSE_DIR)/smoke/p2p.mjs
 
 down: ensure-env ## docker compose down -v --remove-orphans (volumes always go: see README)
 	$(COMPOSE) down -v --remove-orphans

@@ -53,7 +53,7 @@ function sameRoute(peer, reply, label) {
 }
 
 /** Re-sends the identical frame until ACK_COMMITTED FINAL; PENDING and transient errors retry. */
-async function commit(peer, frame, label, deadlineMs) {
+export async function commit(peer, frame, label, deadlineMs) {
   const end = Date.now() + deadlineMs;
   let last = 'no reply';
   while (Date.now() < end) {
@@ -72,7 +72,7 @@ async function commit(peer, frame, label, deadlineMs) {
 }
 
 /** A relay write: COMMAND_RESULT, not committed, status VOLATILE, code WRITE_COMPLETED. */
-async function relay(peer, frame, label, deadlineMs) {
+export async function relay(peer, frame, label, deadlineMs) {
   const end = Date.now() + deadlineMs;
   let last = 'no reply';
   while (Date.now() < end) {
