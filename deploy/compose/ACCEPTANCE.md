@@ -52,6 +52,32 @@ before the fix 1 of 4 attempts did). Then:
 **Passed twice in a row: no** (not once). A second run was not made: the first failed for a
 reason (host CPU contention, below) that a repeat on this host does not change.
 
+### Second attempt after the fix, at about 8 free cores: `make up` FAILED
+
+Requested after the 12-free-core precondition could not be met: idle CPU stayed between 37 % and
+58 % (about 6 to 9 free cores) for 15 minutes, with the desktop session (mostly `gnome-shell`)
+using 7 to 8 cores. One run was made on request, **recorded here as another failed attempt, not
+as a pass**. Commit `9a68515` (the same code as `fb249e7`), 2026-10-23 03:56 UTC. The load guard
+of `make up` (limit 11.2 for a 1-minute load; it was 12 to 15) was skipped with
+`PREFLIGHT_SKIP=load`.
+
+- `make up` exited 2 after 217 s. 14 of 24 long-running services healthy, 5 of 12 actors healthy,
+  `/ready` 200 on 4 of 15 planes (and on `local-platform`). `actor-c002-6` exited
+  `{"errorCode":"STARTUP_FAILED"}` after its `GET /bootstrap/seed-nodes` request was dropped while
+  connecting; the other actors were still restarting under `on-failure:5`; `control` and both
+  gateways never started.
+- During start-up all twelve JVMs start together: the load average rose from 12 to 99 and idle CPU
+  fell to 0 %. The 30 s start-up membership gate counts from process start, so it cannot be met
+  at that load.
+- `acceptance.sh` stopped after the up phase and tore the stack down (`make down`); no later phase
+  ran, so criteria 2 to 4 and 6 were **not evaluated** (not passed). Teardown verified: no
+  compose container, volume or network left; `Android-01`, `Android-02` and `minikube` untouched.
+- The earlier run (host load about 8 at its start, desktop using 5 to 6 cores) did reach
+  all-healthy in 302 s. Together the two runs show start-up and readiness depending on free CPU,
+  not on the recovery sweep.
+
+**Passed twice in a row: no. Passed once: no.** The environment is not `LOCAL_QUALIFIED`.
+
 ### Root cause of the CPU defect, with numbers
 
 `CallRecoveryService.sweepTracked` calls the `groups` supplier `NativeActorComposition
@@ -191,7 +217,7 @@ clearly more free cores; neither threshold nor deadline was lowered to force one
 4. **Runs 3-4 and experiments.** CPU saturation identified and profiled (section above); CPU caps tried and rejected; no further compose fix found. `acceptance.sh` corrected along the way (exit status capture, refusal cases that run through `launch.sh`, PEM-body key check against the SP3 base, binary key handling, log dump removal).
 5. **CPU defect fixed, `fb249e7`.** Reproduced and measured first (`permits()` 131 µs, `actorReady()` 0.79 ms with 6 members, about 1000 reads per sweep), then fixed test-first (`RecoveryGroupSelectorTest`: equivalence with the old per-group selection on a table of ten states, the gate read exactly once however many groups are owned, closed gate reads nothing else, gate closing after the read, fail-closed on the next selection). GitNexus `impact`: `recoveryGroups` LOW (1 direct caller), `local` CRITICAL (209 dependents, 56 flows) and therefore not edited. `detect_changes()`: only `recoveryGroups`, `recoveryService`, `NativeActorComposition`. java-reviewer: approve (LOW test findings applied); security-reviewer: no findings.
 6. **Run after the fix.** First attempt refused by the load guard (load 12); a second was killed by a host reboot; the third ran to the end: 31 PASS, 8 FAIL (table above). Idle CPU about half of before in a like-for-like one-cell setting, not under the target; host contention keeps the gate closed with 12 actors.
-7. **Not done / open.** (a) A second full run, for the reason given above. (b) A run on a quiet host (about 12 free cores). (c) Lowering the cadence of the periodic jobs would reduce the idle cost further but changes freshness and recovery bounds: a design decision, not taken. (d) The well-formed wrong fingerprint is still refused only after about 67 s with the generic `STARTUP_FAILED` (spec 9.4). (e) `LocalRuntimeCompositionIT` failed once at load 9 (`actor exited 1`) and passed on the repeat: its start-up is load-sensitive.
+7. **Not done / open.** (a) A second full run: attempted once at about 8 free cores and failed in the up phase (section above); two runs on a host with about 12 free cores are still outstanding. (b) A run on a quiet host (about 12 free cores). (c) Lowering the cadence of the periodic jobs would reduce the idle cost further but changes freshness and recovery bounds: a design decision, not taken. (d) The well-formed wrong fingerprint is still refused only after about 67 s with the generic `STARTUP_FAILED` (spec 9.4). (e) `LocalRuntimeCompositionIT` failed once at load 9 (`actor exited 1`) and passed on the repeat: its start-up is load-sensitive.
 
 ## UNVERIFIED LIVE items from earlier tasks
 
