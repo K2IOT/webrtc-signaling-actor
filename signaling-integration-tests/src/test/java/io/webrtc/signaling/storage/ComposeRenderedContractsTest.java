@@ -94,7 +94,7 @@ class ComposeRenderedContractsTest {
 
   @Test
   void everyPlaneStartsThroughTheRealLoaders() throws Exception {
-    assertThat(planes).hasSize(15);
+    assertThat(planes).hasSize(2 * Integer.parseInt(topology.get("ACTORS_PER_CELL")) + 3);
     for (var service : planes) {
       var env = environment(service);
       var contract = LocalRuntimeContract.load(env);
@@ -252,7 +252,7 @@ class ComposeRenderedContractsTest {
       rendered = files.filter(file -> names.contains(file.getFileName().toString())).toList();
     }
     // Seven files per plane, plus platform.json and env.list of local-platform.
-    assertThat(rendered).hasSize(15 * 7 + 2);
+    assertThat(rendered).hasSize(planes.size() * 7 + 2);
     for (var file : rendered)
       assertThat(Files.readString(file)).as(file.toString()).doesNotContain("${");
   }
@@ -446,7 +446,8 @@ class ComposeRenderedContractsTest {
   private static List<String> planeServices() {
     var services = new ArrayList<String>();
     for (var cell : List.of("c001", "c002"))
-      for (int n = 1; n <= 6; n++) services.add("actor-" + cell + "-" + n);
+      for (int n = 1; n <= Integer.parseInt(topology.get("ACTORS_PER_CELL")); n++)
+        services.add("actor-" + cell + "-" + n);
     services.addAll(List.of("gateway-c001", "gateway-c002", "control"));
     return List.copyOf(services);
   }

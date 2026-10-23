@@ -35,6 +35,57 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
+## After the two fixes (2026-10-23): acceptance still not passing
+
+**Not `LOCAL_QUALIFIED`.** Two product fixes were made (tests first, reviewed) and the images were
+rebuilt, but the compose acceptance still fails at the first INVITE, so it was not run twice to
+the end. Run `fix-A` was started on a quiet host (load 6), failed its smoke at step 4
+(`STALE_CONNECTION`), the one-actor-down and after-restart smokes the same way, and was stopped
+after 12 checks to investigate. Four further smoke runs on a warm stack failed at step 4 (three
+`TIMEOUT/TERMINAL`, one `AUTH_FRESHNESS_UNKNOWN`); a later set failed at step 3/4 again.
+
+- `a1bf3cc` `NativeCellHealthSource`: a probe refused by DB admission no longer clears the cached
+  primary fact (it still expires at its own 1 s window); any error that ran still clears it at
+  once. `NativeCellHealthSourceIT` (two new tests: red first, then green).
+- `17e4699` `CallRecoveryService`: one RECOVERY transaction per sweep names the groups that hold a
+  non-terminal call; the other groups complete as an empty scan would. A failed probe falls back
+  to scanning every group. `CallRecoveryIT` (three new tests, red first). The old code spent up to
+  32 transactions per 100 ms sweep on an idle partition. The effect on the whole stack's CPU was
+  not measured end to end.
+- `ComposeRenderedContractsTest` still assumed six actors per cell; it now follows
+  `ACTORS_PER_CELL`.
+- WebRTC peer-to-peer was verified separately from the compose stack: `WebRtcInteropIT` (real
+  Chrome and a native `RTCPeerConnection`: two data-channel echoes across initial negotiation and an
+  ICE restart) passes, as do `LocalPlatformCompositionIT` (4) and `LocalRuntimeCompositionIT` (5),
+  which run the authenticated INVITE through the real planes. Run the integration ITs one class at a
+  time with a fully qualified `-Dit.test=`: an unfiltered failsafe run, or one with a pattern or a
+  list, dies with `TestEngine 'jqwik' failed to discover tests` (older dumps from 2026-10-21 show
+  the same).
+- Full `./mvnw verify` (spotless skipped, Chrome set): every module passes except
+  `signaling-identity` (`IdentityHttpTest` logs in as `alice/alice123`, but `application.yml`
+  defines `admin` and `mod`; unrelated, unchanged since 2026-10-13) and the integration module's
+  surefire phase, fixed above.
+
+What the extra runs showed (JVM `-Xlog:gc`, `-Xlog:exceptions`, temporary, `.env` restored):
+
+- Stop-the-world pauses: `Pause Full (Metadata GC Threshold)` of 100 to 275 ms at startup and
+  `Pause Full (CodeCache GC Threshold)` of 240 to 370 ms every few minutes on the actors, against a
+  100 ms gateway safety window and 500 ms to 2 s database deadlines. `-XX:MetaspaceSize=128m
+  -XX:SweeperThreshold=90` should remove them, but two of three `make up` runs with those flags
+  failed to start cleanly (see below), so they were not adopted; no controlled comparison was made.
+- Startup is not reliable on this host: in two `make up` runs the c001 actors exited with code 0
+  and were restarted (the cluster did not form in time), leaving the gateway and control created
+  but not started; in another, `actor-c002-1` and `gateway-c002` stayed `/ready` 503 for more than
+  four minutes with their safety jobs (cell health, clock, membership, revocation) stopped after one
+  `OUTCOME_UNKNOWN` each, and recovered only after `docker restart`. A worker slot that never
+  reschedules after a stall would explain it; not proven.
+- One INVITE trace at 2.0 s showed `DbOutcomeUnknownException` in the setup executor, a
+  `TrackedEntityAsk$NotEnqueued` caused by `IllegalArgumentException: Unstable envelope factory`
+  (`NativeEnvelopeAdmission`: the message size changed between two serialisations), and finally
+  `DbOverloadedException` at `ShardedActorIngress.remaining` on c002: the 2 s budget was spent
+  before the callee's cell was reached. INVITEs that did commit took about 100 ms, so the path
+  works; it is the variance under load that fails the smoke.
+
 ## Why the first INVITE fails (investigation, 2026-10-23)
 
 Method: the three-actor stack was brought up and left alone; `-Xlog:exceptions` was added to
