@@ -1,6 +1,7 @@
 package io.webrtc.signaling.app.runtime;
 
 import io.webrtc.signaling.rpc.RpcOperation;
+import io.webrtc.signaling.storage.DbOverloadedException;
 import io.webrtc.signaling.storage.PrimaryCellFacts;
 
 import java.time.Duration;
@@ -53,8 +54,9 @@ public final class NativeCellHealthSource implements AutoCloseable {
                             .handle(
                                     (facts, error) -> {
                                         synchronized (this) {
-                                            if (error != null) cached = null;
-                                            else if (!draining) cached = facts;
+                                            if (error != null) {
+                                                if (!refusedBeforeRunning(error)) cached = null;
+                                            } else if (!draining) cached = facts;
                                         }
                                         if (error != null) throw new CompletionException(error);
                                         return facts;
@@ -78,6 +80,16 @@ public final class NativeCellHealthSource implements AutoCloseable {
             }
             return new RpcOperation<>(CompletableFuture.failedFuture(unknown), physical);
         }
+    }
+
+    /**
+     * A probe the database admission refused never ran, so it says nothing about the cell. The
+     * previous fact keeps only its own one second window; any error that ran, or whose outcome is
+     * unknown, still drops it at once.
+     */
+    private static boolean refusedBeforeRunning(Throwable error) {
+        while (error instanceof CompletionException && error.getCause() != null) error = error.getCause();
+        return error instanceof DbOverloadedException;
     }
 
     public NativeWorkerScheduler.Job job(Duration period) {

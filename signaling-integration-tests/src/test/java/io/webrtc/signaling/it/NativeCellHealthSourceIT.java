@@ -102,4 +102,72 @@ class NativeCellHealthSourceIT {
             }
         }
     }
+
+    /** Holds every RECOVERY admission slot until released, as a busy recovery sweep does. */
+    private static final class SaturatedRecovery implements AutoCloseable {
+        private final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+
+        SaturatedRecovery(LocalInviteAtomicIT.Fixture f) throws Exception {
+            var started = new java.util.concurrent.CountDownLatch(2);
+            for (int slot = 0; slot < 2; slot++)
+                f.runtime.sql.submitTracked(
+                        DbClass.RECOVERY,
+                        Duration.ofSeconds(2),
+                        c -> {
+                            started.countDown();
+                            release.await(10, TimeUnit.SECONDS);
+                            return "held";
+                        });
+            assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+        }
+
+        @Override
+        public void close() {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void aProbeRefusedAtAdmissionKeepsTheStillFreshFactButNeverPastItsWindow() throws Exception {
+        try (var f = new LocalInviteAtomicIT.Fixture()) {
+            var source = new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql, "c001", 1));
+            var first = source.poll(Duration.ofSeconds(2));
+            first.logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            first.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertThat(source.usable()).isTrue();
+
+            try (var busy = new SaturatedRecovery(f)) {
+                var refused = source.poll(Duration.ofSeconds(2));
+                assertThat(refused.logical().toCompletableFuture())
+                        .failsWithin(2, TimeUnit.SECONDS)
+                        .withThrowableThat()
+                        .withRootCauseInstanceOf(DbOverloadedException.class);
+                // The refusal says nothing about the cell: the fact sampled a moment ago is still valid.
+                assertThat(source.usable()).isTrue();
+                // No successful poll renews it, so it expires at its one second window.
+                org.awaitility.Awaitility.await()
+                        .atMost(Duration.ofSeconds(3))
+                        .until(() -> !source.usable());
+            }
+        }
+    }
+
+    @Test
+    void aProbeThatRanAndFailedStillDropsTheFactAtOnce() throws Exception {
+        try (var f = new LocalInviteAtomicIT.Fixture()) {
+            var source = new NativeCellHealthSource(new PrimaryCellFacts(f.runtime.sql, "c001", 1));
+            source.poll(Duration.ofSeconds(2)).logical().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertThat(source.usable()).isTrue();
+            try (var c = f.connection();
+                 var delete = c.createStatement()) {
+                delete.executeUpdate("DELETE FROM cell_authority WHERE singleton_id=1");
+            }
+
+            var failed = source.poll(Duration.ofSeconds(2));
+            assertThat(failed.logical().toCompletableFuture()).failsWithin(2, TimeUnit.SECONDS);
+            failed.physicalCompletion().toCompletableFuture().get(2, TimeUnit.SECONDS);
+
+            assertThat(source.usable()).isFalse();
+        }
+    }
 }
