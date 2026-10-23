@@ -7,10 +7,11 @@ directory PostgreSQL, identity service and local platform (clock and revocation 
 
 **Status: `LOCAL_TEST_ONLY`, release `NOT_QUALIFIED`.** Nothing here is evidence of production
 readiness, high availability, host clock discipline, N-1 upgrade behaviour or any capacity figure.
-The acceptance run of this environment (spec section 9, `acceptance.sh`) still FAILED. With three
-actors per cell on a quiet 16-core host everything starts in 140 s and every plane is ready, but the
-first INVITE misses its 2 s deadline; the stack itself uses about 11 cores at idle (see
-[ACCEPTANCE.md](ACCEPTANCE.md)). The environment is not `LOCAL_QUALIFIED`.
+The acceptance run of this environment (spec section 9, `acceptance.sh`) still FAILED, twice in a
+row with the same result. With three actors per cell everything starts in about 130 s and every plane
+is ready, and the stack uses about 9 to 10 cores at idle, but the first INVITE of the smoke does not
+finish inside its 2 s deadline (see [ACCEPTANCE.md](ACCEPTANCE.md)). The environment is not
+`LOCAL_QUALIFIED`.
 Spec: `docs/superpowers/specs/2026-10-21-docker-compose-two-cell-design.md`.
 
 ## Requirements

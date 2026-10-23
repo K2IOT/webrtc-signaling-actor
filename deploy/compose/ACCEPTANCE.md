@@ -1,11 +1,12 @@
 # Acceptance run of the two-cell compose environment
 
-**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED**, now with three actors per
-cell (the user's change of the spec: ready when 2 of 3 are Up). On a quiet host the stack starts and
-every plane is ready, and the smoke gets as far as the first INVITE, which then misses its 2 s
-deadline. The environment is **not** `LOCAL_QUALIFIED`. Nothing here says anything about
-production, HA, fencing, N-1 or any capacity figure. See "Three actors per cell" below for the
-latest run; the earlier sections describe the six-actor cells.
+**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED, twice in a row with the
+same result** (32 PASS, 7 FAIL each), with three actors per cell and the source database pooled.
+The stack starts in about 130 s and every plane is ready, but the first INVITE of the smoke fails
+inside its 2 s deadline in a different way each time. The environment is **not**
+`LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing, N-1 or any capacity
+figure. The latest runs are in "Pooled source database, two back-to-back runs" below; the earlier
+sections describe the three-actor first run and the six-actor cells.
 
 - Dates: 2026-10-22/23 (UTC). First run (before the fix): commits `6ab9a40` to `05bf35d`. Run after
   the fix: commit `fb249e7` (`fix(rpc): read the recovery safety gate once per sweep`); the
@@ -34,7 +35,57 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
-## Three actors per cell (latest)
+## Pooled source database, two back-to-back runs (latest)
+
+Commit `8fcbffb` puts a bounded HikariCP pool (7 connections) in front of the local platform's
+database. Before it, every revocation page, admin append and readiness probe opened a physical
+PostgreSQL connection (TCP, TLS verify-full, SCRAM, a backend fork each time).
+
+| Idle stack, three actors per cell | before the pool | after the pool |
+|---|---|---|
+| new sessions per second on the `source` database | 33.6 | **0.0** |
+| transactions per second on `source` | 134 | 194 (pollers answered faster) |
+| `pg-directory` (cores) | 0.87 | **0.11** |
+| `local-platform` (cores) | 1.86 | 1.49 |
+| whole compose stack (cores, user + system) | 10.79 | 10.48 |
+
+The pool removes the database-side cost entirely but moves the whole stack by only about 3 %: the
+estimate of 2.5 cores was too high. What remains in `local-platform` is the source protocol itself.
+Sampling its threads shows about half of the busy time in Ed25519 signing of every response, about
+18 % in TLS handshakes (P-256, X25519) and about 14 % in a reverse DNS lookup the JDK `HttpsServer`
+does for each new connection. Both ends send `Connection: close` (the client `NativeSourceHttp` and
+the server's `Responses`) as part of the source contract, so every poll is a new mTLS connection plus
+one signature, nine pollers by ten hertz by two endpoints. That contract was not changed.
+
+**Runs `pool-A` and `pool-B`** (2026-10-23 08:24 and 08:47 UTC, one after the other, each from a fresh
+`make down; make up`, load guard on and not skipped; the driver waited for a 1-minute load under 9
+but did not enforce an idle-CPU level this time). Same 32 PASS / 7 FAIL, the same checks passed and
+failed in both:
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **PASS** | `make up` 128 s (A) and 132 s (B); 18 of 18 services healthy, 6 of 6 actors, `/ready` 200 on 9 of 9 planes and on `local-platform`. |
+| 2 | **FAIL** | Login, bootstrap and WSS `AUTH_OK` x2 pass; step 4 fails inside the first INVITE: A `STALE_CONNECTION` (socket closed by the gateway), B `no ACK_COMMITTED within 30000 ms (last: ERROR OVERLOADED)`. |
+| 3a | **PARTIAL** | PASS: one actor stopped, the cell stays `/ready` 200 (2 of 3), restart healthy, 3 of 3 ready. FAIL: both smokes (INVITE: `TIMEOUT/TERMINAL`, `ERROR OUTCOME_UNKNOWN`, `STALE_CONNECTION`). |
+| 3b | **PARTIAL** | PASS: standby stopped, no commit, `synchronous_standby_names` unchanged, quorum back in seconds. FAIL: c001 planes `/ready` not 200 within 120 s after quorum; the smoke after (step 3, `Bye`). |
+| 4 | **PARTIAL** | Missing contract, empty mount, foreign SPIFFE, malformed fingerprint refused; the well-formed wrong fingerprint still exits 1 after 23 s with the generic `STARTUP_FAILED` (FAIL). |
+| 5 | not run here | Network isolation PASS. |
+| 6 | **PASS** | No secrets in git, `docker inspect` env or 3.4 M log lines; images labelled `NOT_QUALIFIED`. |
+
+Resources during the runs: JVM RSS 4474 to 4482 MiB over 11 JVMs, `docker stats` 4720 to 4730 MiB;
+the 30 s measurement window after the smoke gave the whole stack 8.98 cores (A) and 9.61 (B), the
+six actors 4.65 and 5.04 (largest 0.93 and 0.88), host busy 9.2 and 11.9 of 16.
+
+**Passed twice in a row: no. Passed once: no.** `ERROR OVERLOADED`, `STALE_CONNECTION` and the 2 s
+`TIMEOUT` are the same family: the INVITE saga (gateway, cell RPC, `WAKE` of the CallActor,
+control route) does not finish within its deadlines even with 5 to 7 cores of the host idle.
+Earlier logs of the same step showed `INVITE` 2.0 s, `RPC_CONTROL` 1.9 s and `WAKE` 1.1 s. It is
+not cold JIT only (the same failure on a stack that had already served other smokes), and it has
+not been run with six actors per cell on a host that can start them, so whether the three-actor
+cell is a factor is unknown. This is where the next investigation should go: a trace of one
+INVITE, and the fault-suite deadline settings.
+
+## Three actors per cell, first run
 
 Spec change by the user: `ACTORS_PER_CELL=3`, a cell is business-ready on a strict majority (2 of 3).
 Production keeps six actors with a quorum of four; the size is declared only through the
