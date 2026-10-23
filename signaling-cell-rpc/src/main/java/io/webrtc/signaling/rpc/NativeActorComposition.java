@@ -414,24 +414,28 @@ public final class NativeActorComposition {
     }
 
     /**
-     * Live local ownership plus an even partition of missing-owner discovery across Up hosts.
+     * Live local ownership plus an even partition of missing-owner discovery across Up hosts. The
+     * safety gate is read once for the whole set; see {@link RecoveryGroupSelector}.
      */
     public Set<Integer> recoveryGroups() {
-        if (!inputs.trustedClock().getAsBoolean() || !readiness.safetyReady()) return Set.of();
+        return new RecoveryGroupSelector(
+                        () -> inputs.trustedClock().getAsBoolean() && readiness.safetyReady(),
+                        this::recoveryMembers,
+                        group ->
+                                PostgresShardLeaseProvider.currentGrant(Adapter.toClassic(system), group)
+                                        .isPresent())
+                .select();
+    }
+
+    private RecoveryGroupSelector.Members recoveryMembers() {
+        var cluster = org.apache.pekko.cluster.typed.Cluster.get(system);
         var members = new ArrayList<String>();
-        for (var member : org.apache.pekko.cluster.typed.Cluster.get(system).state().getMembers())
+        for (var member : cluster.state().getMembers())
             if (member.hasRole("signaling-actor")
                     && member.status().equals(org.apache.pekko.cluster.MemberStatus.up()))
                 members.add(member.uniqueAddress().toString());
         members.sort(String::compareTo);
-        String self =
-                org.apache.pekko.cluster.typed.Cluster.get(system).selfMember().uniqueAddress().toString();
-        int index = members.indexOf(self);
-        if (index < 0 || members.isEmpty()) return Set.of();
-        var groups = new HashSet<Integer>();
-        for (int group = 0; group < 1024; group++)
-            if (group % members.size() == index || local(group).isPresent()) groups.add(group);
-        return Set.copyOf(groups);
+        return new RecoveryGroupSelector.Members(members, cluster.selfMember().uniqueAddress().toString());
     }
 
     public CallRecoveryService recoveryService() {
