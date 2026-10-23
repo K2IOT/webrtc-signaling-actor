@@ -35,6 +35,33 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
+## Peer-to-peer client against the compose stack (2026-10-23)
+
+**Not working end to end yet.** `make -C deploy/compose p2p` (`smoke/p2p.mjs`) logs in, bootstraps
+across both cells, runs INVITE/ACCEPT/NEGOTIATE_REQUEST, relays a real OFFER, ANSWER and trickled
+ICE between two native `RTCPeerConnection`s (`@roamhq/wrtc`, from the integration tests'
+`node_modules`) and expects a data-channel echo. On a clean `make up` (all nine planes `/ready` 200,
+default JVM options) it passed login, bootstrap and WSS auth every time, and then failed at INVITE:
+terminal `TIMEOUT` (four times in a row, 15 s apart), or `OUTCOME_UNKNOWN` for 30 s. After a timed
+out call the callee answers `USER_BUSY` until the reservation lapses, so the client waits between
+redials. Minutes later `gateway-c001` went unhealthy (`AUTH_FRESHNESS_UNKNOWN`, then it closed its
+sockets with 1000). The same real-browser negotiation passes in-process (`WebRtcInteropIT`).
+
+- `7ac0ee7`: `ShardedActorIngress` read the clock inside the envelope factory, so the recovery
+  reconcile message changed length between the sizing and the sending pass and was refused with
+  `Unstable envelope factory`. `ReconcileEnvelopeTest` reproduces it (red) and passes now.
+- A gateway container cannot be restarted on its own: its boot id is fixed at provisioning, so a
+  restarted gateway never becomes compatible (`/ready` stays 503). Use `make down` then `make up`.
+- The JVM diagnostics used here (`-Xlog:exceptions`, `-Xlog:gc`) change the behaviour of the
+  stack: with them on, several starts left `actor-c001-1`, `gateway-c001` or `control` unready for
+  minutes while the same stack with the default options came up clean. Treat those runs as
+  perturbed; do not leave them in `.env`.
+- Every unready or failing component was in cell `c001` (an actor, `gateway-c001`, and through
+  them `control`); `c002` stayed ready. Not explained.
+- `DbBoundary.submitReserved` logs through the async appender while holding its monitor, which
+  pins a virtual thread (seen with `-Djdk.tracePinnedThreads=full`); with only two carriers
+  (`ActiveProcessorCount=2`) that serialises database admission. Not changed.
+
 ## After the two fixes (2026-10-23): acceptance still not passing
 
 **Not `LOCAL_QUALIFIED`.** Two product fixes were made (tests first, reviewed) and the images were

@@ -37,10 +37,11 @@ make -C deploy/compose build     # jars (offline Maven; MVN_OFFLINE=0 for online
 make -C deploy/compose hosts     # prints the /etc/hosts lines; add them yourself
 make -C deploy/compose up        # preflight, lifecycle guard, up -d --wait (up to 10 minutes)
 make -C deploy/compose smoke     # cross-cell call and revoke
+make -C deploy/compose p2p       # real WebRTC data channel negotiated through the stack's signaling
 make -C deploy/compose down      # always removes the volumes
 ```
 
-`make help` lists every target: `build`, `hosts`, `preflight`, `up`, `smoke-ca`, `smoke`, `down`,
+`make help` lists every target: `build`, `hosts`, `preflight`, `up`, `smoke-ca`, `smoke`, `p2p`, `down`,
 `reset`, `lint`, `test`. `.env` is created from `.env.example` on first use and never overwritten.
 Without the `/etc/hosts` lines `make smoke` resolves the four names internally.
 
