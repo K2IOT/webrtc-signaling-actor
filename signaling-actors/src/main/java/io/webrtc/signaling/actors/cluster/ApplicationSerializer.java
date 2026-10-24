@@ -47,6 +47,8 @@ public final class ApplicationSerializer extends SerializerWithStringManifest {
                     Map.entry("user.state", UserState.class),
                     Map.entry("user.stop", UserCommand.Stop.class),
                     Map.entry("call.home-grant", CallActor.GrantToHome.class),
+                    Map.entry("call.relay", CallActor.Relay.class),
+                    Map.entry("call.relay-result", CallActor.RelayReply.class),
                     Map.entry("call.home-grant-result", CallActor.GrantReply.class),
                     Map.entry("call.execute", CallActor.Execute.class),
                     Map.entry("call.progress", CallActor.Progress.class),

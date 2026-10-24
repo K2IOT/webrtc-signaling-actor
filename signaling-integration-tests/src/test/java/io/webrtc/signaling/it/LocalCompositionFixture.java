@@ -73,7 +73,8 @@ final class LocalCompositionFixture implements AutoCloseable {
                     "home-proof-high-water-v1",
                     "storage-domain-adoption-v1",
                     "native-actor-trace-v1",
-                    "native-initial-ice-receipt-v1");
+                    "native-initial-ice-receipt-v1",
+                    "native-relay-owner-v1");
     static final ObjectMapper JSON = new ObjectMapper();
     /** {@code -Dlocal.composition.diagnostics=true} gives children readable logs; never in CI. */
     static final String DIAGNOSTICS = "local.composition.diagnostics";

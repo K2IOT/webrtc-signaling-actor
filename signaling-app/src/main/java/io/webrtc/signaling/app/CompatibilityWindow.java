@@ -84,7 +84,8 @@ public final class CompatibilityWindow {
         NATIVE_CONTROL_RECEIPT_V1,
         HOME_PROOF_HIGH_WATER_V1,
         NATIVE_ACTOR_TRACE_V1,
-        NATIVE_INITIAL_ICE_RECEIPT_V1
+        NATIVE_INITIAL_ICE_RECEIPT_V1,
+        NATIVE_RELAY_OWNER_V1
     }
 
     public record Peer(

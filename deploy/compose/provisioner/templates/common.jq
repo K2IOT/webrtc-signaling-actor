@@ -54,7 +54,8 @@ def compatibility($executableId):
       "home-proof-high-water-v1",
       "storage-domain-adoption-v1",
       "native-actor-trace-v1",
-      "native-initial-ice-receipt-v1"
+      "native-initial-ice-receipt-v1",
+      "native-relay-owner-v1"
     ],
     lowerMinor: 0,
     upperMinor: 1

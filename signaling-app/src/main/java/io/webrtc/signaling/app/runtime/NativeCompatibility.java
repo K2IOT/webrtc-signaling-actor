@@ -30,7 +30,8 @@ public final class NativeCompatibility implements RuntimeCapabilities {
                     Feature.HOME_PROOF_HIGH_WATER_V1,
                     Feature.STORAGE_DOMAIN_ADOPTION_V1,
                     Feature.NATIVE_ACTOR_TRACE_V1,
-                    Feature.NATIVE_INITIAL_ICE_RECEIPT_V1);
+                    Feature.NATIVE_INITIAL_ICE_RECEIPT_V1,
+                    Feature.NATIVE_RELAY_OWNER_V1);
     private final String cell, fingerprint;
     private final Supplier<NativeActorBusinessEnrollment> local;
     private final Supplier<NativeCompatibilityEnrollment> enrollment;

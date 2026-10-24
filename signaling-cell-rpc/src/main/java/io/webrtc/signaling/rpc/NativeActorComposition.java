@@ -128,6 +128,32 @@ public final class NativeActorComposition {
                 .map(GroupOwnerRepository.Grant::token);
     }
 
+    /** Runs a forwarded relay frame here, on the call's owner, through the node-local producer. */
+    private io.webrtc.signaling.actors.admission.ActorOperation<String> relayOnOwner(
+            CallActor.Relay relay, java.time.Duration budget) {
+        var producer = relayProducer;
+        if (producer == null) throw new IllegalStateException("Native relay producer not installed");
+        final io.webrtc.signaling.protocol.internal.InternalCommand command;
+        try {
+            command =
+                    io.webrtc.signaling.protocol.internal.InternalCommand.parseFrom(
+                            java.util.Base64.getDecoder().decode(relay.command()));
+        } catch (Exception malformed) {
+            throw new IllegalArgumentException("Malformed forwarded relay");
+        }
+        var work =
+                Objects.requireNonNull(
+                        producer.apply(
+                                new RpcBusinessHandler.RelayRequest(
+                                        command,
+                                        new CellRpcServer.Peer(relay.peerCell(), relay.peerRole(), relay.peerWorkload()),
+                                        budget)));
+        return new io.webrtc.signaling.actors.admission.ActorOperation<>(
+                work.logical()
+                        .thenApply(reply -> java.util.Base64.getEncoder().encodeToString(reply.toByteArray())),
+                work.physicalCompletion().thenApply(done -> (Void) null));
+    }
+
     private ProofBindings.TrustedHome localHome(UserId user) {
         var home = Objects.requireNonNull(inputs.homes().apply(user));
         if (!inputs.cell().equals(home.cell()) || home.storageEpoch() != inputs.storageEpoch())
@@ -176,7 +202,8 @@ public final class NativeActorComposition {
                                         var producer = relayProducer;
                                         if (producer != null) producer.invalidate(changed);
                                     },
-                                    participantRenewal);
+                                    participantRenewal,
+                                    this::relayOnOwner);
                         },
                         CallActor.Stop.INSTANCE,
                         readiness);

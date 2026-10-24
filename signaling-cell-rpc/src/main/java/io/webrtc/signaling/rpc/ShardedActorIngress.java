@@ -201,6 +201,46 @@ public final class ShardedActorIngress implements RpcBusinessHandler.ActorIngres
     }
 
     /**
+     * The owning CallActor runs the relay with its node-local authority; any actor may receive the
+     * RPC. Without the capability on every peer the caller keeps the previous local handling.
+     */
+    @Override
+    public RpcOperation<CallActor.RelayReply> relayTracked(
+            RpcBusinessHandler.RelayRequest request, Instant deadline) {
+        try {
+            compatibility.accept(io.webrtc.signaling.protocol.RuntimeCapabilities.NATIVE_RELAY_OWNER_V1);
+        } catch (IllegalStateException missingCapability) {
+            // Only a peer without the capability falls back; any other failure stays fail-closed.
+            throw new RpcBusinessHandler.RelayForwardUnavailable();
+        }
+        var call = new io.webrtc.signaling.protocol.Identity.CallId(request.command().getCallId());
+        String command = java.util.Base64.getEncoder().encodeToString(request.command().toByteArray());
+        var peer = request.peer();
+        return ask(
+                "call:" + call.value(),
+                EntityAdmission.Priority.NORMAL,
+                command.length() + 512,
+                deadline,
+                CallActor.RelayReply.class,
+                (reply, receipt, ticket) ->
+                        NativeEnvelopeAdmission.send(
+                                ticket,
+                                charge ->
+                                        new CallActor.Relay(
+                                                call,
+                                                command,
+                                                peer.cell(),
+                                                peer.role(),
+                                                peer.workloadId(),
+                                                reply,
+                                                deadline,
+                                                charge,
+                                                receipt),
+                                sharding.entityRefFor(ShardingBootstrap.CALL_TYPE, call.value())::tell,
+                                serializer));
+    }
+
+    /**
      * Reconciliation addresses the original collector and actual hosting-process witness.
      */
     public RecoveryWake recoveryWake(

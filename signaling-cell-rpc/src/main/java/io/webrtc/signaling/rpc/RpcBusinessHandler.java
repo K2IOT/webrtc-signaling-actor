@@ -499,8 +499,17 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
                         || !bindings.commandVerifier(cell, homes).verify(command, null, payload.proof()))
                     return rejected(c, "UNAUTHORIZED");
                 physical.set(new CompletableFuture<Void>());
+                var relayRequest = new RelayRequest(c, peer, budget);
                 try {
-                    var work = Objects.requireNonNull(producer.apply(new RelayRequest(c, peer, budget)));
+                    // Relay authority (group ownership, negotiation lanes) is local to the call's owner.
+                    return tracked(forwardRelay(c, relayRequest), physical);
+                } catch (RelayForwardUnavailable mixedCluster) {
+                    // Until every peer forwards, keep the previous local behaviour.
+                } catch (Throwable unknown) {
+                    return rejected(c, "OUTCOME_UNKNOWN");
+                }
+                try {
+                    var work = Objects.requireNonNull(producer.apply(relayRequest));
                     return tracked(work, physical);
                 } catch (Throwable unknown) {
                     return rejected(c, "OUTCOME_UNKNOWN");
@@ -514,6 +523,42 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
         } catch (Exception invalid) {
             return rejected(c, "UNAUTHORIZED");
         }
+    }
+
+    /**
+     * The owner answers with the encoded internal reply. An owner change in flight or a failed relay
+     * is the relay contract's RESYNC_REQUIRED.
+     */
+    private RpcOperation<InternalReply> forwardRelay(InternalCommand c, RelayRequest request) {
+        // Spec section 21: the internal relay RPC deadline is one second, as the gateway applies it.
+        var forwarded =
+                actors.relayTracked(
+                        request, clock.instant().plus(request.budget().compareTo(Duration.ofSeconds(1)) > 0
+                                ? Duration.ofSeconds(1)
+                                : request.budget()));
+        var logical =
+                forwarded
+                        .logical()
+                        .handle(
+                                (reply, failure) -> {
+                                    if (failure == null && reply != null && reply.reply() != null)
+                                        try {
+                                            return InternalReply.parseFrom(Base64.getDecoder().decode(reply.reply()));
+                                        } catch (Exception malformed) {
+                                            return relayError(c, "RESYNC_REQUIRED");
+                                        }
+                                    return relayError(c, "RESYNC_REQUIRED");
+                                });
+        return new RpcOperation<>(logical, forwarded.physicalCompletion());
+    }
+
+    private static InternalReply relayError(InternalCommand c, String code) {
+        return InternalReply.newBuilder()
+                .setOperationId(c.getOperationId())
+                .setCallId(c.getCallId())
+                .setStatus("REJECTED")
+                .setErrorCode(code)
+                .build();
     }
 
     private boolean currentSessionProof(
@@ -562,7 +607,20 @@ public final class RpcBusinessHandler implements CellRpcServer.Backend {
         }
     }
 
+    /** The cluster cannot forward relays to owners yet (a peer lacks the capability). */
+    public static final class RelayForwardUnavailable extends RuntimeException {
+        public RelayForwardUnavailable() {
+            super("Relay owner forwarding unavailable");
+        }
+    }
+
     public interface ActorIngress {
+        /** Forwards a validated relay frame to the call's owning actor through sharding. */
+        default RpcOperation<io.webrtc.signaling.actors.call.CallActor.RelayReply> relayTracked(
+                RelayRequest request, Instant deadline) {
+            throw new RelayForwardUnavailable();
+        }
+
         default RpcOperation<io.webrtc.signaling.actors.call.CallActor.GrantReply> grantTracked(
                 Request r, AuthorizationIntent action, String destination, Instant deadline, int bytes) {
             var stage = grant(r, action, destination, deadline, bytes);

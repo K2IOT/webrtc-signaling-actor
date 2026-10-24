@@ -15,6 +15,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -24,6 +25,7 @@ import java.util.function.Supplier;
  */
 public final class CallActor extends AbstractBehavior<CallMessage> {
     private final ParticipantRenewal renewal;
+    private final RelayHandler relayHandler;
     private final Consumer<CallId> invalidateRelay;
     private final UUID incarnation = UUID.randomUUID();
     private final CallId call;
@@ -55,9 +57,11 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
             Clock clock,
             ActorRef<ClusterSharding.ShardCommand> shard,
             Consumer<CallId> invalidateRelay,
-            ParticipantRenewal renewal) {
+            ParticipantRenewal renewal,
+            RelayHandler relayHandler) {
         super(c);
         this.renewal = renewal;
+        this.relayHandler = Objects.requireNonNull(relayHandler);
         this.invalidateRelay = Objects.requireNonNull(invalidateRelay);
         this.call = Objects.requireNonNull(call);
         this.backend = Objects.requireNonNull(backend);
@@ -113,12 +117,37 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
             ActorRef<ClusterSharding.ShardCommand> shard,
             Consumer<CallId> invalidateRelay,
             ParticipantRenewal renewal) {
+        return create(call, backend, gate, clock, shard, invalidateRelay, renewal, RelayHandler.UNAVAILABLE);
+    }
+
+    /**
+     * {@code relayHandler} runs relay frames on this node; it is reached only while this actor holds
+     * the call's ownership group, the node-local authority every relay authorization checks.
+     */
+    public static Behavior<CallMessage> create(
+            CallId call,
+            Backend backend,
+            Supplier<Optional<AuthoritySql.GroupToken>> gate,
+            Clock clock,
+            ActorRef<ClusterSharding.ShardCommand> shard,
+            Consumer<CallId> invalidateRelay,
+            ParticipantRenewal renewal,
+            RelayHandler relayHandler) {
         return Behaviors.withTimers(
                 t ->
                         Behaviors.setup(
                                 c ->
                                         new CallActor(
-                                                c, t, call, backend, gate, clock, shard, invalidateRelay, renewal)));
+                                                c,
+                                                t,
+                                                call,
+                                                backend,
+                                                gate,
+                                                clock,
+                                                shard,
+                                                invalidateRelay,
+                                                renewal,
+                                                relayHandler)));
     }
 
     private static int size(CallMessage r) {
@@ -175,6 +204,7 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
                 .onMessage(Progress.class, this::enqueue)
                 .onMessage(Execute.class, this::enqueue)
                 .onMessage(WakeCall.class, this::enqueue)
+                .onMessage(Relay.class, this::relay)
                 .onMessage(
                         ReconcileWake.class,
                         r -> {
@@ -672,6 +702,50 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         return this;
     }
 
+    /**
+     * Relay frames bypass the command queue: they mutate no call state, and the relay producer keeps
+     * its own per-call order. Only the group owner runs them; every outcome signals the receipt.
+     */
+    private Behavior<CallMessage> relay(Relay r) {
+        long left = Duration.between(clock.instant(), r.deadline()).toNanos();
+        if (!call.equals(r.call())
+                || current().isEmpty()
+                || unknown
+                || stopping
+                || passivating
+                || left <= 0) {
+            r.replyTo().tell(new RelayReply(null, left <= 0 ? "RELAY_EXPIRED" : "NOT_OWNER"));
+            if (r.receipt() != null) r.receipt().signal();
+            return this;
+        }
+        final io.webrtc.signaling.actors.admission.ActorOperation<String> operation;
+        try {
+            operation =
+                    Objects.requireNonNull(
+                            relayHandler.relay(r, Duration.ofNanos(Math.min(left, Duration.ofSeconds(2).toNanos()))));
+        } catch (RuntimeException failed) {
+            r.replyTo().tell(new RelayReply(null, "RELAY_FAILED"));
+            if (r.receipt() != null) r.receipt().signal();
+            return this;
+        }
+        operation
+                .logical()
+                .whenComplete(
+                        (reply, failure) ->
+                                r.replyTo()
+                                        .tell(
+                                                failure == null && reply != null
+                                                        ? new RelayReply(reply, null)
+                                                        : new RelayReply(null, "RELAY_FAILED")));
+        operation
+                .physicalCompletion()
+                .whenComplete(
+                        (done, failure) -> {
+                            if (r.receipt() != null) r.receipt().signal();
+                        });
+        return this;
+    }
+
     private Behavior<CallMessage> observe(GetSnapshot r) {
         if (ready || unknown) r.replyTo().tell(snapshot);
         else if (observers.size() < 16) observers.add(r.replyTo());
@@ -953,6 +1027,53 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
             Objects.requireNonNull(command);
             Objects.requireNonNull(replyTo);
             check(deadline, encodedBytes);
+        }
+    }
+
+    /** Runs one relay frame on the owning node; the logical value is the encoded reply. */
+    @FunctionalInterface
+    public interface RelayHandler {
+        RelayHandler UNAVAILABLE =
+                (relay, budget) ->
+                        new io.webrtc.signaling.actors.admission.ActorOperation<>(
+                                CompletableFuture.failedFuture(new IllegalStateException("Relay unavailable")),
+                                CompletableFuture.completedFuture(null));
+
+        io.webrtc.signaling.actors.admission.ActorOperation<String> relay(Relay relay, Duration budget);
+    }
+
+    /**
+     * A relay frame validated at the receiving actor, forwarded to the call's owner. {@code command}
+     * is the base64 internal command; the peer is the authenticated sender of the original RPC.
+     */
+    public record Relay(
+            CallId call,
+            String command,
+            String peerCell,
+            String peerRole,
+            String peerWorkload,
+            ActorRef<RelayReply> replyTo,
+            Instant deadline,
+            int encodedBytes,
+            io.webrtc.signaling.actors.admission.CompletionReceipt receipt)
+            implements CallMessage {
+        public Relay {
+            Objects.requireNonNull(call);
+            Objects.requireNonNull(command);
+            Objects.requireNonNull(peerCell);
+            Objects.requireNonNull(peerRole);
+            Objects.requireNonNull(peerWorkload);
+            Objects.requireNonNull(replyTo);
+            Objects.requireNonNull(deadline);
+            if (command.length() > 131072) throw new IllegalArgumentException("Relay frame too large");
+        }
+    }
+
+    /** Exactly one of {@code reply} (base64 internal reply) or {@code error} is set. */
+    public record RelayReply(String reply, String error) implements io.webrtc.signaling.protocol.ApplicationSerializable {
+        public RelayReply {
+            if ((reply == null) == (error == null))
+                throw new IllegalArgumentException("Relay reply needs exactly one outcome");
         }
     }
 

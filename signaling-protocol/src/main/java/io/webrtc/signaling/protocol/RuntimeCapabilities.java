@@ -16,6 +16,8 @@ public interface RuntimeCapabilities {
     String HOME_PROOF_HIGH_WATER_V1 = "home-proof-high-water-v1";
     String NATIVE_ACTOR_TRACE_V1 = "native-actor-trace-v1";
     String NATIVE_INITIAL_ICE_RECEIPT_V1 = "native-initial-ice-receipt-v1";
+    // Relay frames are forwarded through sharding to the call's owning actor.
+    String NATIVE_RELAY_OWNER_V1 = "native-relay-owner-v1";
     RuntimeCapabilities DENY = (cell, feature) -> false;
 
     boolean permits(String cell, String feature);

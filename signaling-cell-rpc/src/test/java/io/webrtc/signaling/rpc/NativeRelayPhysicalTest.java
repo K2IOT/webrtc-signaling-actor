@@ -124,6 +124,14 @@ class NativeRelayPhysicalTest {
     private static Fixture handler(
             Function<RpcBusinessHandler.RelayRequest, CompletionStage<InternalReply>> legacy)
             throws Exception {
+        return handler(legacy, null);
+    }
+
+    /** {@code forward} stands for sharding to the owner; null means a peer lacks the capability. */
+    private static Fixture handler(
+            Function<RpcBusinessHandler.RelayRequest, CompletionStage<InternalReply>> legacy,
+            Function<RpcBusinessHandler.RelayRequest, RpcOperation<io.webrtc.signaling.actors.call.CallActor.RelayReply>> forward)
+            throws Exception {
         var keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         var proofs =
                 new HomeAuthorizationProof(
@@ -152,6 +160,13 @@ class NativeRelayPhysicalTest {
                     public CompletionStage<CallWorkflowService.Outcome> progress(
                             CallWorkflowService.Transition transition, Instant deadline, int bytes) {
                         throw new AssertionError();
+                    }
+
+                    @Override
+                    public RpcOperation<io.webrtc.signaling.actors.call.CallActor.RelayReply> relayTracked(
+                            RpcBusinessHandler.RelayRequest request, Instant deadline) {
+                        if (forward == null) throw new RpcBusinessHandler.RelayForwardUnavailable();
+                        return forward.apply(request);
                     }
                 };
         return new Fixture(
@@ -389,5 +404,117 @@ class NativeRelayPhysicalTest {
 
     private record Fixture(
             RpcBusinessHandler backend, HomeAuthorizationProof proofs, AtomicInteger controls) {
+    }
+
+    private static String encoded(InternalReply reply) {
+        return java.util.Base64.getEncoder().encodeToString(reply.toByteArray());
+    }
+
+    @Test
+    void aRelayIsAnsweredByTheCallsOwnerNeverByTheReceivingActor() throws Exception {
+        var local = new AtomicInteger();
+        var forwarded = new java.util.concurrent.atomic.AtomicReference<RpcBusinessHandler.RelayRequest>();
+        var handler =
+                handler(
+                        request -> {
+                            throw new AssertionError();
+                        },
+                        request -> {
+                            forwarded.set(request);
+                            return new RpcOperation<>(
+                                    CompletableFuture.completedFuture(
+                                            new io.webrtc.signaling.actors.call.CallActor.RelayReply(
+                                                    encoded(delivered(request.command())), null)),
+                                    CompletableFuture.completedFuture(null));
+                        });
+        handler
+                .backend()
+                .nativeRelay(
+                        request -> {
+                            local.incrementAndGet();
+                            throw new AssertionError("the receiving actor ran the relay");
+                        });
+
+        var operation = run(handler);
+
+        assertThat(operation.logical().toCompletableFuture().join().getStatus())
+                .isEqualTo("TEST_ONLY_VOLATILE_REPLY");
+        assertThat(local).hasValue(0);
+        assertThat(forwarded.get().peer()).isEqualTo(new CellRpcServer.Peer("c001", "gateway", "TEST_ONLY"));
+        operation.physicalCompletion().toCompletableFuture().join();
+    }
+
+    @Test
+    void anOwnerRefusalOrFailureIsTheRelayContractsResync() throws Exception {
+        for (var refusal : List.of("NOT_OWNER", "RELAY_FAILED", "RELAY_EXPIRED")) {
+            var handler =
+                    handler(
+                            request -> {
+                                throw new AssertionError();
+                            },
+                            request ->
+                                    new RpcOperation<>(
+                                            CompletableFuture.completedFuture(
+                                                    new io.webrtc.signaling.actors.call.CallActor.RelayReply(null, refusal)),
+                                            CompletableFuture.completedFuture(null)));
+            handler.backend().nativeRelay(request -> {
+                throw new AssertionError();
+            });
+
+            var reply = run(handler).logical().toCompletableFuture().join();
+
+            assertThat(reply.getErrorCode()).as(refusal).isEqualTo("RESYNC_REQUIRED");
+            assertThat(reply.getAckCommitted()).isFalse();
+        }
+    }
+
+    @Test
+    void aForwardedRelayKeepsTheOwnersPhysicalReceipt() throws Exception {
+        var physical = new CompletableFuture<Void>();
+        var handler =
+                handler(
+                        request -> {
+                            throw new AssertionError();
+                        },
+                        request ->
+                                new RpcOperation<>(
+                                        CompletableFuture.completedFuture(
+                                                new io.webrtc.signaling.actors.call.CallActor.RelayReply(
+                                                        encoded(delivered(request.command())), null)),
+                                        physical));
+        handler.backend().nativeRelay(request -> {
+            throw new AssertionError();
+        });
+
+        var operation = run(handler);
+        operation.logical().toCompletableFuture().join();
+
+        assertThat(operation.physicalCompletion().toCompletableFuture()).isNotDone();
+        physical.complete(null);
+        operation.physicalCompletion().toCompletableFuture().join();
+    }
+
+    @Test
+    void withoutTheOwnerCapabilityOnEveryPeerTheReceivingActorKeepsHandlingIt() throws Exception {
+        var local = new AtomicInteger();
+        var handler =
+                handler(
+                        request -> {
+                            throw new AssertionError();
+                        },
+                        null);
+        handler
+                .backend()
+                .nativeRelay(
+                        request -> {
+                            local.incrementAndGet();
+                            return new RpcOperation<>(
+                                    CompletableFuture.completedFuture(delivered(request.command())),
+                                    CompletableFuture.completedFuture(null));
+                        });
+
+        assertThat(run(handler).logical().toCompletableFuture().join().getStatus())
+                .isEqualTo("TEST_ONLY_VOLATILE_REPLY");
+        assertThat(local).hasValue(1);
     }
 }
