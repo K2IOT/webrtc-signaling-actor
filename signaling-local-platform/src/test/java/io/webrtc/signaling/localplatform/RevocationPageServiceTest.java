@@ -77,6 +77,53 @@ class RevocationPageServiceTest {
   }
 
   @Test
+  void eachCellGetsOnlyItsHomeUsersButEveryCursorAdvancesPastForeignEvents() throws Exception {
+    var alice = new io.webrtc.signaling.protocol.Identity.UserId("alice");
+    int home = io.webrtc.signaling.storage.SessionRegistryService.bucket(alice);
+    // c001 owns alice's side of a split just after (or, at the top bucket, just before) her bucket.
+    int split = home == 16383 ? home : home + 1;
+    boolean low = home < split;
+    String foreign = "bob";
+    for (int i = 0;
+        (io.webrtc.signaling.storage.SessionRegistryService.bucket(
+                    new io.webrtc.signaling.protocol.Identity.UserId(foreign))
+                < split)
+            == low;
+        i++) foreign = "bob-" + i;
+    var homes =
+        HomeBuckets.of(
+            low
+                ? Map.of(
+                    "c001", new HomeBuckets.Range(0, split - 1),
+                    "c002", new HomeBuckets.Range(split, 16383))
+                : Map.of(
+                    "c001", new HomeBuckets.Range(split, 16383),
+                    "c002", new HomeBuckets.Range(0, split - 1)));
+    var filtered = new RevocationPageService(signer, log, ISSUER, clock, homes);
+    log.append("alice", null, OptionalLong.empty());
+    log.append(foreign, null, OptionalLong.empty());
+
+    RevocationReconciler.Batch c001 = parse(filtered.pageBody("c001", 0));
+    assertThat(c001.events()).extracting(e -> e.userId().value()).containsExactly("alice");
+    assertThat(c001.highWater()).isEqualTo(2);
+    assertThat(c001.caughtUp()).isTrue();
+    assertThat(verifier("c001").test(c001)).isTrue();
+
+    RevocationReconciler.Batch c002 = parse(filtered.pageBody("c002", 0));
+    assertThat(c002.events()).extracting(e -> e.userId().value()).containsExactly(foreign);
+
+    // A page holding only foreign events is empty for this cell but still moves its cursor on.
+    log.append(foreign, null, OptionalLong.empty());
+    RevocationReconciler.Batch onlyForeign = parse(filtered.pageBody("c001", 2));
+    assertThat(onlyForeign.events()).isEmpty();
+    assertThat(onlyForeign.highWater()).isEqualTo(3);
+    assertThat(onlyForeign.caughtUp()).isTrue();
+    assertThat(verifier("c001").test(onlyForeign)).isTrue();
+    assertThat(c002.highWater()).isEqualTo(2);
+    assertThat(verifier("c002").test(c002)).isTrue();
+  }
+
+  @Test
   void emptyCaughtUpPageHasEqualOffsets() throws Exception {
     RevocationReconciler.Batch fresh = parse(service.pageBody("c001", 0));
     log.append("alice", null, OptionalLong.empty());

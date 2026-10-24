@@ -982,6 +982,9 @@ class SourceServerIT {
     Path dbPassword = Files.writeString(dir.resolve("db.pass"), POSTGRES.getPassword() + "\n");
     ObjectNode root = JSON.createObjectNode();
     root.putObject("cells").put("cell-a", 3).put("cell-b", 7);
+    var homes = root.putObject("homeBuckets");
+    homes.putArray("cell-a").add(0).add(8191);
+    homes.putArray("cell-b").add(8192).add(16383);
     root.put("keyId", KEY_ID);
     root.put("signingKey", signingKeyFile.toString());
     listener(root.putObject("source"), sourceKeystore, workloadTrust);

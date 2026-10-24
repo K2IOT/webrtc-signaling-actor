@@ -401,7 +401,7 @@ render_plane() {
 render_platform() {
   local s=local-platform mount
   mount="$(mount_of "$s")"
-  emit "$RUN_ROOT/$s/platform.json" tpl platform-config --argjson cells "$CELLS_JSON" --arg mount "$mount" \
+  emit "$RUN_ROOT/$s/platform.json" tpl platform-config --argjson cells "$CELLS_JSON" --argjson split "$SPLIT" --arg mount "$mount" \
     --arg bind "$PLATFORM_IP" --argjson sourcePort "$SOURCE_PORT" --argjson adminPort "$ADMIN_PORT" \
     --argjson healthPort "$HEALTH_PORT" --argjson pgPort "$PG_PORT" --arg dbHost "$PG_DIRECTORY_IP" \
     --arg dbUser source_owner

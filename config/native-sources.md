@@ -725,6 +725,13 @@ host clock discipline, high availability, production readiness or capacity.
 - The configuration has exactly these keys; unknown, duplicate or missing keys, trailing content and
   relative paths are `CONFIG`:
   - `cells`: object of 1 to 8 cell names (`[a-z][a-z0-9-]{0,23}`) to a storage epoch (integer >= 1).
+  - `homeBuckets`: object from each name in `cells` to an inclusive bucket range `[first, last]`
+    within 0..16383; together the ranges cover 0..16383 exactly (no gap, no overlap: a gap's
+    revocations would reach no cell). Required when there is more than one cell; a single cell
+    without it is home for every user. A cell's revocation page carries only the events of
+    users whose `SessionRegistryService.bucket` lies in its range (cell-filtered coverage), while
+    its cursor advances over every event. Without the filter, one foreign user's revocation fences
+    the consuming cell's whole feed (its bucket is FROZEN there).
   - `keyId`: key identifier of the proof signature, `[A-Za-z0-9_-]{1,64}` (the signer's pattern, the
     stricter of the two consumer patterns).
   - `signingKey`: absolute path of the Ed25519 private key (PKCS#8). The process only signs; it never

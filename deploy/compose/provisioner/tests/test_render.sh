@@ -315,8 +315,11 @@ runtime_yaml_binds_identity() {
 
 platform_config_values() {
   local f="$RUN_ROOT/local-platform/platform.json"
-  assert_eq "admin cells database health keyId signingKey source" "$(j "$f" 'keys | join(" ")')" "platform keys"
+  assert_eq "admin cells database health homeBuckets keyId signingKey source" "$(j "$f" 'keys | join(" ")')" "platform keys"
   assert_eq "c001=1 c002=1" "$(j "$f" '.cells | to_entries | map("\(.key)=\(.value)") | join(" ")')" "platform cells"
+  # the same split as directory.json: each cell is sent only its home users' revocations
+  assert_eq "c001=0..$((SPLIT - 1)) c002=$SPLIT..16383" \
+    "$(j "$f" '.homeBuckets | to_entries | map("\(.key)=\(.value[0])..\(.value[1])") | join(" ")')" "platform home buckets"
   assert_eq "local-source" "$(j "$f" .keyId)" "platform key id"
   assert_eq "$PLATFORM_IP:$SOURCE_PORT /run/signaling/platform.p12 /run/signaling/platform.pass /run/signaling/source-client-trust.crt" \
     "$(j "$f" '.source | "\(.bind):\(.port) \(.keystore) \(.keystorePasswordFile) \(.clientTrust)"')" "source listener"

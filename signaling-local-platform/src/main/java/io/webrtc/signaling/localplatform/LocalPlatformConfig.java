@@ -93,6 +93,7 @@ public final class LocalPlatformConfig {
 
   private final String issuer;
   private final Map<String, Long> cells;
+  private final HomeBuckets homeBuckets;
   private final String keyId;
   private final Path signingKeyFile;
   private final Listener source;
@@ -103,6 +104,7 @@ public final class LocalPlatformConfig {
   private LocalPlatformConfig(
       String issuer,
       Map<String, Long> cells,
+      HomeBuckets homeBuckets,
       String keyId,
       Path signingKeyFile,
       Listener source,
@@ -111,6 +113,7 @@ public final class LocalPlatformConfig {
       Database database) {
     this.issuer = issuer;
     this.cells = cells;
+    this.homeBuckets = homeBuckets;
     this.keyId = keyId;
     this.signingKeyFile = signingKeyFile;
     this.source = source;
@@ -155,6 +158,7 @@ public final class LocalPlatformConfig {
     return new LocalPlatformConfig(
         issuer,
         cells,
+        homeBuckets,
         keyId,
         signingKeyFile,
         new Listener(
@@ -180,6 +184,11 @@ public final class LocalPlatformConfig {
   /** Cell name to storage epoch. */
   public Map<String, Long> cells() {
     return cells;
+  }
+
+  /** The home buckets of each cell; required when more than one cell is configured. */
+  public HomeBuckets homeBuckets() {
+    return homeBuckets;
   }
 
   public String keyId() {
@@ -229,9 +238,14 @@ public final class LocalPlatformConfig {
   }
 
   private static LocalPlatformConfig parse(String issuer, JsonNode root) {
-    requireKeys(
-        root, Set.of("cells", "keyId", "signingKey", "source", "admin", "health", "database"));
+    Set<String> keys =
+        root.has("homeBuckets")
+            ? Set.of(
+                "cells", "homeBuckets", "keyId", "signingKey", "source", "admin", "health", "database")
+            : Set.of("cells", "keyId", "signingKey", "source", "admin", "health", "database");
+    requireKeys(root, keys);
     Map<String, Long> cells = cells(root.get("cells"));
+    HomeBuckets homeBuckets = homeBuckets(root.get("homeBuckets"), cells);
     String keyId = text(root, "keyId");
     if (!KEY_ID.matcher(keyId).matches()) {
       throw failure(LocalPlatformFailure.Category.CONFIG);
@@ -240,6 +254,7 @@ public final class LocalPlatformConfig {
     return new LocalPlatformConfig(
         issuer,
         cells,
+        homeBuckets,
         keyId,
         signingKey,
         listener(object(root, "source")),
@@ -266,6 +281,35 @@ public final class LocalPlatformConfig {
       result.put(field.getKey(), epoch.asLong());
     }
     return Collections.unmodifiableMap(result);
+  }
+
+  private static HomeBuckets homeBuckets(JsonNode node, Map<String, Long> cells) {
+    if (node == null) {
+      // A single cell is home for every user; several cells must say who is home where.
+      if (cells.size() == 1) {
+        return HomeBuckets.everywhere();
+      }
+      throw failure(LocalPlatformFailure.Category.CONFIG);
+    }
+    if (!node.isObject() || node.size() != cells.size()) {
+      throw failure(LocalPlatformFailure.Category.CONFIG);
+    }
+    Map<String, HomeBuckets.Range> ranges = new LinkedHashMap<>();
+    Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+    while (fields.hasNext()) {
+      Map.Entry<String, JsonNode> field = fields.next();
+      JsonNode range = field.getValue();
+      if (!cells.containsKey(field.getKey())
+          || !range.isArray()
+          || range.size() != 2
+          || !range.get(0).isInt()
+          || !range.get(1).isInt()) {
+        throw failure(LocalPlatformFailure.Category.CONFIG);
+      }
+      ranges.put(
+          field.getKey(), new HomeBuckets.Range(range.get(0).intValue(), range.get(1).intValue()));
+    }
+    return HomeBuckets.of(ranges);
   }
 
   private static Listener listener(JsonNode node) {

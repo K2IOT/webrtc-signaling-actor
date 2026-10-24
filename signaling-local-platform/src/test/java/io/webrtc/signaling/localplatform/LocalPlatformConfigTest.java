@@ -22,6 +22,7 @@ class LocalPlatformConfigTest {
       """
       {
         "cells": {"cell-a": 1, "cell-b": 7},
+        "homeBuckets": {"cell-a": [0, 8191], "cell-b": [8192, 16383]},
         "keyId": "TEST_ONLY-key-1",
         "signingKey": "/run/test-only/platform/signing.key",
         "source": {
@@ -231,15 +232,82 @@ class LocalPlatformConfigTest {
     assertConfigRejected(VALID.replace("\"cell-a\": 1, \"cell-b\": 7", nine.toString()));
   }
 
+  private static final String HOMES =
+      "\"homeBuckets\": {\"cell-a\": [0, 8191], \"cell-b\": [8192, 16383]},";
+
+  @Test
+  void severalCellsNeedDisjointHomeBucketsForEachCell() throws IOException {
+    // Without them every cell would be sent every user's revocations, and a foreign user's bucket
+    // fences the consuming cell's whole feed.
+    assertConfigRejected(VALID.replace(HOMES, ""));
+    assertConfigRejected(VALID.replace("[8192, 16383]", "[8191, 16383]"));
+    assertConfigRejected(VALID.replace("[8192, 16383]", "[8192, 16384]"));
+    // A gap would drop the gap's revocations from every page while the cursors advance.
+    assertConfigRejected(VALID.replace("[8192, 16383]", "[8193, 16383]"));
+    assertConfigRejected(VALID.replace("[8192, 16383]", "[8192, 16382]"));
+    assertConfigRejected(VALID.replace("[0, 8191]", "[-1, 8191]"));
+    assertConfigRejected(VALID.replace("[0, 8191]", "[8191, 0]"));
+    assertConfigRejected(VALID.replace("[0, 8191]", "[0]"));
+    assertConfigRejected(VALID.replace("[0, 8191]", "\"0-8191\""));
+    assertConfigRejected(VALID.replace("\"cell-b\": [8192, 16383]", "\"cell-c\": [8192, 16383]"));
+    assertConfigRejected(
+        VALID.replace("\"cell-b\": [8192, 16383]", "\"cell-b\": [8192, 16383], \"cell-c\": [1, 2]"));
+
+    var homes = LocalPlatformConfig.load(env(VALID)).homeBuckets();
+    var user = new io.webrtc.signaling.protocol.Identity.UserId("TEST_ONLY_USER");
+    int bucket = io.webrtc.signaling.storage.SessionRegistryService.bucket(user);
+    assertThat(homes.home("cell-a", user)).isEqualTo(bucket < 8192);
+    assertThat(homes.home("cell-b", user)).isEqualTo(bucket >= 8192);
+    assertThat(homes.home("cell-z", user)).isFalse();
+  }
+
+  @Test
+  void aSingleCellWithoutHomeBucketsIsHomeForEveryUser() throws IOException {
+    var config =
+        LocalPlatformConfig.load(
+            env(VALID.replace(HOMES, "").replace("\"cell-a\": 1, \"cell-b\": 7", "\"cell-a\": 1")));
+    assertThat(
+            config
+                .homeBuckets()
+                .home("cell-a", new io.webrtc.signaling.protocol.Identity.UserId("TEST_ONLY_ANY")))
+        .isTrue();
+  }
+
+  @Test
+  void aSingleCellWithHomeBucketsMustOwnEveryBucket() throws IOException {
+    String single = VALID.replace("\"cell-a\": 1, \"cell-b\": 7", "\"cell-a\": 1");
+    assertConfigRejected(single.replace(HOMES, "\"homeBuckets\": {\"cell-a\": [0, 8191]},"));
+    assertThat(
+            LocalPlatformConfig.load(
+                    env(single.replace(HOMES, "\"homeBuckets\": {\"cell-a\": [0, 16383]},")))
+                .cells())
+        .hasSize(1);
+  }
+
   @Test
   void eightCellsAreAccepted() throws IOException {
     StringBuilder eight = new StringBuilder();
     for (int i = 0; i < 8; i++) {
       eight.append(i == 0 ? "" : ",").append("\"c").append(i).append("\": 1");
     }
+    StringBuilder homes = new StringBuilder();
+    for (int i = 0; i < 8; i++) {
+      homes
+          .append(i == 0 ? "" : ",")
+          .append("\"c")
+          .append(i)
+          .append("\": [")
+          .append(i * 2048)
+          .append(", ")
+          .append(i * 2048 + 2047)
+          .append("]");
+    }
     LocalPlatformConfig config =
         LocalPlatformConfig.load(
-            env(VALID.replace("\"cell-a\": 1, \"cell-b\": 7", eight.toString())));
+            env(
+                VALID
+                    .replace("\"cell-a\": 1, \"cell-b\": 7", eight.toString())
+                    .replace(HOMES, "\"homeBuckets\": {" + homes + "},")));
     assertThat(config.cells()).hasSize(8);
   }
 

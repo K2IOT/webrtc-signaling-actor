@@ -1,7 +1,7 @@
 # platform.json: LocalPlatformConfig of the local-platform process (config/native-sources.md,
-# "Local platform source"). Exactly the keys cells, keyId, signingKey, source, admin, health,
-# database. LOCAL_TEST_ONLY / NOT_QUALIFIED.
-# Arguments: $cells [names] $mount $bind $sourcePort $adminPort $healthPort $pgPort $dbHost $dbUser.
+# "Local platform source"). Exactly the keys cells, homeBuckets, keyId, signingKey, source, admin,
+# health, database. LOCAL_TEST_ONLY / NOT_QUALIFIED.
+# Arguments: $cells [names] $split $mount $bind $sourcePort $adminPort $healthPort $pgPort $dbHost $dbUser.
 # The database password is a file (db.pass) beside this one, never a value here.
 include "common";
 
@@ -16,6 +16,9 @@ def listener($port; $trust):
 
 {
   cells: ($cells | map({key: ., value: 1}) | from_entries),
+  # Home buckets per cell, the same split as directory.json (c001 0..split-1, c002 split..16383):
+  # each cell's revocation page carries only its home users, as the native source contract requires.
+  homeBuckets: {($cells[0]): [0, ($split - 1)], ($cells[1]): [$split, 16383]},
   # The key id the planes enroll under sources.publicKeys.
   keyId: "local-source",
   signingKey: ($mount + "/source.key"),

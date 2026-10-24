@@ -230,7 +230,7 @@ public final class LocalPlatformApplication {
               config.cells().keySet(),
               new BootRegistry(),
               new ClockReportService(signer, observer, config.cells(), clock),
-              new RevocationPageService(signer, log, config.issuer(), clock));
+              new RevocationPageService(signer, log, config.issuer(), clock, config.homeBuckets()));
       HttpServer source =
           listen(
               https(config.source(), sourceTls), sourceHandler, SOURCE_THREADS, "source", opened);

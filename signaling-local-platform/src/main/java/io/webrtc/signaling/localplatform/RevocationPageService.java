@@ -54,9 +54,18 @@ public final class RevocationPageService {
   private final RevocationLog log;
   private final String issuer;
   private final Clock wallClock;
+  private final HomeBuckets homes;
 
+  /** One cell owns every user: pages carry every event. */
   public RevocationPageService(
       SourceSigner signer, RevocationLog log, String issuer, Clock wallClock) {
+    this(signer, log, issuer, wallClock, HomeBuckets.everywhere());
+  }
+
+  /** Pages for a cell carry only the events of users that cell is home for. */
+  public RevocationPageService(
+      SourceSigner signer, RevocationLog log, String issuer, Clock wallClock, HomeBuckets homes) {
+    this.homes = Objects.requireNonNull(homes, "homes");
     this.signer = Objects.requireNonNull(signer, "signer");
     this.log = Objects.requireNonNull(log, "log");
     this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
@@ -79,17 +88,20 @@ public final class RevocationPageService {
       throw new IllegalArgumentException();
     }
     RevocationLog.Snapshot snapshot = log.read(from, PAGE_SIZE);
-    List<RevocationState.Event> events = snapshot.events().stream().map(this::scoped).toList();
+    List<RevocationState.Event> read = snapshot.events().stream().map(this::scoped).toList();
     long highWater;
-    if (events.isEmpty()) {
+    if (read.isEmpty()) {
       if (snapshot.currentHighWater() != from) {
         // Offsets are gapless: a non-caught-up reader always gets at least one event.
         throw new RevocationLog.Unavailable();
       }
       highWater = snapshot.currentHighWater();
     } else {
-      highWater = events.get(events.size() - 1).sourceOffset();
+      highWater = read.get(read.size() - 1).sourceOffset();
     }
+    // The cursor covers every event read; the page carries only this cell's home users.
+    List<RevocationState.Event> events =
+        read.stream().filter(event -> homes.home(cell, event.userId())).toList();
     Instant now = wallClock.instant();
     Instant checkedAt =
         (snapshot.newestCommittedAt().isAfter(now) ? snapshot.newestCommittedAt() : now)
