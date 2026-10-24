@@ -206,6 +206,9 @@ public final class CallWorkflowService {
                     switch (transition.step()) {
                         case RING -> deadlines.put("ringUntil", now.plusSeconds(timers.ringingSeconds()).toString());
                         case ACCEPT -> deadlines.put("activationUntil", now.plusSeconds(timers.activationSeconds()).toString());
+                        // CALL_READY commits the negotiation permission of the CONNECTING phase: without a
+                        // deadline the call could never expire and its renewals would be fenced.
+                        case READY -> deadlines.put("negotiationUntil", now.plusSeconds(timers.negotiationSeconds()).toString());
                         default -> {
                         }
                     }

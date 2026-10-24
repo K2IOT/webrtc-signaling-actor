@@ -159,6 +159,27 @@ class CallRecoveryIT {
     }
 
     @Test
+    void callReadyCommitsTheNegotiationDeadlineOfTheConnectingPhase() throws Exception {
+        try (var f = new Fixture()) {
+            var call = f.create();
+            finish(f.workflow.apply(f.transition(call, 1, CallWorkflowService.Step.RING, UUID.randomUUID(), null, null), Duration.ofSeconds(2)));
+            var winner = f.callees.get(call);
+            finish(f.workflow.apply(f.transition(call, 2, CallWorkflowService.Step.ACCEPT, UUID.randomUUID(), winner, null), Duration.ofSeconds(2)));
+            UUID activation = UUID.randomUUID();
+            finish(f.workflow.apply(f.transition(call, 3, CallWorkflowService.Step.ACTIVATE, UUID.randomUUID(), winner, activation), Duration.ofSeconds(2)));
+            Instant before = Instant.now();
+            var ready =
+                    finish(f.workflow.apply(f.transition(call, 4, CallWorkflowService.Step.READY, UUID.randomUUID(), winner, activation), Duration.ofSeconds(2)));
+
+            assertThat(ready.snapshot().state()).isEqualTo("CONNECTING");
+            // Without it a CONNECTING call has no phase deadline: it could never expire, and every
+            // participant renewal before the first negotiation round is fenced.
+            var due = DurableDeadlines.due(ready.snapshot());
+            assertThat(due).isNotNull().isAfter(before.plusSeconds(10)).isBefore(before.plusSeconds(60));
+        }
+    }
+
+    @Test
     void proofExpiryAndPrimaryGroupTakeoverFenceCachedActors() throws Exception {
         try (var f = new Fixture()) {
             var call = f.create();
@@ -337,6 +358,43 @@ class CallRecoveryIT {
                 // per sweep: one probe plus at most one page transaction per live group; the 300+ idle
                 // groups cost nothing of their own
                 assertThat(transactions.get()).isLessThanOrEqualTo(sweeps * (1 + live.size()));
+            }
+        }
+    }
+
+    @Test
+    void aLiveCallIsWokenAtMostOncePerCycleEvenWhenSweptEvery100Ms() throws Exception {
+        try (var f = new Fixture()) {
+            f.create();
+            var partition = new HashSet<Integer>();
+            f.tokens.values().forEach(token -> partition.add(token.group()));
+            for (int group = 0; group < 200; group++) partition.add(group);
+            var wakes = new java.util.concurrent.atomic.AtomicInteger();
+            try (var recovery =
+                         new CallRecoveryService(
+                                 f.runtime.sql,
+                                 "c001",
+                                 1,
+                                 null,
+                                 () -> partition,
+                                 (call, budget) -> {
+                                     wakes.incrementAndGet();
+                                     return NOT_HYDRATED;
+                                 })) {
+                long end = System.nanoTime() + Duration.ofMillis(900).toNanos();
+                while (System.nanoTime() < end) {
+                    try {
+                        finish(recovery.sweepTracked(Duration.ofSeconds(1)));
+                    } catch (CompletionException busy) {
+                        if (!(busy.getCause() instanceof DbOverloadedException)) throw busy;
+                    }
+                    Thread.sleep(100);
+                }
+                // Each wake hydrates the call under its users' guards; re-waking a live call every sweep
+                // collides with that call's own commands.
+                assertThat(wakes.get()).isEqualTo(1);
+                assertThat(recovery.observedProgressAgeNanos())
+                        .isBetween(0L, Duration.ofSeconds(5).toNanos());
             }
         }
     }

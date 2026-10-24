@@ -34,6 +34,11 @@ public final class CallRecoveryService implements AutoCloseable {
     private ScheduledExecutorService worker;
     private CompletableFuture<Void> drained;
     private long cycleStarted = System.nanoTime(), lastCycleNanos;
+    // A completed cycle is not restarted sooner: each wake hydrates its call under the users'
+    // guards, so re-waking live calls on every 100 ms sweep collides with their own commands. The
+    // cycle stays well inside its five second bound.
+    private static final long MINIMUM_CYCLE_NANOS = TimeUnit.SECONDS.toNanos(1);
+    private boolean cycleCompleted;
 
     /**
      * Legacy standalone adapter; native composition always supplies tracked wake and partitions.
@@ -181,6 +186,12 @@ public final class CallRecoveryService implements AutoCloseable {
      */
     private CompletionStage<Report> scan(
             Set<Integer> partition, long end, List<CompletableFuture<?>> retained) {
+        synchronized (this) {
+            if (cycleCompleted
+                    && completedGroups.isEmpty()
+                    && System.nanoTime() - cycleStarted < MINIMUM_CYCLE_NANOS)
+                return CompletableFuture.completedFuture(report(0, 0, false));
+        }
         return track(liveGroups(partition, remaining(end)), retained)
                 .handle((live, error) -> error != null ? Set.<Integer>of() : idle(partition, live))
                 .thenCompose(
@@ -195,6 +206,7 @@ public final class CallRecoveryService implements AutoCloseable {
                                     completedGroups.clear();
                                     lastCycleNanos = System.nanoTime() - cycleStarted;
                                     cycleStarted = System.nanoTime();
+                                    cycleCompleted = true;
                                     return CompletableFuture.completedFuture(report(0, 0, true));
                                 }
                             }
@@ -356,6 +368,7 @@ public final class CallRecoveryService implements AutoCloseable {
                                                         completedGroups.clear();
                                                         lastCycleNanos = System.nanoTime() - cycleStarted;
                                                         cycleStarted = System.nanoTime();
+                                                        cycleCompleted = true;
                                                     }
                                                 }
                                                 int scanned = examined + hints.size(),
