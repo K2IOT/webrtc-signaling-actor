@@ -320,25 +320,39 @@ public final class OutboxRepository {
     }
 
     public DbOperation<Boolean> defer(Claim claim, String worker, UUID incarnation, boolean poison) {
+        return defer(claim, worker, incarnation, poison, true);
+    }
+
+    /**
+     * {@code attempted=false} returns a claim this worker had no capacity to try: it waits one
+     * second and does not grow the delivery backoff.
+     */
+    public DbOperation<Boolean> defer(
+            Claim claim, String worker, UUID incarnation, boolean poison, boolean attempted) {
         return sql.submitTracked(
                 DbClass.OUTBOX,
                 Duration.ofSeconds(2),
                 c -> {
                     queueAuthority(c, claim.bucket());
+                    // Exponential backoff with jitter on the claim generation: 0.5-1 s after the first
+                    // attempt, capped at 15-30 s, so an event whose receiver stays gone (closed session,
+                    // lost route) costs one attempt per ~half minute until expiry, not one per second.
                     try (var q =
                                  c.prepareStatement(
                                          "UPDATE control_outbox SET"
-                                                 + " delivery_state='PENDING',dispatch_until=NULL,next_attempt=clock_timestamp()+interval"
-                                                 + " '1 second',quarantined=?,terminal_reason=CASE WHEN ? THEN"
+                                                 + " delivery_state='PENDING',dispatch_until=NULL,next_attempt=clock_timestamp()+CASE WHEN ? THEN make_interval(secs"
+                                                 + " => LEAST(30,power(2,LEAST(GREATEST(dispatch_generation,1)-1,5)))*(0.5+random()/2)) ELSE"
+                                                 + " interval '1 second' END,quarantined=?,terminal_reason=CASE WHEN ? THEN"
                                                  + " 'MALFORMED_EVENT' ELSE NULL END WHERE event_id=? AND dispatch_owner=? AND"
                                                  + " dispatch_incarnation=? AND dispatch_generation=? AND"
                                                  + " delivery_state='INFLIGHT' AND dispatch_until>clock_timestamp()")) {
-                        q.setBoolean(1, poison);
+                        q.setBoolean(1, attempted);
                         q.setBoolean(2, poison);
-                        q.setObject(3, claim.eventId());
-                        q.setString(4, worker);
-                        q.setObject(5, incarnation);
-                        q.setLong(6, claim.generation());
+                        q.setBoolean(3, poison);
+                        q.setObject(4, claim.eventId());
+                        q.setString(5, worker);
+                        q.setObject(6, incarnation);
+                        q.setLong(7, claim.generation());
                         return q.executeUpdate() == 1;
                     }
                 });

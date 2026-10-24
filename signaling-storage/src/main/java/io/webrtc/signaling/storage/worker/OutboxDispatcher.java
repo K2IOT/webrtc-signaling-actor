@@ -90,7 +90,7 @@ public final class OutboxDispatcher {
                                             var flight = reserve(event);
                                             if (flight == null) {
                                                 rejected.add(
-                                                        work.track(repository.defer(event, worker, incarnation, false))
+                                                        work.track(repository.defer(event, worker, incarnation, false, false))
                                                                 .exceptionally(error -> null)
                                                                 .toCompletableFuture());
                                                 continue;

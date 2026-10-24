@@ -312,6 +312,109 @@ class CallCommandIT {
                                         .isEmpty());
     }
 
+    static double secondsUntilNextAttempt(UUID event) throws Exception {
+        try (var c = PgFixture.connection();
+             var q =
+                     c.prepareStatement(
+                             "SELECT EXTRACT(EPOCH FROM next_attempt-clock_timestamp()) FROM control_outbox"
+                                     + " WHERE event_id=?")) {
+            q.setObject(1, event);
+            try (var r = q.executeQuery()) {
+                r.next();
+                return r.getDouble(1);
+            }
+        }
+    }
+
+    @Test
+    void undeliverableEventBacksOffExponentiallyUpToThirtySecondsInsteadOfEverySecond()
+            throws Exception {
+        var sender = sender("outbox-backoff-caller");
+        var created =
+                commands
+                        .executeCallCommand(
+                                command(
+                                        SignalEnvelope.Type.INVITE,
+                                        sender,
+                                        new RequestId(UUID.randomUUID()),
+                                        null,
+                                        "{}",
+                                        "cc".repeat(32)))
+                        .toCompletableFuture()
+                        .join();
+        commands
+                .executeCallCommand(
+                        command(
+                                SignalEnvelope.Type.CANCEL,
+                                sender,
+                                new RequestId(UUID.randomUUID()),
+                                created.callId(),
+                                "{}",
+                                "dd".repeat(32)))
+                .toCompletableFuture()
+                .join();
+        var outbox = new OutboxRepository(runtime.sql, "c001", 1);
+        UUID incarnation = UUID.randomUUID();
+        UUID event;
+        try (var c = PgFixture.connection();
+             var q = c.prepareStatement("SELECT event_id FROM control_outbox WHERE call_id=? LIMIT 1")) {
+            q.setString(1, created.callId().value());
+            try (var r = q.executeQuery()) {
+                assertThat(r.next()).isTrue();
+                event = r.getObject(1, UUID.class);
+            }
+        }
+        var delays = new java.util.ArrayList<Double>();
+        for (int attempt = 1; attempt <= 8; attempt++) {
+            var target = event;
+            var claim =
+                    outbox
+                            .scanOutboxBatchTracked("worker", incarnation, 2, List.of(event), java.util.Set.of())
+                            .logical()
+                            .toCompletableFuture()
+                            .join()
+                            .claims()
+                            .stream()
+                            .filter(c -> c.eventId().equals(target))
+                            .findFirst()
+                            .orElseThrow();
+            assertThat(outbox.defer(claim, "worker", incarnation, false).logical().toCompletableFuture().join())
+                    .isTrue();
+            delays.add(secondsUntilNextAttempt(event));
+            // TEST_ONLY: make the deferred event due again instead of sleeping through the backoff.
+            try (var c = PgFixture.connection();
+                 var q = c.prepareStatement("UPDATE control_outbox SET next_attempt=clock_timestamp() WHERE event_id=?")) {
+                q.setObject(1, event);
+                q.executeUpdate();
+            }
+        }
+        assertThat(delays.get(0)).isBetween(0.4, 1.0);
+        assertThat(delays.get(3)).isBetween(3.9, 8.0);
+        assertThat(delays.get(7)).isBetween(14.9, 30.0);
+        assertThat(delays).allSatisfy(d -> assertThat(d).isLessThanOrEqualTo(30.0));
+        // A claim this worker had no capacity to try keeps the one-second retry.
+        var target = event;
+        var unattempted =
+                outbox
+                        .scanOutboxBatchTracked("worker", incarnation, 2, List.of(event), java.util.Set.of())
+                        .logical()
+                        .toCompletableFuture()
+                        .join()
+                        .claims()
+                        .stream()
+                        .filter(c -> c.eventId().equals(target))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(
+                outbox
+                        .defer(unattempted, "worker", incarnation, false, false)
+                        .logical()
+                        .toCompletableFuture()
+                        .join())
+                .isTrue();
+        assertThat(secondsUntilNextAttempt(event)).isBetween(0.9, 1.0);
+    }
+
     @Test
     void outboxIsCommittedWithTerminalResultAndClaimGenerationFencesLateCompletion() {
         var sender = sender("outbox-caller");
