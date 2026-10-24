@@ -12,6 +12,7 @@ import org.apache.pekko.http.javadsl.model.Uri;
 import org.apache.pekko.management.javadsl.PekkoManagement;
 
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
@@ -112,6 +113,22 @@ public final class NativeActorProcess {
                             if (failure != null) up.completeExceptionally(failure);
                             else up.complete(null);
                         });
+        // A refused join shuts the system down at once; report why instead of waiting for the timeout.
+        system
+                .getWhenTerminated()
+                .whenComplete(
+                        (done, error) -> {
+                            RuntimeException refused = null;
+                            try {
+                                refused = formationFailure(CoordinatedShutdown.get(system).getShutdownReason());
+                            } catch (RuntimeException unreadable) {
+                                // The reason is a diagnosis only; formation still fails now.
+                            }
+                            up.completeExceptionally(
+                                    refused != null
+                                            ? refused
+                                            : new IllegalStateException("Native actor system terminated during formation"));
+                        });
         system
                 .scheduler()
                 .scheduleOnce(
@@ -121,6 +138,19 @@ public final class NativeActorProcess {
                                         new TimeoutException("Native actor membership Up not established within 30s")),
                         system.executionContext());
         return up.minimalCompletionStage();
+    }
+
+    /**
+     * The fixed startup diagnosis of a shutdown during formation: the cluster refusing a member whose
+     * join-checked configuration (cluster fingerprint, cell, hash versions) differs is an identity
+     * mismatch. Any other reason keeps the generic formation failure ({@code null}).
+     */
+    static RuntimeException formationFailure(Optional<CoordinatedShutdown.Reason> reason) {
+        return reason.filter(CoordinatedShutdown.incompatibleConfigurationDetectedReason()::equals).isPresent()
+                ? new io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure(
+                io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Role.IDENTITY,
+                io.webrtc.signaling.app.runtime.local.LocalRuntimeFailure.Category.IDENTITY_MISMATCH)
+                : null;
     }
 
     public ActorSystem<?> awaitLocalUp() {
