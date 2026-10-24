@@ -1,14 +1,12 @@
 # Acceptance run of the two-cell compose environment
 
-**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED, twice in a row with the
-same result** (32 PASS, 7 FAIL each). The latest pair (2026-10-24) is in "Relay owner routing and the
-idle-error sweep"; there `make p2p` passed 6/6. The text below describes the earlier runs: three
-actors per cell, source database pooled.
-The stack starts in about 130 s and every plane is ready, but the first INVITE of the smoke fails
-in a different way each time (investigation in "Why the first INVITE fails"). The environment is **not**
-`LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing, N-1 or any capacity
-figure. The latest runs are in "Pooled source database, two back-to-back runs" below; the earlier
-sections describe the three-actor first run and the six-actor cells.
+**LOCAL_TEST_ONLY / NOT_QUALIFIED.** Latest outcome (2026-10-24 evening, "Two consecutive acceptance
+passes"): runs `x-A` and `x-B`, each from a fresh `make down`/`make up`, both reported
+**ACCEPTANCE_PASSED, 40 of 40 checks**, and `make p2p` (a real WebRTC data channel through both
+gateways) passed 3 of 3. Spec criterion 5 (`./mvnw verify` of SP1/SP2, whose spotless check still
+fails repo-wide) is not part of `acceptance.sh`, so the environment is not declared
+`LOCAL_QUALIFIED`. Nothing here is a claim about production, HA, fencing, N-1 or capacity. The
+sections below that report 32/7 results are earlier runs.
 
 - Dates: 2026-10-22/23 (UTC). First run (before the fix): commits `6ab9a40` to `05bf35d`. Run after
   the fix: commit `fb249e7` (`fix(rpc): read the recovery safety gate once per sweep`); the
@@ -36,6 +34,61 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
+
+## Two consecutive acceptance passes (2026-10-24, evening)
+
+**Two passes in a row: `x-A` and `x-B`, 40 of 40 checks each** (default JVM options, `make up`'s load
+guard on, a fresh `make down`/`make up` before each run). The pair before them: run `w-A` reported
+**ACCEPTANCE_PASSED, 40 of 40 checks**. Run `w-B`, started right after it from a fresh
+`make down`/`make up`, failed one start check: `actor-c001-2` stayed at `/ready` 503, and six later
+checks failed as a consequence. Three further fresh starts were all ready, so this has happened once
+in about ten recent starts. `acceptance.sh` now keeps the metrics and logs of an unready plane for
+the next occurrence; it did not recur in `x-A`/`x-B`. `make p2p` passed 3 of 3, each INVITE on its
+first attempt.
+
+Defects found and fixed, each with a test written first:
+
+- `63df7ac` revocation feed poisoning:
+  - What happened: the local source sent every user's revocations to every cell. One token
+    revoke of a c002 user reached c001. There the user's bucket is FROZEN, so
+    `RevocationReconciler` fenced the page, and c001's progress stuck at that offset.
+  - Effect: revocation freshness went stale for good, and every later c001 session registration
+    was refused (the smoke's AUTH was closed with 1000).
+  - Fix: pages now carry only the cell's home users (`homeBuckets`, which must cover 0..16383
+    exactly). The cursor still moves past every event.
+- `36db157` admin revoke timeout: the JDK HttpsServer reverse-resolves every TLS peer, and the host
+  gateway has no PTR record, so each host-side handshake waited about 8 s. The gateway address is
+  now pinned (`NET_SHARED_GATEWAY`) and mapped in local-platform's `/etc/hosts`.
+- `257d430` local-platform CPU: the PKIX key manager decrypted the PKCS12 key again on most
+  handshakes. SunX509 keeps the decrypted key.
+- `d1395c0` first INVITE on a cold stack:
+  - What happened: each retry minted a random `callId`, landing in a different cold ownership
+    group. One INVITE was retried about 20 times through new cold groups and then timed out.
+  - Fix: the id now derives from the INVITE's idempotency key (issuer, jti, requestId), so
+    retries reach the same entity and group.
+- `cb70828`, `e61a726` foreign fingerprint: Pekko refuses the join and shuts the system down with
+  `IncompatibleConfigurationDetected`. Startup now reports `LOCAL_RUNTIME_REJECTED`
+  `identity`/`IDENTITY_MISMATCH` (about 20 s) instead of `STARTUP_FAILED`.
+- `0396f01` idle load:
+  - What happened: an idle c001 primary ran about 450 transactions/s. The outbox scanner never
+    backed off, because its "pending" probe counted deferred events whose retry time lay ahead.
+    Retention also scanned five tables every 100 ms.
+  - Fix: both now back off when idle.
+  - Effect: the load-dependent relay deadline misses (`RESYNC_REQUIRED` on OFFER or ANSWER)
+    stopped appearing in the following runs.
+- `5f32b8d`, `1c09e62` standby case (3b): the spec only asks that critical commands fail closed.
+  - The gateway's 15 s boot lease cannot be renewed while commits wait for the lost standby, and
+    an expired boot is never revived. Its boot id is pinned at provisioning, so the gateway stays
+    unready by design; this is recorded as INFO.
+  - Control and the actors must be ready again within 120 s.
+  - The case then re-provisions after waiting for `make up`'s load guard, and the smoke must pass.
+
+Still open:
+
+- The rare unready actor at start, described above.
+- local-platform uses about 1-2 cores at idle. Nine planes poll the clock and revocation endpoints
+  every 100 ms, each poll a new TLS connection (about 130 per second).
+- The idle actors use about 50-80% CPU each.
 
 ## Relay owner routing and the idle-error sweep (2026-10-24, later)
 
