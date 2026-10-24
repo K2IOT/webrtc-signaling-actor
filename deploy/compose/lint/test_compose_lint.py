@@ -227,6 +227,17 @@ class ComposeModel(unittest.TestCase):
         m = mutated(lambda m: m["networks"]["net-shared"].update(internal=True))
         self.assertCaught(cl.check_networks(m, TOPOLOGY), "net-shared: internal must be false")
 
+    def test_shared_gateway_is_pinned_and_named_for_the_platform(self):
+        # The JDK HttpsServer of local-platform reverse-resolves every TLS peer. Callers on the host
+        # (the smoke) come from the net-shared gateway, which has no PTR record in Docker's DNS:
+        # without a hosts entry each handshake waits for the resolver to time out (~8 s).
+        self.assertClean(cl.check_networks(MODEL, TOPOLOGY))
+        self.assertClean(cl.check_platform_peer_names(MODEL, TOPOLOGY))
+        m = mutated(lambda m: m["networks"]["net-shared"]["ipam"]["config"][0].pop("gateway"))
+        self.assertCaught(cl.check_networks(m, TOPOLOGY), "net-shared: ipam gateway must be")
+        m = mutated(lambda m: m["services"]["local-platform"].pop("extra_hosts"))
+        self.assertCaught(cl.check_platform_peer_names(m, TOPOLOGY), "local-platform: extra_hosts must map")
+
     def test_only_published_ports_are_the_four_on_loopback(self):
         self.assertClean(cl.check_ports(MODEL, TOPOLOGY))
         m = mutated(lambda m: m["services"]["identity"]["ports"][0].update(host_ip="0.0.0.0"))

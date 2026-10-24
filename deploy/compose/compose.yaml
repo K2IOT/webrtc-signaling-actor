@@ -281,6 +281,9 @@ services:
       SIGNALING_PLATFORM_CONFIG: /run/signaling/platform.json
       JDK_JAVA_OPTIONS: ${JVM_OPTS}
     networks: {net-shared: {ipv4_address: "${PLATFORM_IP:?topology.env}"}}
+    # The JDK HttpsServer reverse-resolves each TLS peer; the host gateway has no PTR record in
+    # Docker's DNS, so without this entry every host-side handshake waits ~8 s for the resolver.
+    extra_hosts: ["compose-host:${NET_SHARED_GATEWAY:?topology.env}"]
     volumes:
       - {type: volume, source: run, target: /run/signaling, read_only: true, volume: {subpath: local-platform}}
     healthcheck:
@@ -472,7 +475,8 @@ networks:
   # ports need it.
   net-shared:
     ipam:
-      config: [{subnet: "${NET_SHARED:?topology.env}", ip_range: "${NET_SHARED_DYNAMIC:?topology.env}"}]
+      config:
+        - {subnet: "${NET_SHARED:?topology.env}", ip_range: "${NET_SHARED_DYNAMIC:?topology.env}", gateway: "${NET_SHARED_GATEWAY:?topology.env}"}
 
 volumes:
   # Stage-1/2 output; every service mounts only its own subpath, read-only. `docker compose down -v`

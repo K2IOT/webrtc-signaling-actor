@@ -397,6 +397,8 @@ def check_networks(model: dict, t: dict[str, str]) -> list[str]:
         cfg = ((n.get("ipam") or {}).get("config")) or []
         if len(cfg) != 1 or cfg[0].get("subnet") != subnet or cfg[0].get("ip_range") != dyn:
             p.append(f"network {name}: ipam must be exactly subnet {subnet} with ip_range {dyn}")
+        if name == "net-shared" and cfg and cfg[0].get("gateway") != t["NET_SHARED_GATEWAY"]:
+            p.append(f"network {name}: ipam gateway must be {t['NET_SHARED_GATEWAY']} (NET_SHARED_GATEWAY)")
         if cfg and cfg[0].get("ip_range") and cfg[0].get("subnet"):
             try:
                 if not ipaddress.ip_network(cfg[0]["ip_range"]).subnet_of(ipaddress.ip_network(cfg[0]["subnet"])):
@@ -404,6 +406,20 @@ def check_networks(model: dict, t: dict[str, str]) -> list[str]:
             except ValueError:
                 p.append(f"network {name}: unparsable ipam values")
     return p
+
+
+def check_platform_peer_names(model: dict, t: dict[str, str]) -> list[str]:
+    """local-platform's JDK HttpsServer reverse-resolves every TLS peer: the host gateway needs a
+    hosts entry, or each host-side handshake waits for Docker's DNS to time out."""
+    gateway = t["NET_SHARED_GATEWAY"]
+    hosts = _services(model).get("local-platform", {}).get("extra_hosts") or []
+    if isinstance(hosts, dict):
+        entries = {(k, v if isinstance(v, str) else (v or [""])[0]) for k, v in hosts.items()}
+    else:
+        entries = {tuple(e.replace("=", ":", 1).split(":", 1)) for e in hosts}
+    if not any(ip == gateway for _, ip in entries):
+        return [f"local-platform: extra_hosts must map a name to the net-shared gateway {gateway}"]
+    return []
 
 
 def check_addresses(model: dict, t: dict[str, str]) -> list[str]:
@@ -865,6 +881,7 @@ ALL_CHECKS = (
 )
 TOPOLOGY_CHECKS = (
     check_networks,
+    check_platform_peer_names,
     check_addresses,
     check_internal_ports,
     check_ports,
