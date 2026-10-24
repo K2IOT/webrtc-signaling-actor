@@ -35,6 +35,45 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
+## Tracing the call failures (2026-10-24)
+
+**Not `LOCAL_QUALIFIED`; P2P on compose passes intermittently.** Readable logs came from a local
+logback override mounted over the planes (`-Dlogging.config`, plain pattern, operation MDC), plus
+temporary debug lines on failure paths and JFR. Neither was committed. Defects found, each fixed
+test-first:
+
+- `e4ea459` gateway cached-safety window: with at most 2,048 slots the sweep period equals its
+  100 ms interval, so a sweep that keeps time read stale before every tick (238,813 stale samples
+  in 2 s on an idle host). Frames in that gap got `STALE_CONNECTION`, AUTH got
+  `AUTHORIZATION_REJECTED`, and sockets were closed with `AUTH_FRESHNESS_UNKNOWN`.
+- `4e82b62` recovery pacing: my earlier probe change made each 100 ms sweep finish a cycle and
+  re-hydrate every live call ~10x/s, colliding with the call's own commands
+  (`RetryableConflict` on `user_guard ... NOWAIT`, `PARTICIPATION_EXPIRED`). Cycles now restart
+  after 1 s at the earliest (bound 5 s).
+- `4e82b62` CALL_READY now commits `negotiationUntil` (spec: CONNECTING commits CALL_READY and
+  negotiation permission). Without it every participant RENEW before NEGOTIATE was fenced
+  (`CoordinatorGrantService`), the CallActor failed the queued NEGOTIATE, and a CONNECTING call
+  could never expire. NEGOTIATE then passed 5/5.
+- `f4a2b68` compose DB quotas: renewal grants were refused at admission with 2 RENEWAL slots;
+  RENEWAL 6, RECOVERY 6, safetyMax 14.
+- `45d544d` one round trip for the five `SET LOCAL` of each transaction (p50 14.4 -> 11.7 ms).
+- `7ac0ee7` (earlier) reconcile envelope read the clock inside its factory.
+
+Results with these: INVITE succeeded on the first attempt in most runs (0/5 before); NEGOTIATE
+5/5; `make p2p` passed end to end twice (real SDP through both gateways, 14+14 ICE candidates,
+data-channel echo, hangup), but most runs stop at OFFER with `RESYNC_REQUIRED`.
+
+Remaining cause, architectural and not fixed: relay authorization
+(`NativeRelayAuthorization.loadRound` -> `local(call)`) runs on the actor that receives the relay
+RPC and requires that actor to own the call's group lease. Nothing forwards a relay to the owner,
+and compose sends every cell RPC to `actor-<cell>-1` (provider `actorHosts`), which owns about a
+third of the groups. On the other actors' groups the OFFER is fenced and `NativeRelayProducer`
+reports any failure as `RESYNC_REQUIRED`. Fixing it needs owner routing for relay (through
+sharding or a forward), a cross-module design change. Other open items: the gateway mints a new
+`callId` for each INVITE retry with the same requestId (each creates an entity and a group lease);
+calls whose phase deadline passed cycle cold-start/retire under recovery; `security_progress`
+lock contention between actors.
+
 ## Peer-to-peer client against the compose stack (2026-10-23)
 
 **Not working end to end yet.** `make -C deploy/compose p2p` (`smoke/p2p.mjs`) logs in, bootstraps
