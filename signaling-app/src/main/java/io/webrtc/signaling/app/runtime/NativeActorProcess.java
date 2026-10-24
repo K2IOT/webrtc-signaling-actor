@@ -38,12 +38,22 @@ public final class NativeActorProcess {
                         enrollment.systemName(),
                         PekkoShutdownLifecycle.config(
                                 NativeCompatibility.enrolledBuildRoles(enrollment.config())));
+        // A refused join (IncompatibleConfigurationDetected) shuts the system down at once; name it.
         system
                 .getWhenTerminated()
                 .whenComplete(
-                        (done, error) ->
-                                up.completeExceptionally(
-                                        new IllegalStateException("Native actor process terminated before Up")));
+                        (done, error) -> {
+                            RuntimeException refused = null;
+                            try {
+                                refused = formationFailure(CoordinatedShutdown.get(system).getShutdownReason());
+                            } catch (RuntimeException unreadable) {
+                                // The reason is a diagnosis only; formation still fails now.
+                            }
+                            up.completeExceptionally(
+                                    refused != null
+                                            ? refused
+                                            : new IllegalStateException("Native actor process terminated before Up"));
+                        });
         CoordinatedShutdown.get(system)
                 .addTask(
                         "service-unbind",
@@ -112,22 +122,6 @@ public final class NativeActorProcess {
                         (v, failure) -> {
                             if (failure != null) up.completeExceptionally(failure);
                             else up.complete(null);
-                        });
-        // A refused join shuts the system down at once; report why instead of waiting for the timeout.
-        system
-                .getWhenTerminated()
-                .whenComplete(
-                        (done, error) -> {
-                            RuntimeException refused = null;
-                            try {
-                                refused = formationFailure(CoordinatedShutdown.get(system).getShutdownReason());
-                            } catch (RuntimeException unreadable) {
-                                // The reason is a diagnosis only; formation still fails now.
-                            }
-                            up.completeExceptionally(
-                                    refused != null
-                                            ? refused
-                                            : new IllegalStateException("Native actor system terminated during formation"));
                         });
         system
                 .scheduler()
