@@ -192,6 +192,11 @@ class CallActorStateMachineTest {
     @Test
     void restoresDurableTimerWithoutClientTraffic() throws Exception {
         var actor = spawn();
+        // The deadline timer is armed when the actor applies the hydrated snapshot; advancing
+        // manual time before that would arm it after the deadline window already passed.
+        var hydrated = kit.<Optional<Snapshot>>createTestProbe();
+        actor.tell(new CallActor.GetSnapshot(hydrated.ref()));
+        assertThat(hydrated.receiveMessage()).isPresent();
         time.timePasses(Duration.ofSeconds(15));
         var timeout = backend.next();
         timeout.done(new CallWorkflowService.Outcome("TIMEOUT", snapshot("TERMINAL", 2), List.of()));
@@ -211,6 +216,40 @@ class CallActorStateMachineTest {
         assertThat(backend.started).hasValue(1);
         work.physical.complete(DbOperation.PhysicalCompletion.FINISHED);
         replies.expectTerminated(actor, Duration.ofSeconds(2));
+    }
+
+    @Test
+    void entityStartedWhileTheGroupGateIsClosedRetiresSoTheNextWakeRecreatesIt() throws Exception {
+        held.set(false);
+        var orphan =
+                kit.spawn(
+                        CallActor.create(
+                                CALL,
+                                backend,
+                                () -> held.get() ? Optional.of(TOKEN) : Optional.empty(),
+                                Clock.fixed(NOW, ZoneOffset.UTC)));
+        // No traffic arrives: a gate-less incarnation must not wait for a message to notice it can
+        // never serve, or every later wake is answered UNAVAILABLE by the same orphan.
+        replies.expectTerminated(orphan, Duration.ofSeconds(2));
+        assertThat(backend.started).hasValue(0);
+
+        var shard =
+                kit
+                        .<org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding.ShardCommand>
+                                createTestProbe();
+        var sharded =
+                kit.spawn(
+                        CallActor.create(
+                                CALL,
+                                backend,
+                                () -> held.get() ? Optional.of(TOKEN) : Optional.empty(),
+                                Clock.fixed(NOW, ZoneOffset.UTC),
+                                shard.ref()));
+        assertThat(shard.receiveMessage())
+                .isInstanceOf(
+                        org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding.Passivate.class);
+        kit.stop(sharded);
+        held.set(true);
     }
 
     @Test

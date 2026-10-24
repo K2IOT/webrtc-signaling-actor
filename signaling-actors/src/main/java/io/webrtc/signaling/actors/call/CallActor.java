@@ -73,6 +73,9 @@ public final class CallActor extends AbstractBehavior<CallMessage> {
         if (token.isEmpty()) {
             unknown = true;
             ready = true;
+            // This incarnation can never serve; retire it now rather than on some later message,
+            // so the next wake or command starts a fresh incarnation that reads the gate again.
+            c.getSelf().tell(Retire.INSTANCE);
             return;
         }
         pending = new Pending(null, token.get(), Purpose.HYDRATE);
