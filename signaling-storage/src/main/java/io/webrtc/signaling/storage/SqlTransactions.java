@@ -109,12 +109,14 @@ public final class SqlTransactions {
                                                 long remaining = budget.toNanos() - (System.nanoTime() - start);
                                                 if (remaining <= 0) throw new DbOverloadedException();
                                                 long ms = Math.max(1, Math.min(1000, remaining / 1_000_000));
+                                                // One round trip: the driver sends the five settings together.
                                                 try (var s = c.createStatement()) {
-                                                    s.execute("SET LOCAL lock_timeout='" + Math.min(100, ms) + "ms'");
-                                                    s.execute("SET LOCAL statement_timeout='" + ms + "ms'");
-                                                    s.execute("SET LOCAL transaction_timeout='" + Math.min(2000, ms) + "ms'");
-                                                    s.execute("SET LOCAL idle_in_transaction_session_timeout='" + ms + "ms'");
-                                                    s.execute("SET LOCAL synchronous_commit=on");
+                                                    s.execute(
+                                                            "SET LOCAL lock_timeout='" + Math.min(100, ms) + "ms';"
+                                                                    + "SET LOCAL statement_timeout='" + ms + "ms';"
+                                                                    + "SET LOCAL transaction_timeout='" + Math.min(2000, ms) + "ms';"
+                                                                    + "SET LOCAL idle_in_transaction_session_timeout='" + ms + "ms';"
+                                                                    + "SET LOCAL synchronous_commit=on");
                                                 }
                                                 T result = work.apply(c);
                                                 return DbBoundary.beforeCommit(result, cost.resultBytes());
