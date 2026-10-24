@@ -28,11 +28,11 @@ def database($url; $user; $password):
       NORMAL: 2,
       OUTBOX: 2,
       MAINTENANCE: 2,
-      RENEWAL: 2,
+      RENEWAL: 6,
       TERMINATION: 2,
-      RECOVERY: 4
+      RECOVERY: 6
     },
-    safetyMax: 8,
+    safetyMax: 14,
     controlMax: 14
   };
 
