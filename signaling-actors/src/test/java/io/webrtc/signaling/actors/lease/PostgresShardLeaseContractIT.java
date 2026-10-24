@@ -338,6 +338,101 @@ class PostgresShardLeaseContractIT {
         assertThat(loss.get()).isEqualTo(1);
     }
 
+    static GroupOwnership refusingPulses(AtomicInteger refusals, RuntimeException refusal) {
+        return new GroupOwnership() {
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> acquireTracked(
+                    int group, String node, UUID incarnation, UUID operation) {
+                return repository.acquireTracked(group, node, incarnation, operation);
+            }
+
+            public DbOperation<GroupOwnerRepository.Grant> pulseTracked(
+                    GroupOwnerRepository.Grant grant, long sequence, UUID operation) {
+                if (refusals.getAndDecrement() <= 0)
+                    return repository.pulseTracked(grant, sequence, operation);
+                return new DbOperation<>(
+                        CompletableFuture.<GroupOwnerRepository.Grant>failedFuture(
+                                        new CompletionException(refusal))
+                                .minimalCompletionStage(),
+                        CompletableFuture.completedFuture(DbOperation.PhysicalCompletion.FINISHED).minimalCompletionStage());
+            }
+
+            public DbOperation<Boolean> releaseTracked(AuthoritySql.GroupToken token) {
+                return repository.releaseTracked(token);
+            }
+
+            public CompletionStage<Optional<GroupOwnerRepository.Grant>> reconcile(
+                    int group, String node, UUID incarnation) {
+                return repository.reconcile(group, node, incarnation);
+            }
+
+            public DbOperation<Optional<GroupOwnerRepository.Grant>> reconcileTracked(
+                    int group, String node, UUID incarnation) {
+                return repository.reconcileTracked(group, node, incarnation);
+            }
+        };
+    }
+
+    @Test
+    void refusedPulseKeepsTheStillValidTenureAndRetriesBeforeItsLocalDeadline() throws Exception {
+        for (var refusal :
+                List.<RuntimeException>of(
+                        new AuthoritySql.RetryableConflict(), new DbOverloadedException())) {
+            int group = refusal instanceof AuthoritySql.RetryableConflict ? 108 : 109;
+            var refusals = new AtomicInteger(2);
+            var loss = new AtomicInteger();
+            var lease =
+                    new PostgresShardLease(
+                            settings(group, 2000),
+                            new PostgresShardLease.Namespace(
+                                    "lease-contract", "c001", 1, "127.0.0.1:2552", "refused#clusterUID#podUID"),
+                            refusingPulses(refusals, refusal),
+                            timer,
+                            () -> true,
+                            System::nanoTime);
+            assertThat(lease.acquire(error -> loss.incrementAndGet()).toCompletableFuture().join())
+                    .isTrue();
+            long first = lease.currentGrant().orElseThrow().sequence();
+            // Two refused pulses (definitely not applied) followed by one that commits, all
+            // before the published local deadline of the first grant.
+            org.awaitility.Awaitility.await()
+                    .atMost(Duration.ofSeconds(9))
+                    .untilAsserted(
+                            () ->
+                                    assertThat(lease.currentGrant().orElseThrow().sequence())
+                                            .isGreaterThan(first));
+            assertThat(refusals.get()).isNegative();
+            assertThat(lease.checkLease()).isTrue();
+            assertThat(loss.get()).isZero();
+            lease.release().toCompletableFuture().join();
+        }
+    }
+
+    @Test
+    void pulsesRefusedUntilTheLocalDeadlineStillCloseTheGateAndNotifyOnce() {
+        var refusals = new AtomicInteger(Integer.MAX_VALUE);
+        var loss = new AtomicInteger();
+        var lease =
+                new PostgresShardLease(
+                        settings(110, 2000),
+                        new PostgresShardLease.Namespace(
+                                "lease-contract", "c001", 1, "127.0.0.1:2552", "refused-ever#clusterUID#podUID"),
+                        refusingPulses(refusals, new AuthoritySql.RetryableConflict()),
+                        timer,
+                        () -> true,
+                        System::nanoTime);
+        assertThat(lease.acquire(error -> loss.incrementAndGet()).toCompletableFuture().join())
+                .isTrue();
+        org.awaitility.Awaitility.await()
+                .atMost(Duration.ofSeconds(12))
+                .untilAsserted(
+                        () -> {
+                            assertThat(lease.checkLease()).isFalse();
+                            assertThat(loss.get()).isEqualTo(1);
+                        });
+        lease.release().toCompletableFuture().join();
+        assertThat(loss.get()).isEqualTo(1);
+    }
+
     @Test
     void unhealthyClockPreventsAcquisitionAndClosesExistingGate() {
         var healthy = new AtomicBoolean(false);

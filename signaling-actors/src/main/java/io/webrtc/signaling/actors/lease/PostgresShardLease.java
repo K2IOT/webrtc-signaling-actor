@@ -109,6 +109,9 @@ public final class PostgresShardLease extends Lease {
     }
 
     static final class Engine {
+        // A refused pulse leaves the 10 s local deadline in force; this gives several retries
+        // inside it without tight-looping on a contended barrier.
+        private static final long REFUSED_PULSE_RETRY_NANOS = Duration.ofMillis(500).toNanos();
         final AtomicReference<Held> held = new AtomicReference<>();
         private final LeaseSettings settings;
         private final Namespace namespace;
@@ -298,7 +301,10 @@ public final class PostgresShardLease extends Lease {
             Held current = held.get();
             if (!draining && current != null && current.tenure() == p.tenure) {
                 cancel(pulse);
-                long next = p.start + Duration.ofSeconds(5).toNanos();
+                long next =
+                        p.refused
+                                ? nanos.getAsLong() + REFUSED_PULSE_RETRY_NANOS
+                                : p.start + Duration.ofSeconds(5).toNanos();
                 pulse =
                         timers.schedule(
                                 this::pulse, Math.max(0, next - nanos.getAsLong()), TimeUnit.NANOSECONDS);
@@ -341,6 +347,15 @@ public final class PostgresShardLease extends Lease {
                 GroupOwnerRepository.Grant grant,
                 Throwable error) {
             if (pending != p || p.unknown) return;
+            if (refused(error)) {
+                // The pulse was refused before it could change the row, so the last published grant
+                // and its expiry timer still bound this tenure; retry instead of dropping the shard.
+                p.refused = true;
+                p.result.complete(false);
+                cancel(p.deadline);
+                finishKnown(p);
+                return;
+            }
             if (error != null
                     || !valid(grant, p.tenure)
                     || !grant.token().equals(previous.token())
@@ -353,6 +368,14 @@ public final class PostgresShardLease extends Lease {
             p.result.complete(true);
             cancel(p.deadline);
             finishKnown(p);
+        }
+
+        private static boolean refused(Throwable error) {
+            Throwable cause = error instanceof CompletionException && error.getCause() != null
+                    ? error.getCause()
+                    : error;
+            return cause instanceof AuthoritySql.RetryableConflict
+                    || cause instanceof DbOverloadedException;
         }
 
         private synchronized void expire(Tenure tenure) {
@@ -581,7 +604,7 @@ public final class PostgresShardLease extends Lease {
             final UUID operation;
             final long start;
             final CompletableFuture<Boolean> result = new CompletableFuture<>();
-            boolean unknown, physicalDone, cleaning;
+            boolean unknown, physicalDone, cleaning, refused;
             CompletableFuture<Boolean> releaseResult;
             ScheduledFuture<?> deadline, retry;
 
