@@ -7,7 +7,11 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.KeyStoreSpi;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.X509KeyManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -48,6 +52,115 @@ class TlsContextsTest {
               assertThat(failure.getMessage()).isEqualTo("TLS");
               assertThat(failure.getCause()).isNull();
             });
+  }
+
+  /** A PKCS12 store that counts private-key reads (each is a PBKDF2 key derivation). */
+  private static KeyStore counting(Path keystore, AtomicInteger reads) throws Exception {
+    KeyStore real = KeyStore.getInstance("PKCS12");
+    try (var in = Files.newInputStream(keystore)) {
+      real.load(in, TestPki.KEYSTORE_PASSWORD.toCharArray());
+    }
+    KeyStoreSpi spi =
+        new KeyStoreSpi() {
+          public java.security.Key engineGetKey(String alias, char[] password)
+              throws java.security.NoSuchAlgorithmException,
+                  java.security.UnrecoverableKeyException {
+            reads.incrementAndGet();
+            try {
+              return real.getKey(alias, password);
+            } catch (java.security.KeyStoreException e) {
+              throw new IllegalStateException(e);
+            }
+          }
+
+          public java.security.cert.Certificate[] engineGetCertificateChain(String alias) {
+            return call(() -> real.getCertificateChain(alias));
+          }
+
+          public java.security.cert.Certificate engineGetCertificate(String alias) {
+            return call(() -> real.getCertificate(alias));
+          }
+
+          public java.util.Date engineGetCreationDate(String alias) {
+            return call(() -> real.getCreationDate(alias));
+          }
+
+          public void engineSetKeyEntry(
+              String a, java.security.Key k, char[] p, java.security.cert.Certificate[] c) {
+            throw new UnsupportedOperationException();
+          }
+
+          public void engineSetKeyEntry(String a, byte[] k, java.security.cert.Certificate[] c) {
+            throw new UnsupportedOperationException();
+          }
+
+          public void engineSetCertificateEntry(String a, java.security.cert.Certificate c) {
+            throw new UnsupportedOperationException();
+          }
+
+          public void engineDeleteEntry(String a) {
+            throw new UnsupportedOperationException();
+          }
+
+          public java.util.Enumeration<String> engineAliases() {
+            return call(real::aliases);
+          }
+
+          public boolean engineContainsAlias(String alias) {
+            return call(() -> real.containsAlias(alias));
+          }
+
+          public int engineSize() {
+            return call(real::size);
+          }
+
+          public boolean engineIsKeyEntry(String alias) {
+            return call(() -> real.isKeyEntry(alias));
+          }
+
+          public boolean engineIsCertificateEntry(String alias) {
+            return call(() -> real.isCertificateEntry(alias));
+          }
+
+          public String engineGetCertificateAlias(java.security.cert.Certificate c) {
+            return call(() -> real.getCertificateAlias(c));
+          }
+
+          public void engineStore(java.io.OutputStream s, char[] p) {
+            throw new UnsupportedOperationException();
+          }
+
+          public void engineLoad(java.io.InputStream s, char[] p) {}
+        };
+    KeyStore store = new KeyStore(spi, real.getProvider(), "PKCS12") {};
+    store.load(null, null);
+    return store;
+  }
+
+  private interface Lookup<T> {
+    T get() throws java.security.KeyStoreException;
+  }
+
+  private static <T> T call(Lookup<T> lookup) {
+    try {
+      return lookup.get();
+    } catch (java.security.KeyStoreException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  @Test
+  void handshakesReuseThePrivateKeyInsteadOfDecryptingTheKeystoreEachTime() throws Exception {
+    var reads = new AtomicInteger();
+    KeyStore store = counting(keystore, reads);
+    var managers = TlsContexts.keyManagers(store, TestPki.KEYSTORE_PASSWORD.toCharArray());
+    var manager = (X509KeyManager) managers[0];
+    String alias = manager.chooseServerAlias("EC", null, null);
+    if (alias == null) alias = manager.chooseServerAlias("RSA", null, null);
+    int afterInit = reads.get();
+    for (int handshake = 0; handshake < 20; handshake++)
+      assertThat(manager.getPrivateKey(alias)).isNotNull();
+    assertThat(reads.get()).isEqualTo(afterInit);
   }
 
   @Test

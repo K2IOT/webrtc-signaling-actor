@@ -13,6 +13,7 @@ import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -40,6 +41,17 @@ final class TlsContexts {
 
   private TlsContexts() {}
 
+  /**
+   * SunX509 decrypts the single key once at init and keeps it. The PKIX manager re-reads it through
+   * a soft-reference cache that a small heap clears often, so each TLS handshake paid a PKCS12
+   * PBKDF2 derivation (the source listener spent most of its CPU there).
+   */
+  static KeyManager[] keyManagers(KeyStore keys, char[] password) throws GeneralSecurityException {
+    KeyManagerFactory keyManagers = KeyManagerFactory.getInstance("SunX509");
+    keyManagers.init(keys, password);
+    return keyManagers.getKeyManagers();
+  }
+
   /** Builds the server context of {@code listener}; fails with category {@code TLS}. */
   static SSLContext server(LocalPlatformConfig.Listener listener) {
     char[] password = null;
@@ -51,13 +63,11 @@ final class TlsContexts {
               SecretFiles.readBounded(listener.keystore(), MAX_KEYSTORE_BYTES)),
           password);
       requireSinglePrivateKey(keys);
-      KeyManagerFactory keyManagers = KeyManagerFactory.getInstance("PKIX");
-      keyManagers.init(keys, password);
       TrustManagerFactory trustManagers = TrustManagerFactory.getInstance("PKIX");
       trustManagers.init(clientTrust(listener));
       SSLContext context = SSLContext.getInstance(PROTOCOL);
       context.init(
-          keyManagers.getKeyManagers(), trustManagers.getTrustManagers(), new SecureRandom());
+          keyManagers(keys, password), trustManagers.getTrustManagers(), new SecureRandom());
       return context;
     } catch (IOException | GeneralSecurityException | RuntimeException invalid) {
       throw new LocalPlatformFailure(LocalPlatformFailure.Category.TLS);
