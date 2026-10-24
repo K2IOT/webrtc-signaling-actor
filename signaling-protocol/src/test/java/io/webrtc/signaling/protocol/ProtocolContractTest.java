@@ -124,6 +124,30 @@ class ProtocolContractTest {
     }
 
     @Test
+    void inviteCallIdIsDerivedFromTheIdempotencyKeyAndStaysARoutedUuid() {
+        var key = new SessionKey("TEST_ONLY_ISSUER", "TEST_ONLY_JTI");
+        var request = new RequestId(UUID.fromString("00000000-0000-4000-8000-000000000009"));
+        CallId first = CallId.forInvite("c001", 2, key, request);
+        assertThat(CallId.forInvite("c001", 2, key, request)).isEqualTo(first);
+        assertThat(first.coordinatorCell()).isEqualTo("c001");
+        assertThat(first.routingEpoch()).isEqualTo(2);
+        UUID uuid = UUID.fromString(first.value().substring(first.value().lastIndexOf('.') + 1));
+        assertThat(uuid.version()).isEqualTo(8);
+        assertThat(uuid.variant()).isEqualTo(2);
+        assertThat(CallId.forInvite("c001", 3, key, request)).isNotEqualTo(first);
+        assertThat(CallId.forInvite("c002", 2, key, request)).isNotEqualTo(first);
+        assertThat(CallId.forInvite("c001", 2, new SessionKey("TEST_ONLY_ISSUER", "TEST_ONLY_JTI_2"), request))
+                .isNotEqualTo(first);
+        assertThat(
+                CallId.forInvite(
+                        "c001", 2, key, new RequestId(UUID.fromString("00000000-0000-4000-8000-00000000000a"))))
+                .isNotEqualTo(first);
+        // Field boundaries are length-prefixed: shifting text between issuer and jti changes the id.
+        assertThat(CallId.forInvite("c001", 2, new SessionKey("TEST_ONLY_ISSUERT", "EST_ONLY_JTI"), request))
+                .isNotEqualTo(first);
+    }
+
+    @Test
     void derivesCallScopeFromImmutableRoutedCallId() {
         var c = validator.bind(decode(frame("HANGUP", "{}")), sender);
         assertThat(c.scope().value()).isEqualTo("CALL:" + call.value());

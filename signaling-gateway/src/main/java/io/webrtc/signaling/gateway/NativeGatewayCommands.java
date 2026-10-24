@@ -180,7 +180,11 @@ public final class NativeGatewayCommands implements NativeGatewayServices.Contex
                     original.type() == SignalEnvelope.Type.GET_COMMAND_RESULT && original.callId() == null;
             if ((invite || lookup) && !original.scope().equals(CommandScope.invite()))
                 return CompletableFuture.completedFuture(error(original, "INVALID_MESSAGE"));
-            var call = invite ? CallId.create(home.cell(), routingEpoch) : original.callId();
+            var call =
+                    invite
+                            ? CallId.forInvite(
+                            home.cell(), routingEpoch, original.sender().key(), original.requestId())
+                            : original.callId();
             if (!lookup && call == null)
                 return CompletableFuture.completedFuture(error(original, "INVALID_MESSAGE"));
             var command =

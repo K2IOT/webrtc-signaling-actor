@@ -77,6 +77,36 @@ public final class Identity {
             return new CallId(cell + ".e" + epoch + "." + UUID.randomUUID());
         }
 
+        /**
+         * The call an INVITE creates, derived from its idempotency key (issuer, jti, requestId) so
+         * that every retry reaches the same entity and group. While the stored INVITE result lives
+         * (24 h after its final outcome) a reused key replays it; once the result is gone, a call row
+         * that still exists (a call longer than that) makes the create fail on the primary key, never
+         * reuse that call. A UUIDv8 of SHA-256 over length-prefixed fields; routing only, never
+         * authorization.
+         */
+        public static CallId forInvite(String cell, long epoch, SessionKey sender, RequestId request) {
+            positive(epoch);
+            try {
+                var digest = java.security.MessageDigest.getInstance("SHA-256");
+                for (String part :
+                        new String[]{
+                                "invite-call-id-v1", cell, Long.toString(epoch), sender.issuer(), sender.jti(),
+                                request.value().toString()
+                        }) {
+                    byte[] bytes = part.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.length).array());
+                    digest.update(bytes);
+                }
+                var hash = java.nio.ByteBuffer.wrap(digest.digest());
+                long high = (hash.getLong() & ~0xF000L) | 0x8000L;
+                long low = (hash.getLong() & 0x3FFFFFFFFFFFFFFFL) | 0x8000000000000000L;
+                return new CallId(cell + ".e" + epoch + "." + new UUID(high, low));
+            } catch (java.security.NoSuchAlgorithmException unavailable) {
+                throw new IllegalStateException(unavailable);
+            }
+        }
+
         public String coordinatorCell() {
             return value.substring(0, value.indexOf('.'));
         }
