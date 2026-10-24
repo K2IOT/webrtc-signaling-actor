@@ -413,6 +413,33 @@ class CallCommandIT {
                         .join())
                 .isTrue();
         assertThat(secondsUntilNextAttempt(event)).isBetween(0.9, 1.0);
+
+        // Only due work keeps the scanner at its busy cadence: a deferred event lets it back off.
+        try (var c = PgFixture.connection();
+             var q = c.createStatement()) {
+            q.executeUpdate(
+                    "UPDATE control_outbox SET next_attempt=clock_timestamp()+interval '1 hour' WHERE"
+                            + " delivery_state='PENDING'");
+        }
+        var idle =
+                outbox.scanOutboxBatchTracked("worker", incarnation, 2, List.of(), java.util.Set.of())
+                        .logical()
+                        .toCompletableFuture()
+                        .join();
+        assertThat(idle.claims()).isEmpty();
+        assertThat(idle.pending()).isFalse();
+        try (var c = PgFixture.connection();
+             var q = c.prepareStatement("UPDATE control_outbox SET next_attempt=clock_timestamp() WHERE event_id=?")) {
+            q.setObject(1, event);
+            q.executeUpdate();
+        }
+        assertThat(
+                outbox.scanOutboxBatchTracked("worker", incarnation, 1, List.of(), java.util.Set.of(event))
+                        .logical()
+                        .toCompletableFuture()
+                        .join()
+                        .pending())
+                .isTrue();
     }
 
     @Test

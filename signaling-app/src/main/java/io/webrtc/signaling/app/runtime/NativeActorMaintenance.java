@@ -38,6 +38,8 @@ public final class NativeActorMaintenance {
     private final PrivacyDeletionWorker privacy;
     private final List<NativeWorkerScheduler.Job> jobs;
     private long idleMillis = 20;
+    // Expired rows wait at most a second more; an idle cell no longer scans five tables 10x/s.
+    private final IdleBackoff retentionBackoff = new IdleBackoff(100, 1000);
     private volatile boolean draining;
 
     public NativeActorMaintenance(
@@ -73,10 +75,7 @@ public final class NativeActorMaintenance {
                                 Duration.ofMillis(100),
                                 budget -> rpc(recovery.sweepTracked(budget))),
                         job("control_outbox", Duration.ofMillis(20), budget -> outboxScan()),
-                        job(
-                                "retention",
-                                Duration.ofMillis(100),
-                                budget -> rpc(retention.pruneDue(512, budget))),
+                        job("retention", Duration.ofMillis(100), this::retentionScan),
                         job(
                                 "privacy_deletion",
                                 Duration.ofSeconds(1),
@@ -97,6 +96,20 @@ public final class NativeActorMaintenance {
                     nextScan.set(0);
                     scheduler.wake("control_outbox");
                 });
+    }
+
+    private RpcOperation<?> retentionScan(Duration budget) {
+        if (!retentionBackoff.due(System.nanoTime()))
+            return new RpcOperation<>(
+                    CompletableFuture.completedFuture(null), CompletableFuture.completedFuture(null));
+        var operation = retention.pruneDue(512, budget);
+        operation
+                .logical()
+                .whenComplete(
+                        (report, error) ->
+                                retentionBackoff.completed(
+                                        error != null || report.deleted() > 0, System.nanoTime()));
+        return rpc(operation);
     }
 
     private RpcOperation<?> outboxScan() {

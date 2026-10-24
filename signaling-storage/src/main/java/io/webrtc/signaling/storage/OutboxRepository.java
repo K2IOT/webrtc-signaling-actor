@@ -189,12 +189,14 @@ public final class OutboxRepository {
                             hintArray.free();
                         }
                     }
+                    // Due work only: deferred events (next_attempt ahead) must let the scanner back off.
                     boolean pending = !hints.isEmpty();
                     if (!pending) {
                         try (var q =
                                      c.prepareStatement(
                                              "SELECT EXISTS(SELECT 1 FROM control_outbox WHERE delivery_state='PENDING'"
-                                                     + " AND quarantined=false AND expires_at>clock_timestamp())");
+                                                     + " AND quarantined=false AND expires_at>clock_timestamp()"
+                                                     + " AND next_attempt<=clock_timestamp())");
                              var r = q.executeQuery()) {
                             r.next();
                             pending = r.getBoolean(1);
