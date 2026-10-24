@@ -1,7 +1,9 @@
 # Acceptance run of the two-cell compose environment
 
 **LOCAL_TEST_ONLY / NOT_QUALIFIED.** Outcome: **acceptance still FAILED, twice in a row with the
-same result** (32 PASS, 7 FAIL each), with three actors per cell and the source database pooled.
+same result** (32 PASS, 7 FAIL each). The latest pair (2026-10-24) is in "Relay owner routing and the
+idle-error sweep"; there `make p2p` passed 6/6. The text below describes the earlier runs: three
+actors per cell, source database pooled.
 The stack starts in about 130 s and every plane is ready, but the first INVITE of the smoke fails
 in a different way each time (investigation in "Why the first INVITE fails"). The environment is **not**
 `LOCAL_QUALIFIED`. Nothing here says anything about production, HA, fencing, N-1 or any capacity
@@ -35,6 +37,73 @@ bash deploy/compose/acceptance.sh smoke measure actor standby refusal isolation 
 `acceptance.sh` prints `PASS|FAIL|INFO <criterion> <check>: <evidence>` lines and writes its logs
 under `deploy/compose/.smoke/acceptance/` (git-ignored).
 
+## Relay owner routing and the idle-error sweep (2026-10-24, later)
+
+**Not `LOCAL_QUALIFIED`.** `make p2p` passed **6/6** on a fresh `make up` (before these fixes: 4/5,
+1/5 and 1/5 in three cycles). Each run carried real SDP through both gateways, trickled ICE and a
+data-channel echo, then hung up. The only blemish: the first INVITE after `make up` ended `TIMEOUT`
+once (its `prepareUntil` lapsed during the remote reservation on a cold stack), and the client's
+redial passed. That cold-path delay is not explained yet.
+
+Evidence came from the logback override, PostgreSQL statement logging switched on for 6 s, and a
+heap dump of one actor read with a small HPROF reader. None of it is committed. Each fix below was
+made test-first:
+
+- `5d7a8cc` relay owner routing: the RELAY RPC asks the call entity through sharding, so the
+  relay runs on the actor that holds the call's group lease. Any refusal maps to
+  `RESYNC_REQUIRED`. A peer without the `native-relay-owner-v1` capability keeps the old local
+  path.
+- `5bb3b59` lease pulse refusal: a pulse refused with `RetryableConflict` or overload changed
+  nothing in the database, but it killed the shard 5 s after acquire with about 10 s of lease left.
+  The killed CallActor's cold restart then invalidated the negotiation, and the next OFFER failed
+  with `RESYNC_REQUIRED`. Such a pulse is now retried after 500 ms inside the unchanged local
+  deadline.
+- `a7a5c50` revocation contention: the loser of `security_progress ... FOR UPDATE NOWAIT` failed
+  its poll. That cleared the actor's revocation freshness and closed its safety and business
+  readiness for a moment, and INVITE was refused as overloaded. This happened on about 4% of polls
+  on every actor. The lock now waits within `lock_timeout`, and a peer's commit turns the apply
+  into a duplicate.
+- `43a6567` outbox backoff: a control event addressed to a closed session was retried every second
+  for 24 h. On an idle stack that meant about 6 failed route RPCs per second. Retries now back off
+  from 0.5-1 s up to 15-30 s.
+- `7240d50` zombie CallActor: an incarnation started while its group gate was closed lived forever
+  and answered every wake UNAVAILABLE. In the heap dump it had `unknown=true`, `pending=null` and
+  had never passivated. A PREPARING call stayed 48 min past `prepareUntil` because of it. The
+  incarnation now retires at once.
+
+Idle counts per actor over 2 minutes, before and after: `RPC_CONTROL OUTCOME_UNKNOWN` fell from
+about 1,130 to 47, and `REVOCATION OUTCOME_UNKNOWN` from about 28 to 2.
+
+Still open:
+- The idle actors still use about 75% CPU each, and local-platform about 150%.
+- The first-INVITE cold path described above.
+- The gateway mints a fresh `callId` for each INVITE retry. The storage replays the original
+  result, so this costs latency only. A deterministic id was rejected: requestId reuse after
+  result expiry could collide with an existing call.
+
+Acceptance after these fixes (default JVM options, load guard on, each run from a fresh `make down`
+and `make up`): run `rel-A` **32 PASS, 7 FAIL**, run `rel-B` **32 PASS, 7 FAIL**. Both runs failed
+the same checks:
+
+- `2 smoke` failed at step 4: the first INVITE after `make up` ended `TIMEOUT/TERMINAL`. This is
+  the cold path described above; the smoke does not redial. A second smoke on the same stack
+  passes step 4, including the cross-cell call through HANGUP.
+- `3a smoke-one-actor-down` and `3a smoke-after-restart` failed at step 5 (`admin revoke: no
+  response within 5000 ms`). No earlier run got this far.
+  - From the host, TCP connects to the local-platform admin listener (`172.30.0.12:9444`) mostly
+    time out.
+  - When a connect does succeed, the TLS handshake takes about 4 s.
+  - A thread dump shows the HTTP dispatchers idle. The four `local-platform-source-*` threads used
+    about 125 s of CPU each in 7 minutes (the container runs at about 150% CPU while idle). They
+    serve the revocation pages every actor polls.
+  - Not fixed; the next lead is that source load and the connect timeouts.
+- `3b cell-ready` (c001 planes not ready 120 s after the standby returned) and `3b smoke-after`
+  failed.
+- `4 fingerprint-mismatch` failed: the platform exited `STARTUP_FAILED`, with no incompatible-config
+  log line. `4 smoke-after` also failed.
+
+None of these is analysed here.
+
 ## Tracing the call failures (2026-10-24)
 
 **Not `LOCAL_QUALIFIED`; P2P on compose passes intermittently.** Readable logs came from a local
@@ -63,7 +132,7 @@ Results with these: INVITE succeeded on the first attempt in most runs (0/5 befo
 5/5; `make p2p` passed end to end twice (real SDP through both gateways, 14+14 ICE candidates,
 data-channel echo, hangup), but most runs stop at OFFER with `RESYNC_REQUIRED`.
 
-Remaining cause, architectural and not fixed: relay authorization
+Remaining cause at the time (fixed later by `5d7a8cc`, see the section above): relay authorization
 (`NativeRelayAuthorization.loadRound` -> `local(call)`) runs on the actor that receives the relay
 RPC and requires that actor to own the call's group lease. Nothing forwards a relay to the owner,
 and compose sends every cell RPC to `actor-<cell>-1` (provider `actorHosts`), which owns about a
