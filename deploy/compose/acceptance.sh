@@ -195,6 +195,19 @@ phase_smoke() {
 
 C001_REST=$(for n in $(seq 1 $((ACTORS_PER_CELL - 1))); do printf 'actor-c001-%s ' "$n"; done)
 
+wait_quiet() { # waits (at most 600 s) until make up's own load guard would pass; never bypasses it
+  local t0 load cores
+  cores="${PREFLIGHT_NPROC:-$(nproc 2>/dev/null || echo 1)}"
+  t0=$(date +%s)
+  while :; do
+    load="$(cut -d' ' -f1 /proc/loadavg)"
+    echo "$(($(date +%s) - t0))s load1=$load"
+    awk -v l="$load" -v c="$cores" 'BEGIN { exit !(l / c <= 0.65) }' && return 0
+    [ $(($(date +%s) - t0)) -ge 600 ] && return 1
+    sleep 10
+  done
+}
+
 ready_within() { # ready_within <seconds> <services...>: polls until every /ready is 200
   local limit="$1" t0 s all
   shift
@@ -275,6 +288,7 @@ phase_standby() {
     tee -a "$OUT/results.txt"
   log "criterion 3b: re-provision (make down; make up) to restore the fenced gateway boot"
   "${MAKE[@]}" down >"$OUT/down-3b.log" 2>&1
+  wait_quiet >"$OUT/quiet-3b.log"
   "${MAKE[@]}" up >"$OUT/up-3b.log" 2>&1
   rc=$?
   check 3b reprovisioned "make up exit $rc after the standby case" "$rc"
