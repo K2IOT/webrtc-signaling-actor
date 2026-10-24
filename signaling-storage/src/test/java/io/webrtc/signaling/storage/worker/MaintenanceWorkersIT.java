@@ -254,6 +254,45 @@ class MaintenanceWorkersIT {
     }
 
     @Test
+    void peerApplyingTheSamePageMakesThisActorsApplySucceedInsteadOfFailingItsFreshness()
+            throws Exception {
+        try (var f = new LocalInviteAtomicIT.Fixture()) {
+            var sender = f.sender("peer-revoked-subject");
+            var checked = Instant.now();
+            var worker =
+                    new RevocationReconciler(f.runtime.sql, "c001", 1, Duration.ofSeconds(5), batch -> true);
+            assertThat(done(worker.apply(new RevocationReconciler.Batch(0, 0, List.of(), checked))))
+                    .isZero();
+            var event =
+                    new RevocationState.Event(
+                            sender.key().issuer(), sender.userId(), sender.key().jti(), 1, 1, checked);
+            var page = new RevocationReconciler.Batch(0, 1, List.of(event), checked);
+            try (var peer = f.connection()) {
+                // TEST_ONLY: another actor of the cell holds the singleton while committing the page.
+                peer.setAutoCommit(false);
+                try (var q = peer.createStatement()) {
+                    q.executeUpdate("UPDATE security_progress SET source_offset=1 WHERE singleton_id=1");
+                }
+                var mine = worker.apply(page);
+                Thread.sleep(30);
+                peer.commit();
+                assertThat(done(mine)).isEqualTo(1);
+            }
+            // A singleton held past the bounded lock wait is a typed retry, never an untyped error.
+            try (var peer = f.connection()) {
+                peer.setAutoCommit(false);
+                try (var q = peer.createStatement()) {
+                    q.execute("SELECT 1 FROM security_progress WHERE singleton_id=1 FOR UPDATE");
+                }
+                var next = new RevocationReconciler.Batch(1, 1, List.of(), Instant.now());
+                assertThatThrownBy(() -> done(worker.apply(next)))
+                        .hasCauseInstanceOf(AuthoritySql.RetryableConflict.class);
+                peer.rollback();
+            }
+        }
+    }
+
+    @Test
     void unauthenticatedRevocationProgressCannotMintFreshness() throws Exception {
         try (var f = new LocalInviteAtomicIT.Fixture()) {
             var worker =

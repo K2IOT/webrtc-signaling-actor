@@ -94,15 +94,25 @@ public final class RevocationReconciler implements SessionRegistryService.Native
                                 "INSERT INTO"
                                         + " security_progress(singleton_id,source_offset,checked_at,source_checked_at)"
                                         + " VALUES(1,0,'epoch','epoch') ON CONFLICT DO NOTHING");
+                    } catch (SQLException contended) {
+                        if ("55P03".equals(contended.getSQLState()))
+                            throw new AuthoritySql.RetryableConflict();
+                        throw contended;
                     }
                     long current;
+                    // Every actor of the cell applies the same pages. Waiting (bounded by the
+                    // transaction's lock_timeout) lets a peer's commit turn this apply into a
+                    // duplicate instead of failing this actor's freshness.
                     try (var q = c.createStatement();
                          var r =
                                  q.executeQuery(
-                                         "SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE"
-                                                 + " NOWAIT")) {
+                                         "SELECT source_offset FROM security_progress WHERE singleton_id=1 FOR UPDATE")) {
                         r.next();
                         current = r.getLong(1);
+                    } catch (SQLException contended) {
+                        if ("55P03".equals(contended.getSQLState()))
+                            throw new AuthoritySql.RetryableConflict();
+                        throw contended;
                     }
                     if (batch.fromOffset() < current && batch.highWater() <= current) return current;
                     if (batch.fromOffset() != current) throw new AuthoritySql.FencedException();
