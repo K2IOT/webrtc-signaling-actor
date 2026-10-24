@@ -116,6 +116,13 @@ ready_all() { # ready_all <criterion> <label> <services...>: /ready 200 on each,
     if [ "$code" = 200 ]; then ok=$((ok + 1)); else bad="$bad $s=$code"; fi
   done
   check "$crit" "$label" "/ready 200 on $ok of $#${bad:+ (not:$bad)}" "$([ -z "$bad" ] && echo 0 || echo 1)"
+  local b
+  for b in $bad; do # evidence for an unready plane: its metrics and logs (git-ignored output)
+    s="${b%%=*}"
+    timeout 10 docker exec "$(cid "$s")" bash -c 'exec 3<>"/dev/tcp/$1/$2" && printf "GET /metrics HTTP/1.0\r\nHost: %s\r\n\r\n" "$1" >&3 && timeout 5 cat <&3' \
+      metrics "$(health_ip "$s")" "$HEALTH_PORT" >"$OUT/unready-$crit-$s.metrics" 2>&1 || true
+    docker logs "$(cid "$s")" >"$OUT/unready-$crit-$s.log" 2>&1 || true
+  done
 }
 
 # psql on a cell primary as signaling_owner over the container-private socket. The password is read
