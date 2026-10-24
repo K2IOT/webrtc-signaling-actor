@@ -117,7 +117,10 @@ class CallActorRelayTest {
         var physical = kit.<CompletionReceipt.PhysicalDone>createTestProbe();
         var receipt = new CompletionReceipt(UUID.randomUUID(), physical.ref());
         // The live incarnation loses the group after it started (an incarnation started without
-        // the group retires at once and never sees a relay).
+        // the group retires at once and never sees a relay). Wait for the started incarnation first.
+        var started = kit.<java.util.Optional<io.webrtc.signaling.storage.CallSnapshotRepository.Snapshot>>createTestProbe();
+        actor.tell(new CallActor.GetSnapshot(started.ref()));
+        started.receiveMessage();
         held.set(false);
 
         actor.tell(relay(replies.ref(), receipt));

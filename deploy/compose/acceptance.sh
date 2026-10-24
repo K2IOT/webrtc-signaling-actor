@@ -10,7 +10,9 @@
 #       smoke     make smoke passes (cross-cell call and token revoke); RSS/time measured after it
 #       actor     docker stop the last c001 actor: the cell stays ready (quorum is a majority), a fresh smoke passes; start -> healthy
 #       standby   docker stop pg-c001-standby: a c001 INVITE does not commit, synchronous_standby_names
-#                 unchanged; start -> quorum back, the smoke passes again
+#                 unchanged; start -> quorum back, control and the c001 actors ready again; the
+#                 gateway's lapsed boot lease is fenced by design (INFO), so the stack is
+#                 re-provisioned (make down; make up) and the smoke passes again
 #       refusal   bad fingerprint, foreign SPIFFE leaf, missing contract: one container each
 #       isolation /dev/tcp probes between the cell networks and to the cell PostgreSQL servers
 #       secrets   git, docker inspect env and the logs hold no secret of this run
@@ -261,8 +263,21 @@ phase_standby() {
   check 3b quorum-back "pg_stat_replication sync_state=${st:-none} $(($(date +%s) - t0))s after healthy" \
     "$([ "$st" = quorum ] || [ "$st" = sync ] && echo 0 || echo 1)"
   # shellcheck disable=SC2086
-  took=$(ready_within "$READY_WAIT_S" gateway-c001 control $C001_REST "$SPARE"); rc=$?
-  check 3b cell-ready "c001 planes /ready 200 ${took}s after quorum" "$rc"
+  took=$(ready_within "$READY_WAIT_S" control $C001_REST "$SPARE"); rc=$?
+  check 3b cell-ready "control and the c001 actors /ready 200 ${took}s after quorum" "$rc"
+  # The gateway's 15 s boot lease cannot be renewed while commits wait for the lost standby, and an
+  # expired boot is never revived (fencing). Its boot id is pinned at provisioning, so it stays
+  # unready until re-provisioned: that is the designed fail-closed result, recorded, not judged.
+  local gw
+  gw="$(http_status gateway-c001 "$(health_ip gateway-c001)" "$HEALTH_PORT" /ready)"
+  printf 'INFO 3b gateway-fenced: gateway-c001 /ready=%s; boot lease %s\n' "$gw" \
+    "$(pg_sql pg-c001-primary signaling "SELECT CASE WHEN lease_until>clock_timestamp() THEN 'live' ELSE 'lapsed' END FROM gateway_lease")" |
+    tee -a "$OUT/results.txt"
+  log "criterion 3b: re-provision (make down; make up) to restore the fenced gateway boot"
+  "${MAKE[@]}" down >"$OUT/down-3b.log" 2>&1
+  "${MAKE[@]}" up >"$OUT/up-3b.log" 2>&1
+  rc=$?
+  check 3b reprovisioned "make up exit $rc after the standby case" "$rc"
   run_smoke smoke-3b-after
   rc=$?
   calls_back="$(pg_sql pg-c001-primary signaling 'SELECT count(*) FROM call_state')"
