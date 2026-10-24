@@ -39,7 +39,9 @@ public final class GatewaySecuritySweep implements AutoCloseable {
         long slices = (registry.scanCapacity() + SLICE - 1L) / SLICE;
         periodNanos = Math.max(1, interval / slices);
         plannedNanos = System.nanoTime();
-        registry.beginSafetySweep(interval, plannedNanos);
+        // Progress records the last planned tick, so a sweep that keeps time already reads one period
+        // old just before its next tick. The window allows one interval of lateness beyond that.
+        registry.beginSafetySweep(interval + periodNanos, plannedNanos);
         scheduler.scheduleAtFixedRate(this::scan, periodNanos, periodNanos, TimeUnit.NANOSECONDS);
     }
 
